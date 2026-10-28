@@ -70,3 +70,14 @@ test('sudo and osascript always need approval', () => {
   assert.equal(DANGEROUS_COMMAND.test('osascript -e "tell app ..."'), true);
   assert.equal(DANGEROUS_COMMAND.test('npm run build'), false);
 });
+
+test('alternatives ending in whitespace still match (del /s was silently missed)', () => {
+  const { DANGEROUS_COMMAND } = require('../src/renderer/approvals.js');
+  assert.equal(DANGEROUS_COMMAND.test('del /s C:\\Users'), true);
+  assert.equal(DANGEROUS_COMMAND.test('erase /f file'), true);
+  assert.equal(DANGEROUS_COMMAND.test('format /fs:ntfs c:'), true);
+  assert.equal(DANGEROUS_COMMAND.test('start /b evil.exe'), true);
+  // and names that merely contain those words stay safe
+  assert.equal(DANGEROUS_COMMAND.test('python format_check.py'), false);
+  assert.equal(DANGEROUS_COMMAND.test('node model_test.js'), false);
+});
