@@ -63,3 +63,10 @@ test('approval modes for an allowed, safe command', () => {
 test('commandSegments splits on chain operators', () => {
   assert.deepEqual(commandSegments('a && b || c ; d | e'), ['a', 'b', 'c', 'd', 'e']);
 });
+
+test('sudo and osascript always need approval', () => {
+  const { DANGEROUS_COMMAND } = require('../src/renderer/approvals.js');
+  assert.equal(DANGEROUS_COMMAND.test('sudo rm /etc/hosts'), true);
+  assert.equal(DANGEROUS_COMMAND.test('osascript -e "tell app ..."'), true);
+  assert.equal(DANGEROUS_COMMAND.test('npm run build'), false);
+});

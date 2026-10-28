@@ -140,7 +140,11 @@ function createWindow() {
       sandbox: true
     }
   });
-  Menu.setApplicationMenu(null);
+  if (process.platform === 'darwin') {
+    Menu.setApplicationMenu(Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }, { role: 'windowMenu' }]));
+  } else {
+    Menu.setApplicationMenu(null);
+  }
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
   // Open external links in the default browser, never inside the app.
@@ -626,7 +630,7 @@ async function streamOllama(s, payload, signal, send) {
 }
 
 // ---------- app info & updates ----------
-ipcMain.handle('app:info', () => ({ version: app.getVersion(), kind: updater.installKind(), releasesUrl: updater.RELEASES_URL }));
+ipcMain.handle('app:info', () => ({ version: app.getVersion(), kind: updater.installKind(), releasesUrl: updater.RELEASES_URL, platform: process.platform }));
 ipcMain.handle('update:check', () => updater.checkForUpdate());
 ipcMain.handle('update:download', (event) =>
   updater.downloadUpdate((p) => {
@@ -1217,9 +1221,26 @@ function registryPath() {
   return combined;
 }
 
-// process.env with the resolved git's folders prepended and the registry Path appended, so
-// shell commands find a portable/non-PATH git and freshly installed tools alike. The variable
-// is usually stored as "Path" on Windows; reuse the existing key to avoid a duplicate.
+// macOS apps launched from Finder inherit a bare PATH (no /opt/homebrew/bin, no nvm), so brew,
+// node or cmake look "not installed". Ask the login shell for its PATH once per session.
+let loginPathCache;
+function loginShellPath() {
+  if (process.platform !== 'darwin') return '';
+  if (loginPathCache !== undefined) return loginPathCache;
+  try {
+    loginPathCache = execFileSync(process.env.SHELL || '/bin/zsh', ['-ilc', 'echo -n "$PATH"'], { encoding: 'utf8', timeout: 5000 }).trim();
+  } catch {
+    loginPathCache = '';
+  }
+  const brewDirs = ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin'].filter((d) => safeExists(d) && !loginPathCache.split(':').includes(d));
+  if (brewDirs.length) loginPathCache = [loginPathCache, ...brewDirs].filter(Boolean).join(':');
+  return loginPathCache;
+}
+
+// process.env with the resolved git's folders prepended and the registry Path (Windows) or the
+// login shell's PATH (macOS) appended, so shell commands find a portable/non-PATH git and
+// freshly installed tools alike. The variable is usually stored as "Path" on Windows; reuse
+// the existing key to avoid a duplicate.
 function commandEnv() {
   const env = { ...process.env };
   const key = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') || 'PATH';
@@ -1232,6 +1253,8 @@ function commandEnv() {
   }
   const reg = registryPath();
   if (reg) parts.push(reg);
+  const login = loginShellPath();
+  if (login) parts.push(login);
   env[key] = parts.filter(Boolean).join(path.delimiter);
   return env;
 }
@@ -1258,7 +1281,7 @@ function gitAvailable() {
 // Downloads MinGit (the minimal portable Git for Windows) and unpacks it into userData, so the
 // user doesn't have to install Git by hand. No admin rights, no PATH changes.
 async function installPortableGit(onProgress) {
-  if (process.platform !== 'win32') throw new Error('Automatic Git install is only available on Windows. Install Git from your package manager.');
+  if (process.platform !== 'win32') throw new Error(process.platform === 'darwin' ? 'Automatic Git install is only available on Windows. On macOS run `xcode-select --install` in Terminal.' : 'Automatic Git install is only available on Windows. Install Git from your package manager.');
   onProgress?.({ phase: 'find' });
   const rel = await fetch('https://api.github.com/repos/git-for-windows/git/releases/latest', {
     headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Qwen-Workspace' },
@@ -1319,7 +1342,9 @@ function extractZip(zip, dest) {
   });
 }
 
-const GIT_MISSING = "Git isn't installed, or Qwen Workspace can't find it. Install Git from https://git-scm.com/download/win (keep the default options), then restart the app.";
+const GIT_MISSING = process.platform === 'darwin'
+  ? "Git isn't installed, or Qwen Workspace can't find it. Run `xcode-select --install` in Terminal (or `brew install git`), then try again."
+  : "Git isn't installed, or Qwen Workspace can't find it. Install Git from https://git-scm.com/download/win (keep the default options), then restart the app.";
 
 function runGit(args, cwd, timeout = 120_000) {
   return new Promise((resolve) => {

@@ -468,8 +468,10 @@ async function ensureGit() {
   }
   if (gitInstallPromise) return gitInstallPromise;
   if (!status.canInstall) {
-    toast({ key: 'git-install', icon: 'alert', text: 'Git isn’t installed. Install Git, then restart the app.', timeout: 0,
-      actions: [{ label: 'Get Git', onClick: () => api.openExternal('https://git-scm.com/download/win') }] });
+    const mac = state.appInfo?.platform === 'darwin';
+    toast({ key: 'git-install', icon: 'alert', timeout: 0,
+      text: mac ? 'Git isn’t installed. Run "xcode-select --install" in Terminal (or "brew install git"), then try again.' : 'Git isn’t installed. Install Git, then restart the app.',
+      actions: mac ? [] : [{ label: 'Get Git', onClick: () => api.openExternal('https://git-scm.com/download/win') }] });
     return false;
   }
   const wants = await new Promise((resolve) => {
@@ -1323,12 +1325,13 @@ const CORE_TOOLS = [
     type: 'function',
     function: {
       name: 'install_app',
-      description: 'Install a Windows application with winget (the Windows Package Manager). Use this when the user asks to install an app (e.g. "install iTunes"). Pass the winget package id when you know it (e.g. "Apple.iTunes", "Google.Chrome", "VideoLAN.VLC", "Git.Git"), otherwise pass a name to search for. If several packages match the name, the result lists them so you can retry with an exact id. Needs the user\'s approval. For Git specifically, prefer install_git, which works even without winget.',
+      description: 'Install an application or tool with the system package manager: winget on Windows, Homebrew on macOS. Use this when the user asks to install an app, or a task needs one. On Windows pass the winget package id when you know it (e.g. "Google.Chrome", "Kitware.CMake"), otherwise a name to search for; on macOS pass the Homebrew formula or cask name (e.g. "cmake", "visual-studio-code") and set cask true for GUI apps. If several packages match, the result lists them so you can retry exactly. Needs the user\'s approval. For Git on Windows, prefer install_git, which works even without winget.',
       parameters: {
         type: 'object',
         properties: {
-          id: { type: 'string', description: 'Exact winget package id, e.g. "Apple.iTunes". Preferred when known.' },
-          name: { type: 'string', description: 'App name to install when you do not know the id, e.g. "itunes".' }
+          id: { type: 'string', description: 'Exact package id: a winget id on Windows, a Homebrew formula/cask name on macOS.' },
+          name: { type: 'string', description: 'App name to search for when you do not know the id.' },
+          cask: { type: 'boolean', description: 'macOS only: true for GUI applications (brew install --cask).' }
         },
         required: []
       }
@@ -1373,7 +1376,7 @@ const DEFERRED_TOOLS = [
     type: 'function',
     function: {
       name: 'install_git',
-      description: 'Install Git on this PC by downloading a portable Git into the app\'s own folder (no winget, no admin rights). Use this when Git is missing and a git command is needed, or when the user asks to install Git and winget is unavailable.',
+      description: 'Windows only: install Git by downloading a portable Git into the app\'s own folder (no winget, no admin rights). Use this when Git is missing and a git command is needed. On macOS tell the user to run xcode-select --install instead.',
       parameters: { type: 'object', properties: {}, required: [] }
     }
   }
@@ -1609,7 +1612,7 @@ function systemPrompt(c) {
     '',
     '<context>',
     state.ws ? `Project folder: ${state.ws.root}` : 'No project folder is open yet.',
-    `Operating system: ${win ? 'Windows (commands run in cmd.exe; use Windows syntax such as "dir", "type", "&&")' : state.ws?.platform || 'unknown'}`,
+    `Operating system: ${win ? 'Windows (commands run in cmd.exe; use Windows syntax such as "dir", "type", "&&")' : state.ws?.platform === 'darwin' ? 'macOS (commands run in /bin/sh; use POSIX syntax; install software with Homebrew via install_app)' : state.ws?.platform || 'unknown'}`,
     `Conversation started: ${new Date(c.createdAt).toDateString()}`,
     c.memory ? `<project_memory file="${c.memory.name}">\n${c.memory.text}\n</project_memory>` : null,
     agent && c.skills?.length
@@ -2111,8 +2114,10 @@ async function executeTool(c, call, row) {
         if (!id && !nm) return { result: 'Error: provide an app id or name to install.' };
         const target = id || nm;
         const q = (x) => `"${String(x).replace(/"/g, '')}"`;
-        const sel = id ? `-e --id ${q(id)}` : q(nm);
-        const cmd = `winget install ${sel} --accept-package-agreements --accept-source-agreements --silent`;
+        const mac = state.ws?.platform === 'darwin' || state.appInfo?.platform === 'darwin';
+        const cmd = mac
+          ? `brew install ${args.cask ? '--cask ' : ''}${q(target)}`
+          : `winget install ${id ? `-e --id ${q(id)}` : q(nm)} --accept-package-agreements --accept-source-agreements --silent`;
         if (needsApproval('command', cmd)) {
           const ok = await row.requestApproval({ kind: 'command', question: `Install ${target} with winget?`, command: cmd, dangerous: false });
           if (!ok) return { result: 'The user declined to install this app. Do not retry; ask how they would like to proceed.', rejected: true };
@@ -2123,11 +2128,17 @@ async function executeTool(c, call, row) {
         const r = await api.runCommand(cmd, 20 * 60_000);
         termWrite(`[exit code ${r.code}]\n`, 'term-exit');
         row.setBody(r.output || '(no output)');
-        if (/not recognized|is not recognized as|'winget' is not|cannot find the path/i.test(r.output)) {
+        if (mac && /brew: command not found|not found: brew/i.test(r.output)) {
+          return { result: 'Homebrew is not installed. Ask the user to install it from https://brew.sh (it needs their password), then retry. Do not try to install Homebrew yourself.', failed: true };
+        }
+        if (!mac && /not recognized|is not recognized as|'winget' is not|cannot find the path/i.test(r.output)) {
           return { result: "winget isn't available on this PC. Install \"App Installer\" from the Microsoft Store (or update Windows) to enable app installs. For Git specifically, use the install_git tool instead, which doesn't need winget.", failed: true };
         }
-        if (/No package found|Multiple packages found/i.test(r.output)) {
-          return { result: `winget couldn't uniquely match "${target}".\n${truncate(r.output)}\nRetry install_app with an exact winget id (e.g. "Apple.iTunes").`, failed: true };
+        if (mac && /No available formula|No casks found|Did you mean/i.test(r.output)) {
+          return { result: `Homebrew couldn't match "${target}".\n${truncate(r.output)}\nRetry with the exact formula or cask name (set cask: true for GUI apps), or search with run_command: brew search ${q(target)}.`, failed: true };
+        }
+        if (!mac && /No package found|Multiple packages found/i.test(r.output)) {
+          return { result: `winget couldn't uniquely match "${target}".\n${truncate(r.output)}\nRetry install_app with an exact winget id (e.g. "Kitware.CMake").`, failed: true };
         }
         if (r.code === 0) {
           return { result: `Exit code: 0\n${truncate(r.output || '(no output)')}\nThe install succeeded. PATH is refreshed automatically, so the installed command works in your next run_command. If it still is not found, use its full install path instead of reinstalling.`, meta: 'installed' };

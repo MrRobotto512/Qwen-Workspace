@@ -1,4 +1,4 @@
-name: Build Windows app
+name: Build app
 
 on:
   push:
@@ -90,5 +90,54 @@ jobs:
         shell: bash
         # latest.yml and the .blockmap files are what the installed app's updater reads.
         run: gh release upload "$RELEASE_TAG" dist/*.exe dist/*.zip dist/latest.yml dist/*.blockmap --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  build-mac:
+    needs: smoke
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # The e2e suites run natively here too, so macOS boot/agent behavior is gated like Windows.
+      - run: npm test
+      - run: npm run test:e2e
+      - run: npm run test:e2e:agent
+
+      - name: Check the release tag against package.json
+        if: env.RELEASE_TAG != ''
+        shell: bash
+        run: |
+          VERSION=$(echo "$RELEASE_TAG" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
+          PKG=$(node -p "require('./package.json').version")
+          if [ -n "$VERSION" ] && [ "$VERSION" != "$PKG" ]; then
+            echo "::error::Release tag $RELEASE_TAG says $VERSION but package.json says $PKG — the tag points at the wrong commit."
+            exit 1
+          fi
+
+      - name: Build dmg and zip (Apple Silicon + Intel)
+        run: npx electron-builder --mac dmg zip --arm64 --x64 --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qwen-workspace-mac
+          path: |
+            dist/*.dmg
+            dist/*-mac*.zip
+            dist/latest-mac.yml
+
+      - name: Attach builds to the release
+        if: env.RELEASE_TAG != ''
+        shell: bash
+        run: gh release upload "$RELEASE_TAG" dist/*.dmg dist/*-mac*.zip dist/latest-mac.yml --clobber
         env:
           GH_TOKEN: ${{ github.token }}

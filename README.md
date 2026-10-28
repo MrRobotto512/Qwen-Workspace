@@ -1,10 +1,15 @@
 # Qwen Workspace
 
-A desktop coding workspace for Windows, powered by **Qwen**. It has a file explorer, a VS Code–style editor (Monaco), a terminal, and a Qwen chat panel that can read, search and edit your project. Every edit and command needs your approval.
+A desktop coding workspace for Windows and macOS, powered by **Qwen**. It has a file explorer, a VS Code–style editor (Monaco), a terminal, and a Qwen chat panel that can read, search and edit your project. Every edit and command needs your approval.
 
 ## Download
 
-Grab the latest build from the [Releases page](https://github.com/MrRobotto512/Qwen-Workspace/releases): the installer, a portable `.exe`, or a zip. The builds aren't code-signed, so Windows SmartScreen may warn you the first time. Click **More info → Run anyway**.
+Grab the latest build from the [Releases page](https://github.com/MrRobotto512/Qwen-Workspace/releases):
+
+- **Windows:** the installer, a portable `.exe`, or a zip. The builds aren't code-signed, so SmartScreen may warn you the first time — click **More info → Run anyway**.
+- **macOS:** the `.dmg` (Apple Silicon `arm64` or Intel `x64`). The app isn't notarized, so the first launch needs a right-click → **Open** → **Open**; if macOS still refuses, run `xattr -cr "/Applications/Qwen Workspace.app"` once. Updates on macOS open the download page.
+
+On macOS the app installs software with [Homebrew](https://brew.sh) when you ask it to, and Git comes from `xcode-select --install`.
 
 ## Features
 
@@ -178,7 +183,7 @@ Installed copies pick it up within six hours, or right away through **Settings �
   - `Ctrl+L` focus the chat
   - `F12` open DevTools
 - Qwen can only touch files inside the open project folder.
-- Settings are stored in `%APPDATA%\qwen-workspace\settings.json`, and conversations in `%APPDATA%\qwen-workspace\conversations\`.
+- Settings are stored in `%APPDATA%\qwen-workspace\` on Windows and `~/Library/Application Support/qwen-workspace/` on macOS (settings.json, conversations, skills).
 
 ## How Qwen's context is assembled
 

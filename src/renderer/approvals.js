@@ -5,7 +5,7 @@
 
 // Commands that always ask, in every approval mode. Includes anything that fetches from the
 // network or launches another program, since those can run arbitrary code.
-const DANGEROUS_COMMAND = /\b(rm\s+-[a-z]*[rf]|rmdir|rd\s+\/s|del\s|erase\s|format\s|mkfs|shutdown|reboot|reg\s+delete|remove-item|git\s+(push|reset\s+--hard|clean|checkout\s+--|branch\s+-D)|npm\s+publish|diskpart|bcdedit|takeown|icacls|curl|wget|invoke-webrequest|iwr|invoke-expression|iex|powershell|pwsh|cmd\s+\/c|start\s|msiexec|certutil|bitsadmin|scp|ssh)\b/i;
+const DANGEROUS_COMMAND = /\b(rm\s+-[a-z]*[rf]|rmdir|rd\s+\/s|del\s|erase\s|format\s|mkfs|shutdown|reboot|reg\s+delete|remove-item|git\s+(push|reset\s+--hard|clean|checkout\s+--|branch\s+-D)|npm\s+publish|diskpart|bcdedit|takeown|icacls|curl|wget|invoke-webrequest|iwr|invoke-expression|iex|powershell|pwsh|cmd\s+\/c|start\s|msiexec|certutil|bitsadmin|scp|ssh|sudo|osascript)\b/i;
 
 // Shell metacharacters that chain commands, redirect output, spawn subshells or expand
 // variables. A command using any of these is split into segments and every segment must be
