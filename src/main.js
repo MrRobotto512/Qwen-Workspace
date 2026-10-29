@@ -1430,7 +1430,7 @@ ipcMain.handle('templates:list', async () => {
     } catch {
       /* no manifest */
     }
-    out.push({ id: d.name, name: meta.name || d.name, description: meta.description || '', icon: meta.icon || 'sparkles', adds: meta.adds || '', then: meta.then || '' });
+    out.push({ id: d.name, name: meta.name || d.name, kind: meta.kind || 'workflow', description: meta.description || '', icon: meta.icon || 'sparkles', adds: meta.adds || '', then: meta.then || '' });
   }
   return out;
 });

@@ -13,6 +13,7 @@ On macOS the app installs software with [Homebrew](https://brew.sh) when you ask
 
 ## Features
 
+- **App recipes:** **Start from scratch** now opens a recipe picker. Three working skeletons install into a fresh folder — **Python GUI app** (PySide6 window, pytest, PyInstaller one-file .exe), **Electron app** (electron-builder NSIS + portable, with the tag-vs-version release check), and **CLI wrapper GUI** (a PySide6 window around a command-line tool: pick inputs, stream output into a log pane, cancel, remember the tool's path — made for engines like LibOrbisPkg or AudioSR). Each comes with a QWEN.md (build/run/test/release commands), a skill, a .gitignore and a GitHub Actions release workflow, its tests passing out of the box. Picking one installs it, runs `git init`, makes the first commit and opens a conversation that knows the recipe. "Blank" keeps the old describe-it prompt.
 - **Build from scratch:**
   - Ask for something new ("help me make a Switch homebrew app"), or use **Start from scratch** on the home screen.
   - Qwen asks what only you can answer with `ask_user`. Click a suggested answer or type your own, in the question card or the message box.

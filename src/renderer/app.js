@@ -794,7 +794,7 @@ function renderCenter() {
 // Home screen (shown when no file is open)
 // ===================================================================
 const QUICK_ACTIONS = [
-  { icon: 'sparkles', title: 'Start from scratch', desc: 'Describe what to build; Qwen asks questions and researches the toolchain.', prompt: 'Help me build this from scratch: ', fill: true },
+  { icon: 'sparkles', title: 'Start from scratch', desc: 'Pick an app recipe (Python GUI, Electron, CLI wrapper), or just describe what to build.', recipes: true },
   { icon: 'book', title: 'Explain this project', desc: 'What it does, how it is organised and how to build it.', prompt: 'Give me an overview of this project: what it does, how it is structured, and how to build and run it.' },
   { icon: 'bug', title: 'Find bugs', desc: 'Review the code for likely bugs and risky spots.', prompt: 'Look through the main source files for likely bugs or risky code, and list the most important ones with file and line.' },
   { icon: 'wand', title: 'Add a feature', desc: 'Describe what you want and let Qwen build it.', prompt: 'Add this feature: ', fill: true },
@@ -829,7 +829,7 @@ function renderHome() {
         el('div', {}, el('h1', { text: state.ws.name }), el('div', { class: 'path', text: state.ws.root }))),
       el('div', { class: 'home-section' }, el('h3', { text: 'Ask Qwen' }),
         el('div', { class: 'actions-grid' },
-          ...QUICK_ACTIONS.map((a) => el('button', { class: 'action-card', onclick: () => setPrompt(a.prompt, !a.fill) },
+          ...QUICK_ACTIONS.map((a) => el('button', { class: 'action-card', onclick: (e) => (a.recipes ? showRecipeMenu(e.currentTarget) : setPrompt(a.prompt, !a.fill)) },
             iconEl(a.icon), el('span', { class: 't', text: a.title }), el('span', { class: 'd', text: a.desc })))))
     );
     const workflows = el('div', { class: 'home-section' });
@@ -851,6 +851,61 @@ function renderHome() {
   home.replaceChildren(inner);
 }
 
+// The recipe picker in front of "Start from scratch": pick an app recipe that installs a
+// working skeleton into a new folder, or Blank, which keeps the describe-it prompt.
+async function showRecipeMenu(anchor) {
+  const r = anchor.getBoundingClientRect();
+  let templates = [];
+  try {
+    templates = await api.templatesList();
+  } catch {
+    /* no templates dir */
+  }
+  const recipes = templates.filter((t) => t.kind === 'recipe');
+  showMenu(r.left, r.top, [
+    { label: 'Blank — just describe it', desc: 'Qwen asks questions and researches the toolchain.', icon: 'sparkles', onClick: () => setPrompt('Help me build this from scratch: ', false) },
+    ...recipes.map((t) => ({ label: t.name, desc: t.description, icon: t.icon, onClick: () => newProjectFlow(t) }))
+  ]);
+}
+
+// Choose a folder for the recipe (ideally empty), then install into it.
+async function newProjectFlow(t) {
+  const dir = await api.pickWorkspace();
+  if (!dir) return;
+  await openWorkspace(dir);
+  if (!state.ws) return;
+  const entries = await api.list('.').catch(() => []);
+  if (entries.length && !confirm('This folder is not empty. Install the recipe into it anyway? Existing files are never overwritten.')) return;
+  await applyRecipe(t);
+}
+
+// Install a recipe into the current workspace: files, git init, first commit, fresh chat.
+async function applyRecipe(t) {
+  let res;
+  try {
+    res = await api.templatesInstall(t.id);
+  } catch (e) {
+    return alert(cleanError(e));
+  }
+  state.fileIndex = null;
+  if (await ensureGit()) {
+    if (!(await isGitRepo())) await api.gitInit();
+    await git('git add -A');
+    await api.gitCommit(`chore: start from the ${t.name} recipe`);
+  }
+  newChat(); // the new conversation loads the recipe's QWEN.md and skill with its first message
+  for (const c of state.convs.values()) c.memoryLoaded = false;
+  renderTree();
+  renderHome();
+  refreshGitSync(false);
+  showView('explorer');
+  toast({
+    icon: 'check',
+    timeout: 20000,
+    text: [el('b', { text: `${t.name} is ready.` }), ` ${res.written.length} files installed${res.skipped.length ? `, ${res.skipped.length} already existed` : ''}. ${t.then || ''}`]
+  });
+}
+
 // Workflows are bundled starter trees (e.g. the software factory) installed into the project.
 async function renderWorkflows(section) {
   let templates = [];
@@ -859,6 +914,7 @@ async function renderWorkflows(section) {
   } catch {
     return;
   }
+  templates = templates.filter((t) => t.kind !== 'recipe'); // recipes live in Start from scratch
   if (!templates.length || !state.ws) return;
   const installed = new Set();
   for (const t of templates) if (await api.exists(`.qwen/skills/${t.id === 'software-factory' ? 'factory' : t.id}`).catch(() => false)) installed.add(t.id);
