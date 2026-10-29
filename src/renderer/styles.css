@@ -368,11 +368,23 @@ button.sb:hover { background: var(--bg-3); color: var(--text); }
 .modal.top { place-items: start center; padding-top: 70px; background: rgba(0, 0, 0, .35); }
 .modal-box { background: var(--bg-2); border: 1px solid var(--border-2); border-radius: 12px; padding: 18px 20px; width: 560px; max-width: 94vw; max-height: 90vh; overflow: auto; display: flex; flex-direction: column; gap: 10px; box-shadow: 0 20px 60px rgba(0, 0, 0, .5); }
 .modal-box.small { width: 400px; }
+
+/* Settings as a full-window page: sidebar of section tabs, one section at a time. */
+.modal-box.settings-box { width: min(1060px, calc(100vw - 40px)); height: calc(100vh - 40px); max-height: none; overflow: hidden; gap: 12px; }
+.set-body { display: flex; flex: 1; min-height: 0; gap: 18px; }
+.set-nav { display: flex; flex-direction: column; gap: 2px; width: 190px; flex-shrink: 0; border-right: 1px solid var(--border); padding-right: 14px; overflow-y: auto; overflow-x: hidden; }
+.set-nav-btn { text-align: left; background: none; border: none; border-radius: 6px; padding: 8px 11px; color: var(--text-2); font-size: 13px; font-family: var(--sans); cursor: pointer; white-space: normal; line-height: 1.35; }
+.set-nav-btn:hover { background: var(--bg-3); color: var(--text); }
+.set-nav-btn.active { background: var(--accent-bg); color: var(--accent-2); font-weight: 600; }
+.set-content { flex: 1; min-width: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 8px; }
+.set-content .section-title { margin-top: 0; font-size: 15px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--text); padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.sec-off { display: none !important; }
 .modal-head { display: flex; justify-content: space-between; align-items: center; }
 .modal-box h2 { margin: 0; font-size: 16px; font-weight: 600; }
 .section-title { margin-top: 8px; font-size: 11px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase; color: var(--accent-2); }
 .modal-box label { display: flex; flex-direction: column; gap: 4px; color: var(--text-2); font-size: 12px; }
 .modal-box label.check { flex-direction: row; align-items: center; gap: 9px; color: var(--text); font-size: 13px; }
+.modal-box label.check[hidden] { display: none; }
 .modal-box label.warn { color: var(--yellow); }
 .modal-box .row { display: flex; gap: 8px; }
 .modal-box .row input { flex: 1; }

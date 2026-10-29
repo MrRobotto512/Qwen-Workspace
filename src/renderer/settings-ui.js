@@ -152,6 +152,45 @@ function renderSearchFields() {
   $('#s-searxng-row').classList.toggle('hidden', p !== 'searxng');
 }
 
+// The settings dialog used to be one long scrolling column, which got cramped as
+// sections piled up. Show it full-window instead, with a sidebar of section tabs
+// and one section visible at a time. The markup in index.html stays flat; on first
+// open the children are tagged with the section they follow and regrouped into a
+// nav + content pair, so every input keeps its id and the save wiring is untouched.
+let settingsPageKey = null;
+
+function buildSettingsPages() {
+  const box = document.querySelector('#settings-modal .modal-box');
+  if (box.classList.contains('settings-box')) return;
+  box.classList.add('settings-box');
+  const head = box.querySelector('.modal-head');
+  const actions = box.querySelector('.modal-actions');
+  const nav = el('div', { class: 'set-nav' });
+  const content = el('div', { class: 'set-content' });
+  const body = el('div', { class: 'set-body' }, nav, content);
+  const kids = Array.from(box.children).filter((n) => n !== head && n !== actions);
+  let key = null;
+  for (const n of kids) {
+    if (n.classList.contains('section-title')) {
+      const k = n.textContent.trim();
+      key = k;
+      nav.appendChild(el('button', { class: 'set-nav-btn', text: k, dataset: { sec: k }, onclick: () => selectSettingsPage(k) }));
+    }
+    if (key) n.dataset.sec = key;
+    content.appendChild(n);
+  }
+  box.insertBefore(body, actions);
+  if (!settingsPageKey) settingsPageKey = nav.firstChild?.dataset.sec || null;
+}
+
+function selectSettingsPage(key) {
+  settingsPageKey = key;
+  const box = document.querySelector('#settings-modal .modal-box');
+  for (const n of box.querySelectorAll('.set-content > [data-sec]')) n.classList.toggle('sec-off', n.dataset.sec !== key);
+  for (const b of box.querySelectorAll('.set-nav-btn')) b.classList.toggle('active', b.dataset.sec === key);
+  box.querySelector('.set-content').scrollTop = 0;
+}
+
 function openSettings() {
   const s = state.settings;
   for (const k of ['provider', 'baseUrl', 'apiKey', 'model', 'temperature', 'fontSize', 'contextLength', 'maxResponseTokens', 'keepAlive', 'searchProvider', 'searchApiKey', 'searxngUrl']) $(`#s-${k}`).value = s[k] ?? '';
@@ -178,6 +217,8 @@ function openSettings() {
   $('#s-heavy-model').value = h.model || '';
   $('#s-heavy-fields').classList.toggle('hidden', !h.enabled);
   $('#s-test-result').textContent = '';
+  buildSettingsPages();
+  selectSettingsPage(settingsPageKey);
   $('#settings-modal').classList.remove('hidden');
 }
 
