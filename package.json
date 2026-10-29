@@ -1,6 +1,6 @@
 {
   "name": "qwen-workspace",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "Desktop coding workspace powered by Qwen (Ollama, LM Studio, or any OpenAI-compatible API)",
   "main": "src/main.js",
   "scripts": {
@@ -14,6 +14,7 @@
     "test:e2e:escalation": "node test/e2e-escalation.mjs",
     "test:e2e:github": "node test/e2e-github.mjs",
     "test:e2e:recipes": "node test/e2e-recipes.mjs",
+    "test:e2e:lessons": "node test/e2e-lessons.mjs",
     "dist:mac": "electron-builder --mac dmg zip"
   },
   "author": "",

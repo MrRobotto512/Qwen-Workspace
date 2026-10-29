@@ -101,6 +101,7 @@ try {
     document.querySelector('#s-heavy-model').value = 'planner-mock';
     document.querySelector('#s-esc-failstreak').checked = true;
     document.querySelector('#s-esc-failstreak-n').value = '2';
+    if (document.querySelector('#s-lessonsEnabled')) document.querySelector('#s-lessonsEnabled').checked = false; // keep the request count deterministic
     return document.querySelector('#s-save').onclick();
   }, [localBase, plannerBase]);
 

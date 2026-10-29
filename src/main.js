@@ -40,6 +40,7 @@ const DEFAULT_SETTINGS = {
   ollamaNodes: [], // extra Ollama servers [{ id, name, baseUrl, enabled, keepAlive }]; "This PC" (baseUrl above) is implicit
   escalation: { failStreak: false, failStreakN: 2, bigPlan: false, bigPlanN: 5 }, // planner-handoff triggers, all off by default
   branchPerTask: false, // agent tasks that edit files start a qwen/<task> branch
+  lessonsEnabled: true, // after a task that ran commands, propose lessons for QWEN.md (always behind the diff card)
   prices: {}, // $/1M tokens per model, user-entered: { 'gemini-2.5-pro': { in: 1.25, out: 10 } }
   monthlyCapUSD: 0, // when > 0 and the month's priced spend reaches it, escalations ask first
   spend: { month: '', models: {} }, // running cloud token counts, written by the renderer
