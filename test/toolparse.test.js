@@ -137,3 +137,21 @@ test('isDeadModelError: retired/unknown models are told apart from busy ones', (
   assert.equal(isDeadModelError('HTTP 503: UNAVAILABLE, high demand'), false);
   assert.equal(isDeadModelError('HTTP 401: invalid API key'), false);
 });
+
+const TP = require('../src/renderer/toolparse.js');
+
+test('modelAlternates ranks claude siblings opus > sonnet > haiku, newest first', () => {
+  const live = ['claude-haiku-4-5', 'claude-sonnet-5-5', 'claude-opus-5', 'claude-opus-5-5', 'claude-fable-5-1'];
+  const alts = TP.modelAlternates('claude-opus-5-5', live);
+  assert.deepStrictEqual(alts, ['claude-opus-5', 'claude-sonnet-5-5', 'claude-haiku-4-5']);
+});
+
+test('modelAlternates for claude falls back to the built-in family and never picks fable/mythos', () => {
+  const alts = TP.modelAlternates('claude-opus-5-5', []);
+  assert.deepStrictEqual(alts, ['claude-sonnet-5-5', 'claude-haiku-5-5']);
+  assert.ok(!TP.modelAlternates('claude-sonnet-5-5', ['claude-mythos-5-1', 'claude-opus-5-5']).includes('claude-mythos-5-1'));
+});
+
+test('isBusyModelError treats 529 overloaded as busy', () => {
+  assert.ok(TP.isBusyModelError('HTTP 529 from https://api.anthropic.com/v1: {"type":"error","error":{"type":"overloaded_error"}}'));
+});

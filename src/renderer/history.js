@@ -21,6 +21,7 @@ function createConv() {
     notes: [], // things to tell Qwen with the next message (e.g. reverts)
     usage: null,
     usageAt: 0, // history length when `usage` was measured
+    spend: {}, // cloud tokens this conversation used: model -> { in, out }
     todos: [],
     compactions: 0,
     activeTools: [], // deferred tools loaded with tool_search
@@ -58,6 +59,7 @@ function serializeConv(c) {
     notes: c.notes,
     usage: c.usage,
     usageAt: c.usageAt,
+    spend: c.spend || {},
     todos: c.todos,
     compactions: c.compactions,
     activeTools: c.activeTools,

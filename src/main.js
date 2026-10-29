@@ -38,6 +38,10 @@ const DEFAULT_SETTINGS = {
   maxResponseTokens: 4096, // cap on reply length for cloud providers (max_tokens); 0 = no cap
   keepAlive: '-1', // how long Ollama keeps the model loaded: -1 = forever, '5m', '0' = unload now
   ollamaNodes: [], // extra Ollama servers [{ id, name, baseUrl, enabled, keepAlive }]; "This PC" (baseUrl above) is implicit
+  escalation: { failStreak: false, failStreakN: 2, bigPlan: false, bigPlanN: 5 }, // planner-handoff triggers, all off by default
+  prices: {}, // $/1M tokens per model, user-entered: { 'gemini-2.5-pro': { in: 1.25, out: 10 } }
+  monthlyCapUSD: 0, // when > 0 and the month's priced spend reaches it, escalations ask first
+  spend: { month: '', models: {} }, // running cloud token counts, written by the renderer
   heavy: { enabled: false, provider: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKey: '', model: 'gemini-2.5-flash' },
   automations: [], // recurring agent tasks: { id, name, prompt, workspace, schedule, enabled, lastRun, lastStatus }
   webResearch: true, // lets the agent use web_search and fetch_url
@@ -360,6 +364,12 @@ function killTree(child) {
 // ---------- IPC: model ----------
 function apiHeaders(s) {
   const h = { 'Content-Type': 'application/json' };
+  if (s.provider === 'anthropic') {
+    // Anthropic's native API authenticates with x-api-key plus a version header.
+    if (s.apiKey) h['x-api-key'] = s.apiKey;
+    h['anthropic-version'] = '2023-06-01';
+    return h;
+  }
   if (s.apiKey) h.Authorization = `Bearer ${s.apiKey}`;
   return h;
 }
@@ -394,6 +404,16 @@ ipcMain.handle('chat:stream', async (event, id, payload) => {
     if (!event.sender.isDestroyed()) event.sender.send('chat:event', { id, type, data });
   };
 
+  if (s.provider === 'anthropic') {
+    try {
+      return await streamAnthropic(s, payload, controller.signal, send);
+    } catch (err) {
+      return chatError(err, s);
+    } finally {
+      chatControllers.delete(id);
+    }
+  }
+
   if (await isOllama(s)) {
     try {
       return await streamOllama(s, payload, controller.signal, send);
@@ -415,6 +435,10 @@ ipcMain.handle('chat:stream', async (event, id, payload) => {
   const cap = Number(s.maxResponseTokens);
   if (cap > 0) body.max_tokens = cap;
   if (payload.tools?.length) body.tools = payload.tools;
+  // Ask for token usage in the stream where the provider reliably supports it (OpenAI spec);
+  // other providers (e.g. Gemini's compatibility layer) send usage on their own and we take
+  // it whenever a chunk carries it.
+  if (['openrouter', 'dashscope'].includes(s.provider)) body.stream_options = { include_usage: true };
 
   try {
     const res = await fetch(apiUrl(s, '/chat/completions'), {
@@ -432,10 +456,14 @@ ipcMain.handle('chat:stream', async (event, id, payload) => {
     let reasoning = '';
     const toolCalls = [];
     let finishReason = null;
+    let usage = null;
     const decoder = new TextDecoder();
     let buffer = '';
 
     const handleChunk = (json) => {
+      if (json.usage && (json.usage.prompt_tokens || json.usage.completion_tokens)) {
+        usage = { promptTokens: json.usage.prompt_tokens || 0, completionTokens: json.usage.completion_tokens || 0 };
+      }
       const choice = json.choices?.[0];
       if (!choice) return;
       if (choice.finish_reason) finishReason = choice.finish_reason;
@@ -486,7 +514,7 @@ ipcMain.handle('chat:stream', async (event, id, payload) => {
     }
 
     const calls = toolCalls.filter(Boolean).map((t, i) => ({ ...t, id: t.id || `call_${Date.now()}_${i}` }));
-    return { ok: true, content, reasoning, toolCalls: calls, finishReason };
+    return { ok: true, content, reasoning, toolCalls: calls, finishReason, usage: usage || undefined };
   } catch (err) {
     return chatError(err, s);
   } finally {
@@ -629,6 +657,126 @@ async function streamOllama(s, payload, signal, send) {
   if (buffer.trim()) handle(JSON.parse(buffer));
 
   return { ok: true, content, reasoning, toolCalls, finishReason, usage: { promptTokens, contextLength } };
+}
+
+// ---------- Anthropic native API ----------
+// Anthropic's Messages API speaks its own shape (tool_use/tool_result content blocks, SSE
+// event types), so this adapter translates both ways and returns the same result shape as
+// streamOllama / the OpenAI path: { content, reasoning, toolCalls, finishReason, usage }.
+// Current Claude models reject non-default temperature and manage thinking themselves, so
+// neither is sent.
+
+function toAnthropicRequest(s, payload) {
+  let system = '';
+  const messages = [];
+  for (const m of payload.messages || []) {
+    if (m.role === 'system') {
+      // The system prompt leads the conversation; a later system message (reminders) is
+      // folded into a user turn so the request stays valid on every Claude model.
+      if (!messages.length) system += (system ? '\n\n' : '') + String(m.content ?? '');
+      else messages.push({ role: 'user', content: String(m.content ?? '') });
+      continue;
+    }
+    if (m.role === 'tool') {
+      messages.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: m.tool_call_id, content: String(m.content ?? '') }] });
+      continue;
+    }
+    if (m.role === 'assistant') {
+      const content = [];
+      if (m.content) content.push({ type: 'text', text: String(m.content) });
+      for (const tc of m.tool_calls || []) {
+        let input = {};
+        try {
+          input = JSON.parse(tc.function.arguments || '{}');
+        } catch {
+          /* send an empty input rather than fail the whole request */
+        }
+        content.push({ type: 'tool_use', id: tc.id, name: tc.function.name, input });
+      }
+      if (content.length) messages.push({ role: 'assistant', content });
+      continue;
+    }
+    messages.push({ role: 'user', content: String(m.content ?? '') });
+  }
+  const cap = Number(s.maxResponseTokens);
+  const body = {
+    model: s.model,
+    // max_tokens is required by the Messages API; 16384 leaves room for long code answers.
+    max_tokens: cap > 0 ? cap : 16384,
+    stream: true,
+    messages
+  };
+  if (system) body.system = system;
+  if (payload.tools?.length) {
+    body.tools = payload.tools.map((t) => ({ name: t.function.name, description: t.function.description || '', input_schema: t.function.parameters || { type: 'object' } }));
+  }
+  return body;
+}
+
+const ANTHROPIC_STOP = { tool_use: 'tool_calls', end_turn: 'stop', max_tokens: 'length' };
+
+async function streamAnthropic(s, payload, signal, send) {
+  const res = await fetch(apiUrl(s, '/messages'), {
+    method: 'POST',
+    headers: apiHeaders(s),
+    body: JSON.stringify(toAnthropicRequest(s, payload)),
+    signal
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`HTTP ${res.status} from ${s.baseUrl}: ${text.slice(0, 600)}`);
+  }
+
+  let content = '';
+  let reasoning = '';
+  const toolCalls = [];
+  const blocks = new Map(); // SSE content-block index -> tool call being assembled
+  let finishReason = null;
+  let promptTokens = 0;
+  let completionTokens = 0;
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  const handle = (j) => {
+    if (j.type === 'error') throw new Error(j.error?.message || 'Anthropic stream error');
+    if (j.type === 'message_start') {
+      const u = j.message?.usage || {};
+      promptTokens = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+    } else if (j.type === 'content_block_start' && j.content_block?.type === 'tool_use') {
+      const slot = { id: j.content_block.id, type: 'function', function: { name: j.content_block.name, arguments: '' } };
+      blocks.set(j.index, slot);
+      toolCalls.push(slot);
+      send('tool_progress', toolCalls.map((t) => t.function.name));
+    } else if (j.type === 'content_block_delta') {
+      const d = j.delta || {};
+      if (d.type === 'text_delta' && d.text) {
+        content += d.text;
+        send('delta', d.text);
+      } else if (d.type === 'thinking_delta' && d.thinking) {
+        reasoning += d.thinking;
+        send('reasoning', d.thinking);
+      } else if (d.type === 'input_json_delta' && blocks.has(j.index)) {
+        blocks.get(j.index).function.arguments += d.partial_json || '';
+      }
+    } else if (j.type === 'message_delta') {
+      if (j.delta?.stop_reason) finishReason = ANTHROPIC_STOP[j.delta.stop_reason] || 'stop';
+      if (j.usage?.output_tokens) completionTokens = j.usage.output_tokens;
+    }
+  };
+
+  for await (const chunk of res.body) {
+    buffer += decoder.decode(chunk, { stream: true });
+    let nl;
+    while ((nl = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, nl).trim();
+      buffer = buffer.slice(nl + 1);
+      if (!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
+      if (data) handle(JSON.parse(data));
+    }
+  }
+
+  return { ok: true, content, reasoning, toolCalls, finishReason, usage: { promptTokens, completionTokens } };
 }
 
 // ---------- app info & updates ----------

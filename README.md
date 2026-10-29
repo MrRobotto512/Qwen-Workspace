@@ -77,6 +77,9 @@ On macOS the app installs software with [Homebrew](https://brew.sh) when you ask
 - **Automations:** recurring agent tasks — "every morning at 9, run the tests and fix simple failures", "every 4 hours, sweep TODOs". Set them up in **Settings → Automations** (every N hours, or daily at a time with catch-up on launch). Each runs in the project it was created for while the app is open, shows up in History with a ⏱ title, and can be paused, run now, or deleted.
 - **Ollama nodes (run on more than one PC):** add a second Ollama server by URL in **Settings → Ollama nodes** — e.g. a shop PC on your network — and requests go to the first node that is online and has your model. If a node stops answering mid-task, the app retries once, moves the task to the next node, and says so in the transcript. Each node gets its own keep-alive (a rarely-used node can take `5m` so it frees its VRAM), the status bar shows how many nodes are up, and the Models window lists what each remote node has installed. With only "This PC" enabled, nothing changes. The app only connects to URLs you type in; getting the shop PC reachable (LAN, VPN) is up to you, and Ollama on it must listen beyond localhost (`OLLAMA_HOST=0.0.0.0`).
 - **Per-conversation model switch:** a model chip in the message box flips just that conversation between your default local Qwen, the planner model (e.g. Gemini), or any installed Ollama model — no trip to Settings. Messages driven by a non-default model carry a badge.
+- **Smarter escalation (optional):** two triggers in **Settings → Escalation & costs**, both off by default — when the same command fails N times in a row (default 2), the next step runs on the planner automatically; when a plan touches more than N files (default 5), a card asks "Run this on the planner?" instead of switching silently. Every assistant reply also has a hover **Escalate** button (✦) that rewinds to that point and re-runs it on the planner.
+- **Cloud cost meter:** cloud responses report their token usage, and you give the app your own price table (per million tokens — nothing is hard-coded). The conversation's cost shows next to its model chip, the month's total sits in the status bar, and totals survive restarts. An optional monthly budget makes escalations ask first once it's reached.
+- **Anthropic Claude as a provider:** pick **Anthropic Claude** as the planner (or main provider) with an API key from [console.anthropic.com](https://console.anthropic.com). The app talks to Claude's native Messages API with full streaming and tool support, and the busy/retired failover knows Claude's model family (opus → sonnet → haiku, newest first).
 - **Planner handoff (two models):**
   - Let a local Qwen do the grunt work and hand the hard parts to a stronger "planner" model (e.g. Gemini 2.5 Pro, or another Qwen in the cloud). Set it up in **Settings → Planner (heavy model) handoff**.
   - When Qwen stalls — repeating steps without progress — the next step runs on the planner automatically to break the impasse, then control returns to Qwen.
@@ -224,6 +227,8 @@ src/
     icons.js         Line icons and file-type badges
     models.js        Qwen model catalog and hardware fit estimates
     nodes.js         Ollama nodes: settings migration, health-based routing, failover picks
+    escalation.js    Escalation triggers: command fail streaks, big-plan detection
+    costs.js         Cloud cost meter: monthly spend record, price table math, budget cap
     approvals.js     Approval rules: dangerous-command detection, command chain splitting
     toolparse.js     Text tool-call parsing, stall/tutorial detection, model failover helpers
     schedule.js      Automation schedule parsing (every N minutes / daily at HH:MM)

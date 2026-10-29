@@ -135,7 +135,7 @@ function stripFakeReminders(text) {
 // Does a model error mean "busy right now, try again / try a sibling"? (As opposed to a wrong
 // key, a missing model, or a network that is down.)
 function isBusyModelError(text) {
-  return /\b(503|429|UNAVAILABLE|RESOURCE_EXHAUSTED|overloaded|high demand|rate.?limit|try again later|server had an error)\b/i.test(String(text || ''));
+  return /\b(503|429|529|UNAVAILABLE|RESOURCE_EXHAUSTED|overloaded|high demand|rate.?limit|try again later|server had an error)\b/i.test(String(text || ''));
 }
 
 // Does a model error mean the model itself is gone for this account (retired, renamed, never
@@ -148,8 +148,28 @@ function isDeadModelError(text) {
 // live /models list when we could fetch it; the static family is only the offline fallback.
 // Ranking: pro before flash before flash-lite, newest version first.
 const GEMINI_FAMILY = ['gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+const CLAUDE_FAMILY = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'];
+
+// Anthropic siblings: opus > sonnet > haiku, newest version of each first. Version is read
+// from the trailing "-5-5" style suffix; dated legacy ids (claude-3-5-sonnet-20241022) parse
+// as 0 and sort last, which is what we want.
+function claudeAlternates(failed, available) {
+  const live = [...new Set(available || [])]
+    .map(String)
+    .filter((m) => /^claude-/i.test(m))
+    .filter((m) => !/(fable|mythos)/i.test(m)); // higher-priced research tier: never auto-switch into it
+  const pool = live.length ? live : CLAUDE_FAMILY;
+  const cls = (m) => (/opus/i.test(m) ? 0 : /sonnet/i.test(m) ? 1 : /haiku/i.test(m) ? 2 : 3);
+  const ver = (m) => {
+    const x = /-(\d+)(?:-(\d+))?$/.exec(m);
+    return x ? Number(x[1]) + Number(x[2] || 0) / 10 : 0;
+  };
+  return pool.filter((m) => m !== failed).sort((a, b) => cls(a) - cls(b) || ver(b) - ver(a));
+}
+
 function modelAlternates(model, available) {
   const failed = String(model || '').replace(/^models\//, '');
+  if (/^claude/i.test(failed)) return claudeAlternates(failed, available);
   if (!/^gemini/i.test(failed)) return [];
   const live = [...new Set((available || []).map((m) => String(m).replace(/^models\//, '')))]
     .filter((m) => /^gemini-\d/i.test(m))
