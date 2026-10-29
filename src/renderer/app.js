@@ -213,8 +213,28 @@ function showFolderMenu(anchor) {
     { label: 'Clone from GitHub…', icon: 'gitCommit', onClick: cloneFlow }
   ];
   if (recent.length) items.push('-');
-  for (const p of recent) items.push({ label: baseName(p), detail: p, icon: 'history', onClick: () => openWorkspace(p) });
+  for (const p of recent) {
+    items.push({
+      label: baseName(p),
+      detail: p,
+      icon: 'history',
+      onClick: () => openWorkspace(p),
+      removeTitle: 'Remove from recents (the folder itself is untouched)',
+      onRemove: () => {
+        removeRecentWorkspace(p);
+        showFolderMenu(anchor); // reopen so several can be cleaned in one go
+      }
+    });
+  }
   showMenu(r.left, r.bottom + 4, items);
+}
+
+// Forget a folder in the recents list. Only the list entry goes away — the folder on disk
+// and its saved conversations are untouched, and opening it again brings it back.
+function removeRecentWorkspace(p) {
+  state.settings.recentWorkspaces = (state.settings.recentWorkspaces || []).filter((x) => x !== p);
+  api.setSettings({ recentWorkspaces: state.settings.recentWorkspaces });
+  if (!state.ws) renderHome();
 }
 
 // ===================================================================
@@ -819,7 +839,8 @@ function renderHome() {
       inner.append(
         el('div', { class: 'home-section' }, el('h3', { text: 'Recent' }),
           ...recent.map((p) => el('button', { class: 'recent-item', onclick: () => openWorkspace(p), title: p },
-            iconEl('folder'), el('span', { class: 'name', text: baseName(p) }), el('span', { class: 'path', text: p }))))
+            iconEl('folder'), el('span', { class: 'name', text: baseName(p) }), el('span', { class: 'path', text: p }),
+            el('span', { class: 'icon-btn recent-x', role: 'button', title: 'Remove from recents (the folder itself is untouched)', onclick: (e) => { e.stopPropagation(); removeRecentWorkspace(p); } }, iconEl('x')))))
       );
     }
   } else {
@@ -2154,7 +2175,8 @@ function showMenu(x, y, items, { above } = {}) {
     },
     it.icon ? iconEl(it.icon) : null,
     it.desc ? el('span', {}, el('span', { text: it.label }), el('span', { class: 'desc', text: it.desc })) : el('span', { text: it.label }),
-    it.detail && !it.desc ? el('span', { class: 'detail', text: it.detail }) : null);
+    it.detail && !it.desc ? el('span', { class: 'detail', text: it.detail }) : null,
+    it.onRemove ? el('button', { class: 'icon-btn mi-x', title: it.removeTitle || 'Remove', onclick: (e) => { e.stopPropagation(); menu.classList.add('hidden'); it.onRemove(); } }, iconEl('x')) : null);
   }));
   menu.classList.remove('hidden');
   const w = menu.offsetWidth;
