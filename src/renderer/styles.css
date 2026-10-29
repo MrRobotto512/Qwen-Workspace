@@ -379,6 +379,16 @@ button.sb:hover { background: var(--bg-3); color: var(--text); }
 .set-content { flex: 1; min-width: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 8px; }
 .set-content .section-title { margin-top: 0; font-size: 15px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--text); padding-bottom: 6px; border-bottom: 1px solid var(--border); }
 .sec-off { display: none !important; }
+
+/* The Escalate button on assistant messages, and the escalation suggestion card. */
+.msg.assistant { position: relative; }
+.msg-escalate { position: absolute; top: 4px; right: 4px; opacity: 0; transition: opacity .15s; }
+.msg.assistant:hover .msg-escalate { opacity: .75; }
+.msg-escalate:hover { opacity: 1 !important; color: var(--accent-2); }
+.msg.escalate-card { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--border-2); border-radius: 10px; padding: 10px 12px; background: var(--accent-bg); color: var(--text); }
+
+/* Price table rows in Settings. */
+.price-row { display: grid; grid-template-columns: 1fr 110px 110px 32px; gap: 6px; align-items: center; margin-bottom: 6px; }
 .modal-head { display: flex; justify-content: space-between; align-items: center; }
 .modal-box h2 { margin: 0; font-size: 16px; font-weight: 600; }
 .section-title { margin-top: 8px; font-size: 11px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase; color: var(--accent-2); }

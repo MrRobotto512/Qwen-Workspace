@@ -297,6 +297,7 @@ async function executeTool(c, call, row) {
           ]
         });
         const answer = res.ok ? stripThink(res.content || '').trim() : '';
+        if (res.usage && !['ollama', 'lmstudio'].includes(override.provider)) recordSpend(c, override.model, res.usage.promptTokens || 0, res.usage.completionTokens || 0);
         if (!answer) return { result: `The planner model did not answer${res.error ? `: ${res.error}` : '.'}`, failed: true };
         row.setBody(answer);
         return { result: `<planner_advice model="${override.model}">\n${truncate(answer)}\n</planner_advice>\nUse this advice to continue the work yourself.`, meta: override.model };
@@ -354,6 +355,16 @@ async function executeTool(c, call, row) {
           .filter((t) => t.content);
         c.todos = todos;
         if (c === state.conv) renderTodoBar();
+        // Escalation suggestion (optional, off by default): a plan touching many files is
+        // usually planner work. Asked once per conversation, never switched silently.
+        const escCfgPlan = state.settings.escalation || {};
+        if (escCfgPlan.bigPlan && heavyOverride() && !c.bigPlanAsked) {
+          const planned = Escalation.planFiles(todos);
+          if (planned.length > Math.max(1, parseInt(escCfgPlan.bigPlanN, 10) || 5)) {
+            c.bigPlanAsked = true;
+            suggestPlannerForPlan(c, planned.length);
+          }
+        }
         const done = todos.filter((t) => t.status === 'completed').length;
         row.setBody(todoLines(todos));
         const current = todos.find((t) => t.status === 'in_progress');
@@ -586,7 +597,71 @@ async function send() {
     c.status = c.stopRequested ? 'stopped' : failed ? 'error' : 'done';
     setBusy(c, false);
     saveConv(c, true);
+    flushSpend();
   }
+}
+
+// Re-enters the loop on the existing history, with no new user message — used by the
+// Escalate button after the transcript was rewound to an earlier point.
+async function rerunConversation(c) {
+  if (c.busy) return;
+  setBusy(c, true);
+  let failed = false;
+  try {
+    failed = await runConversation(c);
+  } catch (e) {
+    failed = true;
+    addError(c, `Something went wrong: ${cleanError(e)}`);
+  } finally {
+    c.status = c.stopRequested ? 'stopped' : failed ? 'error' : 'done';
+    setBusy(c, false);
+    saveConv(c, true);
+    flushSpend();
+  }
+}
+
+// The Escalate button on an assistant message: rewind the conversation to just before that
+// turn and run it again on the planner. File changes already made are not undone — the
+// planner sees the files as they are now.
+function escalateFrom(c, item) {
+  if (!heavyOverride()) {
+    toast({
+      icon: 'sparkles',
+      text: 'Set up a planner model first (Settings → Planner), then Escalate re-runs a step on it.',
+      actions: [{ label: 'Open Settings', primary: true, onClick: openSettings }]
+    });
+    return;
+  }
+  if (c.busy) {
+    flash('Stop the current task first, then escalate');
+    return;
+  }
+  const idx = c.display.indexOf(item);
+  if (idx < 0) return;
+  if (typeof item.hAt === 'number' && item.hAt >= 1) c.history = c.history.slice(0, item.hAt);
+  // A conversation saved before this feature has no position info; re-run from the end then.
+  if (c.history[c.history.length - 1]?.role === 'assistant') {
+    c.history.push({ role: 'user', content: '<system-reminder>\nRe-run the last step with a stronger approach; the previous attempt was escalated by the user.\n</system-reminder>' });
+  }
+  c.display = c.display.slice(0, idx);
+  const notice = { t: 'notice', text: `Re-running from here on ${heavyLabel()}.` };
+  c.display.push(notice);
+  renderTranscript(c);
+  c.escalateRequested = true;
+  rerunConversation(c);
+}
+
+// The big-plan suggestion card: never switches silently — the task keeps running locally
+// unless the user clicks the button, which escalates the next step.
+function suggestPlannerForPlan(c, fileCount) {
+  const node = el('div', { class: 'msg escalate-card' }, iconEl('sparkles'),
+    el('div', {},
+      el('div', { text: `This plan touches ${fileCount} files — that is usually planner work. Run it on ${heavyLabel()}?` }),
+      el('div', { class: 'stop-actions' },
+        el('button', { class: 'primary', onclick: () => { node.remove(); c.escalateRequested = true; } }, 'Run on the planner'),
+        el('button', { class: 'ghost', onclick: () => node.remove() }, 'Keep local'))));
+  c.container.append(node);
+  scrollChat(c, true);
 }
 
 // Runs model turns and tool calls until Qwen stops calling tools. Returns true on failure.
@@ -607,6 +682,7 @@ async function runConversation(c) {
   const nodeRetried = new Set(); // Ollama nodes that already got one retry after not answering
   const deadNodes = new Set(); // Ollama nodes given up on for the rest of this task
   let lastNodeId = null; // which node the previous step ran on, to announce changes once
+  let capBlocked = false; // the user declined to pass the monthly budget; stay local this task
 
   const note = (text) => {
     const item = { t: 'notice', text };
@@ -647,7 +723,23 @@ async function runConversation(c) {
     if (c.stopRequested) return false;
     if (contextUse(c).tokens >= contextUse(c).window * COMPACT_AT) await compactConversation(c);
     if (c.stopRequested) return false;
-    const esc = !cloudDead && (heavyTakeover || escalateNext) ? heavyOverride() : null;
+    // An Escalate click (on a message, or from the big-plan card) runs the next step on the planner.
+    if (c.escalateRequested) {
+      c.escalateRequested = false;
+      if (heavyOverride()) escalateNext = true;
+    }
+    let esc = !cloudDead && !capBlocked && (heavyTakeover || escalateNext) ? heavyOverride() : null;
+    // Optional monthly budget: once the month's priced cloud spend reaches the cap,
+    // escalations ask before spending more instead of running silently.
+    if (esc && !c.capApproved && Costs.capReached(state.settings.spend, state.settings.prices, state.settings.monthlyCapUSD)) {
+      if (await askBudgetCard(c)) c.capApproved = true;
+      else {
+        capBlocked = true;
+        esc = null;
+        heavyTakeover = false;
+        note(`Monthly cloud budget reached — staying on ${state.settings.model} for this task.`);
+      }
+    }
     let override = esc || (cloudDead ? null : conversationOverride(c));
     // A model that went "busy" earlier in this task stays swapped for its working sibling.
     if (override && modelSwap.has(override.model)) override = { ...override, model: modelSwap.get(override.model) };
@@ -670,6 +762,7 @@ async function runConversation(c) {
       }
     }
     const view = addAssistantMessage(c, null, override?.model || null);
+    c.display[c.display.length - 1].hAt = c.history.length; // where this turn starts, for Escalate
     const id = `r${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
     c.chatId = id;
     setActivity(c, esc ? `Handing off to ${esc.model}` : step === 0 ? 'Thinking' : 'Working');
@@ -689,6 +782,12 @@ async function runConversation(c) {
     off();
     c.chatId = null;
     if (res.ok && !res.aborted) view.setFinal(res.content || '', res.reasoning || '');
+    // Cloud responses report prompt/completion tokens; feed the cost meter. Local providers
+    // (Ollama / LM Studio) are free and skipped.
+    if (res.ok && res.usage) {
+      const prov = override?.provider || state.settings.provider;
+      if (!['ollama', 'lmstudio'].includes(prov)) recordSpend(c, override?.model || state.settings.model, res.usage.promptTokens || 0, res.usage.completionTokens || 0);
+    }
     if (res.usage?.promptTokens && res.usage.contextLength) {
       c.usage = res.usage;
       c.usageAt = c.history.length;
@@ -852,6 +951,20 @@ async function runConversation(c) {
       escalate('Steps keep failing');
     }
 
+    // Escalation trigger (optional, off by default): the same command failing N times in a
+    // row is the clearest sign the local model is out of its depth — the next step runs on
+    // the planner. Tracked per count so one streak escalates once, not every round.
+    const escCfg = state.settings.escalation || {};
+    if (escCfg.failStreak && heavyOverride()) {
+      const st = Escalation.commandFailStreak(c.history);
+      const n = Math.max(2, parseInt(escCfg.failStreakN, 10) || 2);
+      if (st.count >= n && st.count > (c.failEscalatedAt || 0)) {
+        c.failEscalatedAt = st.count;
+        escalateNext = true;
+        note(`"${st.command.slice(0, 80)}" failed ${st.count} times in a row — running the next step on ${heavyLabel()}.`);
+      }
+    }
+
     stall = progressed ? 0 : stall + 1;
     // Nudge the model back on track before it burns through the whole budget.
     if (stall === STALL_LIMIT) {
@@ -880,6 +993,30 @@ async function runOrSkip(c, call, row, seen, step) {
   // "Progress" = a change or command or a first-time read; pure repeats and errors don't count.
   out.progress = !out.failed && !out.rejected;
   return out;
+}
+
+// The monthly-budget question, as a transcript card. Resolves false if the user clicks
+// Stop while it waits, so the task can end instead of hanging on an unanswered question.
+function askBudgetCard(c) {
+  return new Promise((resolve) => {
+    let timer = null;
+    const done = (node, v) => {
+      clearInterval(timer);
+      node.remove();
+      resolve(v);
+    };
+    const node = el('div', { class: 'msg error' }, iconEl('alert'),
+      el('div', {},
+        el('div', { text: `This month's cloud spend has reached your ${Costs.formatUSD(Number(state.settings.monthlyCapUSD) || 0)} budget. Run this step on ${heavyLabel()} anyway?` }),
+        el('div', { class: 'stop-actions' },
+          el('button', { class: 'primary', onclick: (e) => done(node, true) }, 'Use the planner'),
+          el('button', { class: 'ghost', onclick: (e) => done(node, false) }, 'Stay local'))));
+    timer = setInterval(() => {
+      if (c.stopRequested) done(node, false);
+    }, 400);
+    c.container.append(node);
+    scrollChat(c, true);
+  });
 }
 
 function addStopNotice(c) {

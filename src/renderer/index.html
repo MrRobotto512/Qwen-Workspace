@@ -164,6 +164,7 @@
     <span class="sb" id="sb-status"></span>
     <button class="sb hidden" id="sb-mcp" title="MCP servers"><span data-icon="plug"></span><span></span></button>
     <button class="sb hidden" id="sb-nodes" title="Ollama nodes"><span data-icon="server"></span><span></span></button>
+    <button class="sb hidden" id="sb-cost" title="Cloud spend this month"><span data-icon="sparkles"></span><span></span></button>
     <button class="sb sb-update hidden" id="sb-update"><span data-icon="download"></span><span id="sb-update-text"></span></button>
     <span class="sb" id="sb-cursor"></span>
     <span class="sb" id="sb-lang"></span>
@@ -181,6 +182,7 @@
           <option value="dashscope">Alibaba Cloud Model Studio / DashScope</option>
           <option value="gemini">Google Gemini (API key)</option>
           <option value="openrouter">OpenRouter</option>
+          <option value="anthropic">Anthropic Claude (API key)</option>
           <option value="custom">Custom OpenAI-compatible</option>
         </select>
       </label>
@@ -247,6 +249,7 @@
         <label>Planner provider
           <select id="s-heavy-provider">
             <option value="gemini">Google Gemini</option>
+            <option value="anthropic">Anthropic Claude</option>
             <option value="openrouter">OpenRouter</option>
             <option value="dashscope">Alibaba DashScope</option>
             <option value="openai">OpenAI-compatible</option>
@@ -261,6 +264,28 @@
         <button id="s-heavy-fetch" type="button">Fetch models</button>
         <div id="s-heavy-result" class="hint"></div>
       </div>
+
+      <div class="section-title">Escalation &amp; costs</div>
+      <div class="hint">When the local model struggles, hand the step to the planner automatically — and see what cloud models cost. Both triggers are off by default; an <b>Escalate</b> button (✦, top-right of every reply) can also re-run any step on the planner by hand.</div>
+      <label class="check"><input type="checkbox" id="s-esc-failstreak" /> Escalate when the same command keeps failing</label>
+      <label>Failures in a row before escalating <input id="s-esc-failstreak-n" type="number" min="2" max="10" /></label>
+      <label class="check"><input type="checkbox" id="s-esc-bigplan" /> Suggest the planner when a plan touches many files (asks, never switches silently)</label>
+      <label>Files in the plan before suggesting <input id="s-esc-bigplan-n" type="number" min="2" max="50" /></label>
+      <label>Monthly cloud budget, USD
+        <input id="s-monthly-cap" type="number" min="0" step="1" />
+        <span class="hint">0 = no budget. Once this month's priced spend reaches it, escalations ask first instead of running.</span>
+      </label>
+      <div class="hint">Model prices, per million tokens — empty by default. Copy current prices from your provider's pricing page; the app never guesses, and models without a price count as $0.</div>
+      <div id="price-list"></div>
+      <div class="mcp-add">
+        <input id="price-new-model" placeholder="Model id (e.g. gemini-2.5-pro)" spellcheck="false" />
+        <div class="row two">
+          <label>Input $ per 1M tokens <input id="price-new-in" type="number" min="0" step="0.01" /></label>
+          <label>Output $ per 1M tokens <input id="price-new-out" type="number" min="0" step="0.01" /></label>
+        </div>
+        <button id="price-add-btn" class="ghost"><span data-icon="plus"></span>Add price</button>
+      </div>
+      <div id="spend-summary" class="hint"></div>
 
       <div class="section-title">Semantic code index</div>
       <div class="hint">Lets Qwen search this project by meaning ("where is auth handled?") with a <code>semantic_search</code> tool. Code is chunked at function/class boundaries; embeddings use Ollama's <code>nomic-embed-text</code> when it is installed (<code>ollama pull nomic-embed-text</code>), otherwise a built-in offline embedder. The index lives in <code>.qwen/semindex.json</code> and refreshes incrementally.</div>
@@ -385,6 +410,8 @@
   <script src="diffblocks.js"></script>
   <script src="toolparse.js"></script>
   <script src="nodes.js"></script>
+  <script src="escalation.js"></script>
+  <script src="costs.js"></script>
   <script src="providers.js"></script>
   <script src="tools.js"></script>
   <script src="git.js"></script>

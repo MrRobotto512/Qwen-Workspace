@@ -8,6 +8,7 @@ const PROVIDERS = {
   dashscope: { baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', model: 'qwen3-coder-plus' },
   gemini: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.5-flash' },
   openrouter: { baseUrl: 'https://openrouter.ai/api/v1', model: 'qwen/qwen3-coder' },
+  anthropic: { baseUrl: 'https://api.anthropic.com/v1', model: 'claude-opus-5-5' },
   custom: { baseUrl: '', model: '' }
 };
 

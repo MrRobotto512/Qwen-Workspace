@@ -970,7 +970,51 @@ function langOf(p) {
 // until tool_search loads their schemas, which keeps the tool list small for local models.
 function renderConvModel() {
   const label = $('#conv-model-label');
-  if (label) label.textContent = convModelLabel(state.conv);
+  if (!label) return;
+  // When the conversation has priced cloud spend, show it next to the model name.
+  const { total, priced } = Costs.costUSD(state.conv?.spend, state.settings?.prices);
+  label.textContent = convModelLabel(state.conv) + (priced && total > 0 ? ` · ${Costs.formatUSD(total)}` : '');
+}
+
+// Record one cloud response's tokens: on the conversation (for its badge) and on the
+// monthly total in settings (so it survives a restart; written with a short debounce).
+let spendFlushTimer = null;
+let spendDirty = false;
+
+// Write the monthly total to settings.json now (a task just ended, so make it durable).
+function flushSpend() {
+  if (!spendDirty) return;
+  spendDirty = false;
+  clearTimeout(spendFlushTimer);
+  api.setSettings({ spend: state.settings.spend });
+}
+
+function recordSpend(c, model, inTok, outTok) {
+  if (!inTok && !outTok) return;
+  c.spend = c.spend || {};
+  const cur = c.spend[model] || { in: 0, out: 0 };
+  c.spend[model] = { in: (cur.in || 0) + inTok, out: (cur.out || 0) + outTok };
+  state.settings.spend = Costs.addSpend(state.settings.spend, model, inTok, outTok);
+  spendDirty = true;
+  clearTimeout(spendFlushTimer);
+  spendFlushTimer = setTimeout(flushSpend, 1500);
+  renderCostStatus();
+  if (c === state.conv) renderConvModel();
+}
+
+// The status-bar pill with this month's priced cloud spend; red once the cap is reached.
+function renderCostStatus() {
+  const pill = $('#sb-cost');
+  if (!pill) return;
+  const s = state.settings;
+  const { total, priced } = Costs.costUSD(s.spend?.models, s.prices);
+  const show = priced && total > 0;
+  pill.classList.toggle('hidden', !show);
+  if (!show) return;
+  pill.classList.toggle('bad', Costs.capReached(s.spend, s.prices, s.monthlyCapUSD));
+  pill.lastChild.textContent = `Cloud ${Costs.formatUSD(total)}`;
+  const cap = Number(s.monthlyCapUSD) || 0;
+  pill.title = `Cloud model spend in ${s.spend?.month || 'this month'}, from your price table${cap ? ` (budget ${Costs.formatUSD(cap)})` : ''}. Click for settings.`;
 }
 
 function setConvModel(c, choice) {
@@ -1262,7 +1306,12 @@ function addAssistantMessage(c, item, modelLabel) {
   const badge = (item.modelLabel || modelLabel)
     ? [el('div', { class: 'model-badge' }, iconEl('sparkles'), el('span', { text: item.modelLabel || modelLabel }))]
     : [];
-  c.container.append(el('div', { class: 'msg assistant' }, ...badge, think, md, steps));
+  const escalateBtn = el('button', {
+    class: 'icon-btn msg-escalate',
+    title: 'Escalate: re-run from this point on the planner model',
+    onclick: () => escalateFrom(c, item)
+  }, iconEl('sparkles'));
+  c.container.append(el('div', { class: 'msg assistant' }, ...badge, think, md, steps, escalateBtn));
   scrollChat(c, true);
 
   let content = '';
@@ -1708,6 +1757,7 @@ function applySettingsToUi() {
   btn.title = `Approvals: ${APPROVAL_MODES[mode].desc}`;
   btn.classList.toggle('hidden', !s.agentMode);
   syncNodeRouting();
+  renderCostStatus();
   renderStatusbar();
 }
 
@@ -2216,6 +2266,7 @@ function bindUi() {
   $('#s-searchProvider').onchange = renderSearchFields;
   $('#mcp-add-btn').onclick = addServerFromForm;
   $('#node-add-btn').onclick = addNodeFromForm;
+  $('#price-add-btn').onclick = addPriceFromForm;
   $('#skill-install-btn').onclick = installSkillFromUrl;
   $('#auto-add-btn').onclick = addAutomationFromForm;
   $('#sem-build-btn').onclick = buildSemIndex;
@@ -2229,6 +2280,10 @@ function bindUi() {
   $('#sb-nodes').onclick = () => {
     openSettings();
     selectSettingsPage('Ollama nodes');
+  };
+  $('#sb-cost').onclick = () => {
+    openSettings();
+    selectSettingsPage('Escalation & costs');
   };
   $('#s-save').onclick = saveSettingsFromUi;
   $('#s-cancel').onclick = () => $('#settings-modal').classList.add('hidden');

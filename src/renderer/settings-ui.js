@@ -249,6 +249,47 @@ function addNodeFromForm() {
   renderNodesSettings();
 }
 
+// The price table being edited in the dialog; written back as an object on Save.
+let settingsPrices = null;
+
+function renderPriceSettings() {
+  const list = $('#price-list');
+  if (!settingsPrices.length) {
+    list.replaceChildren(el('div', { class: 'hint', text: 'No prices yet — cloud spend shows as tokens only until you add the models you use.' }));
+    return;
+  }
+  list.replaceChildren(...settingsPrices.map((p) => el('div', { class: 'price-row' },
+    el('input', { value: p.model, spellcheck: 'false', oninput: (e) => { p.model = e.target.value.trim(); } }),
+    el('input', { type: 'number', min: '0', step: '0.01', value: String(p.in), title: 'Input $ per 1M tokens', oninput: (e) => { p.in = e.target.value; } }),
+    el('input', { type: 'number', min: '0', step: '0.01', value: String(p.out), title: 'Output $ per 1M tokens', oninput: (e) => { p.out = e.target.value; } }),
+    el('button', { class: 'icon-btn', title: 'Remove', onclick: () => { settingsPrices = settingsPrices.filter((x) => x !== p); renderPriceSettings(); } }, iconEl('trash')))));
+}
+
+function addPriceFromForm() {
+  const model = $('#price-new-model').value.trim();
+  if (!model) return;
+  settingsPrices = settingsPrices.filter((p) => p.model !== model);
+  settingsPrices.push({ model, in: $('#price-new-in').value || '0', out: $('#price-new-out').value || '0' });
+  $('#price-new-model').value = '';
+  $('#price-new-in').value = '';
+  $('#price-new-out').value = '';
+  renderPriceSettings();
+}
+
+function renderSpendSummary() {
+  const s = state.settings;
+  const models = s.spend?.models || {};
+  const names = Object.keys(models);
+  const out = $('#spend-summary');
+  if (!names.length) {
+    out.textContent = 'No cloud usage recorded yet this month.';
+    return;
+  }
+  const { total, priced, unpriced } = Costs.costUSD(models, s.prices);
+  const lines = names.map((m) => `${m}: ${(models[m].in || 0).toLocaleString()} in / ${(models[m].out || 0).toLocaleString()} out tokens`);
+  out.textContent = `${s.spend.month}: ${priced ? Costs.formatUSD(total) : 'no priced models yet'}${unpriced ? ` (+${unpriced} unpriced model${unpriced === 1 ? '' : 's'})` : ''} — ${lines.join(' · ')}`;
+}
+
 function openSettings() {
   const s = state.settings;
   for (const k of ['provider', 'baseUrl', 'apiKey', 'model', 'temperature', 'fontSize', 'contextLength', 'maxResponseTokens', 'keepAlive', 'searchProvider', 'searchApiKey', 'searxngUrl']) $(`#s-${k}`).value = s[k] ?? '';
@@ -278,6 +319,15 @@ function openSettings() {
   settingsNodes = Nodes.normalizeNodes(s).map((n) => ({ ...n }));
   $('#node-add-result').textContent = '';
   renderNodesSettings();
+  const esc = s.escalation || {};
+  $('#s-esc-failstreak').checked = !!esc.failStreak;
+  $('#s-esc-failstreak-n').value = esc.failStreakN || 2;
+  $('#s-esc-bigplan').checked = !!esc.bigPlan;
+  $('#s-esc-bigplan-n').value = esc.bigPlanN || 5;
+  $('#s-monthly-cap').value = Number(s.monthlyCapUSD) || 0;
+  settingsPrices = Object.entries(s.prices || {}).map(([model, p]) => ({ model, in: p.in ?? 0, out: p.out ?? 0 }));
+  renderPriceSettings();
+  renderSpendSummary();
   refreshNodeHealth(true).then(() => { if (!$('#settings-modal').classList.contains('hidden')) renderNodesSettings(); });
   buildSettingsPages();
   selectSettingsPage(settingsPageKey);
@@ -305,6 +355,16 @@ async function saveSettingsFromUi() {
     apiKey: $('#s-heavy-apiKey').value.trim(),
     model: $('#s-heavy-model').value.trim()
   };
+  patch.escalation = {
+    failStreak: $('#s-esc-failstreak').checked,
+    failStreakN: Math.min(10, Math.max(2, parseInt($('#s-esc-failstreak-n').value, 10) || 2)),
+    bigPlan: $('#s-esc-bigplan').checked,
+    bigPlanN: Math.min(50, Math.max(2, parseInt($('#s-esc-bigplan-n').value, 10) || 5))
+  };
+  patch.monthlyCapUSD = Math.max(0, Number($('#s-monthly-cap').value) || 0);
+  patch.prices = Object.fromEntries(settingsPrices
+    .filter((p) => p.model)
+    .map((p) => [p.model, { in: Number(p.in) || 0, out: Number(p.out) || 0 }]));
   // Nodes: remotes are saved as entered; "This PC" only remembers its enabled flag (its URL
   // and keep-alive live in the plain settings). A pristine setup saves [] so nothing changes.
   const thisPc = settingsNodes.find((n) => n.id === Nodes.THIS_PC_ID);
