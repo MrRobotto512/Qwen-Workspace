@@ -1,0 +1,7 @@
+{
+  "name": "CLI wrapper GUI",
+  "kind": "recipe",
+  "description": "A PySide6 window around a command-line tool (like LibOrbisPkg or AudioSR): pick inputs, build the arguments, stream the output into a log pane, cancel, and remember the tool's path.",
+  "icon": "terminal",
+  "then": "Tell Qwen which tool this wraps and paste its --help; it fills in the arguments and options."
+}

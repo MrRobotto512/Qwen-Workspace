@@ -1,0 +1,12 @@
+[project]
+name = "my-tool-gui"
+version = "0.1.0"
+description = "A GUI wrapper around a command-line tool"
+requires-python = ">=3.10"
+dependencies = ["PySide6>=6.6"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pyinstaller>=6"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

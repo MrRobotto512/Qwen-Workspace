@@ -1,0 +1,7 @@
+{
+  "name": "Python GUI app",
+  "kind": "recipe",
+  "description": "A PySide6 desktop app: window, pyproject, pytest, and a PyInstaller one-file .exe built by GitHub Actions on every release.",
+  "icon": "wand",
+  "then": "Describe what the app should do and Qwen builds it on this skeleton."
+}
