@@ -139,13 +139,45 @@ try {
 
   const notes = await win.evaluate(() => (state.conv?.display || []).filter((d) => d.t === 'notice').map((d) => d.text));
   if (!notes.some((t) => /moving to Shop PC/i.test(t))) fail(`no "moving to Shop PC" transcript note; notices were: ${JSON.stringify(notes)}`);
+
+  // --- remote-only: This PC disabled, one remote enabled must route (the Mac-at-work case).
+  // Node A (this-pc's address) is dead, so any fallback to the plain baseUrl would fail here.
+  const bBefore = counts.bChats;
+  await win.evaluate(async (bURL) => {
+    state.settings = await api.setSettings({ ollamaNodes: [{ id: 'this-pc', enabled: false }, { id: 'node-b', name: 'Shop PC', baseUrl: bURL, enabled: true }] });
+    syncNodeRouting();
+    newChat();
+    document.querySelector('#prompt').value = 'finish the job remotely';
+    document.querySelector('#btn-send').onclick();
+  }, baseB);
+  await win.waitForFunction(
+    () => [...document.querySelectorAll('.msg.assistant .md')].some((e) => e.textContent.includes('Finished on the shop node.')),
+    null,
+    { timeout: 30_000 }
+  ).catch(() => fail('remote-only routing: the task never ran on the enabled remote node'));
+  if (counts.bChats <= bBefore) fail('remote-only routing: node B never received the request');
+
+  // Leave settings pristine for whatever test runs next: a saved remote-only node config
+  // would silently redirect other suites' model requests to a dead port.
+  await win.evaluate(async () => {
+    state.settings = await api.setSettings({ ollamaNodes: [] });
+    syncNodeRouting();
+  });
   if (counts.aChats !== 2) fail(`expected 2 chats on node A (tool turn + the killed one), saw ${counts.aChats}`);
   if (counts.bChats < 1) fail('node B never served a chat');
 } catch (e) {
   fail(String(e).split('\n')[0]);
 } finally {
   if (errors.length) fail(`renderer errors: ${errors.join(' || ').slice(0, 500)}`);
+  // Teardown watchdog: every assertion has already run by this point, so a hung
+  // app.close() (a rare Playwright/Electron teardown wedge) must not eat the result.
+  const watchdog = setTimeout(() => {
+    console.error('app.close() hung; forcing exit with the recorded result');
+    process.exit(process.exitCode || 0);
+  }, 20_000);
+  watchdog.unref();
   await app.close().catch(() => {});
+  clearTimeout(watchdog);
   nodeA.kill();
   nodeB.kill();
   fs.rmSync(ws, { recursive: true, force: true });

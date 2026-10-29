@@ -800,7 +800,7 @@ async function runConversation(c) {
   // the second intervention it takes over the whole task, since the light model keeps fumbling.
   const escalate = (reason) => {
     interventions++;
-    DebugLog.add(c, 'escalate', { reason, interventions, takeover: heavyTakeover });
+    DebugLog.add(c, 'escalate', { reason: reason || 'answered without acting (tutorial / announce-then-stop)', interventions, takeover: heavyTakeover });
     if (!heavyOverride()) return;
     escalateNext = true;
     let text = null;
@@ -886,7 +886,9 @@ async function runConversation(c) {
     off();
     c.chatId = null;
     DebugLog.add(c, 'response', res.ok
-      ? { ok: true, finishReason: res.finishReason, chars: (res.content || '').length, toolCalls: (res.toolCalls || []).length, promptTokens: res.usage?.promptTokens, completionTokens: res.usage?.completionTokens }
+      ? (res.aborted
+        ? { ok: true, aborted: true }
+        : { ok: true, finishReason: res.finishReason, chars: (res.content || '').length, toolCalls: (res.toolCalls || []).length, promptTokens: res.usage?.promptTokens, completionTokens: res.usage?.completionTokens })
       : { ok: false, error: String(res.error || '').slice(0, 400) });
     if (res.ok && !res.aborted) view.setFinal(res.content || '', res.reasoning || '');
     // Cloud responses report prompt/completion tokens; feed the cost meter. Local providers

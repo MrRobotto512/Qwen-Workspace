@@ -85,6 +85,7 @@ try {
     document.querySelector('#s-heavy-enabled').checked = false;
     document.querySelector('#s-esc-failstreak').checked = false;
     document.querySelector('#s-esc-bigplan').checked = false;
+    settingsNodes = settingsNodes.filter((n) => n.id === 'this-pc').map((n) => ({ ...n, enabled: true })); // no stale node routing
     return document.querySelector('#s-save').onclick();
   }, base);
   await win.evaluate(async (dir) => {
@@ -127,7 +128,15 @@ try {
   fail(String(e).split('\n')[0]);
 } finally {
   if (errors.length) fail(`renderer errors: ${errors.join(' || ').slice(0, 500)}`);
+  // Teardown watchdog: every assertion has already run by this point, so a hung
+  // app.close() (a rare Playwright/Electron teardown wedge) must not eat the result.
+  const watchdog = setTimeout(() => {
+    console.error('app.close() hung; forcing exit with the recorded result');
+    process.exit(process.exitCode || 0);
+  }, 20_000);
+  watchdog.unref();
   await app.close().catch(() => {});
+  clearTimeout(watchdog);
   server.close();
   fs.rmSync(ws, { recursive: true, force: true });
 }
