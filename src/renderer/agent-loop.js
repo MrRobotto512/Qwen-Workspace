@@ -783,6 +783,7 @@ async function runConversation(c) {
     const item = { t: 'notice', text };
     c.display.push(item);
     renderNotice(c, item);
+    DebugLog.add(c, 'notice', { text });
   };
 
   // Drop the empty assistant bubble a failed request leaves behind, so retries stay clean.
@@ -799,6 +800,7 @@ async function runConversation(c) {
   // the second intervention it takes over the whole task, since the light model keeps fumbling.
   const escalate = (reason) => {
     interventions++;
+    DebugLog.add(c, 'escalate', { reason, interventions, takeover: heavyTakeover });
     if (!heavyOverride()) return;
     escalateNext = true;
     let text = null;
@@ -862,6 +864,13 @@ async function runConversation(c) {
     c.chatId = id;
     setActivity(c, esc ? `Handing off to ${esc.model}` : step === 0 ? 'Thinking' : 'Working');
 
+    DebugLog.add(c, 'request', {
+      step,
+      model: override?.model || state.settings.model,
+      provider: override?.provider || state.settings.provider,
+      node: node ? node.name : undefined,
+      escalated: !!esc
+    });
     const off = api.onChatEvent((ev) => {
       if (ev.id !== id) return;
       if (ev.type === 'delta') view.appendContent(ev.data);
@@ -876,6 +885,9 @@ async function runConversation(c) {
     // arrive after this resolves. The reply carries the full text; use it as the final state.
     off();
     c.chatId = null;
+    DebugLog.add(c, 'response', res.ok
+      ? { ok: true, finishReason: res.finishReason, chars: (res.content || '').length, toolCalls: (res.toolCalls || []).length, promptTokens: res.usage?.promptTokens, completionTokens: res.usage?.completionTokens }
+      : { ok: false, error: String(res.error || '').slice(0, 400) });
     if (res.ok && !res.aborted) view.setFinal(res.content || '', res.reasoning || '');
     // Cloud responses report prompt/completion tokens; feed the cost meter. Local providers
     // (Ollama / LM Studio) are free and skipped.
@@ -1081,10 +1093,13 @@ async function runOrSkip(c, call, row, seen, step) {
   const name = call.function.name;
   if (READ_ONLY_TOOLS.has(name) && seen.has(sig)) {
     row.setBody('(skipped — identical to an earlier step)');
+    DebugLog.add(c, 'tool', { name, meta: 'repeat skipped', failed: true });
     return { result: `You already ran this exact call at step ${seen.get(sig) + 1}; the result has not changed. Do not repeat it. Move on to the next step, or finish and reply to the user.`, meta: 'repeat', failed: true, progress: false };
   }
   seen.set(sig, step);
+  const t0 = Date.now();
   const out = await executeTool(c, call, row);
+  DebugLog.add(c, 'tool', { name, meta: out.meta, failed: !!out.failed, rejected: !!out.rejected, ms: Date.now() - t0 });
   // "Progress" = a change or command or a first-time read; pure repeats and errors don't count.
   out.progress = !out.failed && !out.rejected;
   return out;
@@ -1223,6 +1238,7 @@ async function compactConversation(c, { manual } = {}) {
   c.usage = null;
   c.usageAt = 0;
   c.compactions = (c.compactions || 0) + 1;
+  DebugLog.add(c, 'compact', { before, after: contextUse(c).tokens });
   const item = { t: 'notice', text: `Summarized ${head.length} earlier messages to free up context (about ${before.toLocaleString()} → ${contextUse(c).tokens.toLocaleString()} tokens).`, detail: summary };
   c.display.push(item);
   renderNotice(c, item);

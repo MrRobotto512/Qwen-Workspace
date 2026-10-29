@@ -69,7 +69,7 @@ try {
     openSettings();
     document.querySelector('#s-provider').value = 'custom';
     document.querySelector('#s-baseUrl').value = baseUrl;
-    document.querySelector('#s-apiKey').value = '';
+    document.querySelector('#s-apiKey').value = 'sk-e2e-secret-key'; // must never appear in the debug report
     document.querySelector('#s-model').value = 'mock-model';
     document.querySelector('#s-agentMode').checked = true;
     document.querySelector('#s-approvalMode').value = 'auto';
@@ -93,6 +93,22 @@ try {
 
   await win.waitForFunction(() => [...document.querySelectorAll('.msg.assistant .md')].some((e) => e.textContent.includes('Done. I created smoke-made.txt.')), null, { timeout: 15_000 }).catch(() => fail('the final assistant turn never rendered'));
   if (requests < 3) fail(`expected 3 model requests (503, tool turn, final), saw ${requests}`);
+
+  // The debug report: one file under .qwen/debug with the whole story, secrets redacted.
+  await win.evaluate(() => exportDebugReport(state.conv));
+  const dbgDir = path.join(ws, '.qwen', 'debug');
+  const dbgDeadline = Date.now() + 10_000;
+  let report = '';
+  while (Date.now() < dbgDeadline && !report) {
+    const files = fs.existsSync(dbgDir) ? fs.readdirSync(dbgDir) : [];
+    if (files.length) report = fs.readFileSync(path.join(dbgDir, files[0]), 'utf8');
+    else await new Promise((r) => setTimeout(r, 250));
+  }
+  if (!report) fail('exportDebugReport never wrote a file under .qwen/debug');
+  if (report.includes('sk-e2e-secret-key')) fail('the API key leaked into the debug report');
+  for (const must of ['# Debug report', 'mock-model', 'tool write_file', 'overloaded', 'Full message history', 'system (assembled at request time)']) {
+    if (!report.includes(must)) fail(`debug report is missing "${must}"`);
+  }
 } catch (e) {
   fail(String(e).split('\n')[0]);
 } finally {

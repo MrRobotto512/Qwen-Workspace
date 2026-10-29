@@ -22,6 +22,7 @@ function createConv() {
     usage: null,
     usageAt: 0, // history length when `usage` was measured
     spend: {}, // cloud tokens this conversation used: model -> { in, out }
+    log: [], // structured debug events (see debuglog.js); rendered by "Save debug report"
     todos: [],
     compactions: 0,
     activeTools: [], // deferred tools loaded with tool_search
@@ -60,6 +61,7 @@ function serializeConv(c) {
     usage: c.usage,
     usageAt: c.usageAt,
     spend: c.spend || {},
+    log: c.log || [],
     todos: c.todos,
     compactions: c.compactions,
     activeTools: c.activeTools,
