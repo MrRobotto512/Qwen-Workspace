@@ -147,6 +147,19 @@ function isDeadModelError(text) {
 // Sibling models worth trying when one is overloaded or retired. `available` is the provider's
 // live /models list when we could fetch it; the static family is only the offline fallback.
 // Ranking: pro before flash before flash-lite, newest version first.
+// A small model denying its own capabilities ("I'm sorry, but I can't access the file
+// system or run commands directly") — always false here, and never a valid final answer in
+// agent mode. Deliberately narrow: an "I" + inability verb (not "couldn't", which reports a
+// real failure) followed closely by a capability phrase. "The build can't run" or "I can't
+// find the file" must not match.
+const DENIAL_RE = /\bI\s*(?:'m|am)?\s*(?:sorry[^.!\n]{0,40})?(?:can\s*(?:'|no)t|cannot|unable to|don'?t have (?:the ability|access|a way|permission))\b[^.!\n]{0,80}\b(?:access|run|execute|interact|perform|connect|see|reach)\b[^.!\n]{0,60}\b(?:file\s*system|commands?|system|computer|network|directly|machine|terminal|shell|server|device)\b/i;
+const AS_AI_RE = /\bas an AI\b[^.!\n]{0,80}\b(?:can\s*(?:'|no)t|cannot|unable)\b/i;
+
+function deniesCapability(text) {
+  const t = String(text || '');
+  return DENIAL_RE.test(t) || AS_AI_RE.test(t);
+}
+
 // Tool-call arguments must be a JSON *object* on the wire: Ollama's and Anthropic's native
 // APIs reject arrays and scalars, and because the history replays every earlier call, one
 // bad `arguments` bricks the whole conversation with a 400 on every later request. Valid
@@ -199,6 +212,6 @@ function modelAlternates(model, available) {
   return pool.filter((m) => m !== failed).sort((a, b) => cls(a) - cls(b) || ver(b) - ver(a));
 }
 
-const ToolParseExports = { TOOL_TEXT_MARKER, jsonToolCallRe, textToolCallStart, readJsonObject, extractTextToolCalls, announcesAction, looksLikeInstructions, stripFakeReminders, isBusyModelError, isDeadModelError, modelAlternates, normalizeToolArgs, GEMINI_FAMILY };
+const ToolParseExports = { TOOL_TEXT_MARKER, jsonToolCallRe, textToolCallStart, readJsonObject, extractTextToolCalls, announcesAction, looksLikeInstructions, stripFakeReminders, isBusyModelError, isDeadModelError, modelAlternates, normalizeToolArgs, deniesCapability, GEMINI_FAMILY };
 if (typeof module !== 'undefined' && module.exports) module.exports = ToolParseExports;
 if (typeof window !== 'undefined') window.ToolParse = ToolParseExports;

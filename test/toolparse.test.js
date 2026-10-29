@@ -167,3 +167,22 @@ test('normalizeToolArgs keeps objects, wraps arrays and scalars, passes junk thr
   assert.strictEqual(TP.normalizeToolArgs('null'), '{"value":null}');
   assert.strictEqual(TP.normalizeToolArgs('{broken'), '{broken'); // unparsable stays for the executor's own error path
 });
+
+test('deniesCapability catches capability-denial replies', () => {
+  assert.ok(TP.deniesCapability("I'm sorry, but I can't access the file system or run commands directly. Could you please provide more details?"));
+  assert.ok(TP.deniesCapability('I cannot run commands directly on your machine.'));
+  assert.ok(TP.deniesCapability('I am unable to execute commands on your computer.'));
+  assert.ok(TP.deniesCapability("I don't have the ability to access your network."));
+  assert.ok(TP.deniesCapability('As an AI language model, I cannot interact with hardware.'));
+  assert.ok(TP.deniesCapability("Unfortunately I can't see the FTP server from here because I cannot reach the network directly."));
+});
+
+test('deniesCapability ignores legitimate failure reports and advice', () => {
+  assert.ok(!TP.deniesCapability("I can't find the config file in this project."));
+  assert.ok(!TP.deniesCapability("The build can't run because cmake is missing from PATH."));
+  assert.ok(!TP.deniesCapability("You can't access that folder without admin rights; run the step yourself."));
+  assert.ok(!TP.deniesCapability("I couldn't run the tests because npm install failed; fixing that first."));
+  assert.ok(!TP.deniesCapability('The server at 192.168.86.42:2121 did not answer; it may be off.'));
+  assert.ok(!TP.deniesCapability('Done. I created the file and ran the build.'));
+  assert.ok(!TP.deniesCapability(''));
+});

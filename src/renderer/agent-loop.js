@@ -1010,6 +1010,8 @@ async function runConversation(c) {
         let nudge = null;
         if (forged.found) {
           nudge = 'You wrote a <system-reminder> block yourself; only the app issues those, and it has been removed. Your tools are real: list_files, read_file, run_command and the rest actually execute on this PC and returned real results earlier. Never claim you cannot access the file system, and never simulate output. Continue the task now with a real tool call.';
+        } else if (ToolParse.deniesCapability(msg.content)) {
+          nudge = 'You claimed you cannot access the file system, run commands, or reach the network. That is false: your tools (list_files, read_file, write_file, run_command, web_search and the rest) execute for real on this PC. Do what was asked now with a real tool call — for example, check whether a server or port answers with run_command (curl, ping, or Test-NetConnection on Windows). Never answer with that claim again.';
         } else if (textToolCallStart(msg.content) >= 0) {
           // A tool-call marker is present but nothing could be parsed out of it.
           nudge = 'Your reply contained a tool call that could not be parsed, so nothing ran. Re-send it as one valid call: either use the native tool-calling format, or exactly <tool_call>{"name": "<tool>", "arguments": { … }}</tool_call> with correct JSON. Do not mix prose into the call.';
