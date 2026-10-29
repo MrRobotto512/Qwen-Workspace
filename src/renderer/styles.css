@@ -387,6 +387,15 @@ button.sb:hover { background: var(--bg-3); color: var(--text); }
 .msg-escalate:hover { opacity: 1 !important; color: var(--accent-2); }
 .msg.escalate-card { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--border-2); border-radius: 10px; padding: 10px 12px; background: var(--accent-bg); color: var(--text); }
 
+/* Remove buttons on recent-folder entries (menu rows and the home screen list). */
+.mi .mi-x { margin-left: auto; opacity: 0; flex: none; }
+.mi:hover .mi-x { opacity: .7; }
+.mi .mi-x:hover { opacity: 1; color: var(--red); }
+.recent-item { position: relative; }
+.recent-item .recent-x { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); opacity: 0; }
+.recent-item:hover .recent-x { opacity: .7; }
+.recent-item .recent-x:hover { opacity: 1; color: var(--red); }
+
 /* Price table rows in Settings. */
 .price-row { display: grid; grid-template-columns: 1fr 110px 110px 32px; gap: 6px; align-items: center; margin-bottom: 6px; }
 
