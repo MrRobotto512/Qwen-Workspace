@@ -1126,6 +1126,7 @@ async function showConvModelMenu(anchor) {
       });
     }
   }
+  items.push({ label: 'Save debug report', desc: 'Everything this conversation saw and did, to .qwen/debug/', icon: 'bug', onClick: () => exportDebugReport(c) });
   items.push({ label: 'Model settings…', icon: 'settings', onClick: openSettings });
   showMenu(r.left, r.top, items, { above: true });
 }
@@ -1326,6 +1327,7 @@ function renderUserMessage(c, text, attached) {
 }
 
 function addError(c, text, usedTools) {
+  DebugLog.add(c, 'error', { text: String(text || '').slice(0, 500) });
   let hint = '';
   if (usedTools && /tool|function/i.test(text)) {
     hint = '\n\nThis model may not support tool calling. Switch to "Chat" below the message box, or pick a tool-capable model such as qwen2.5-coder, qwen3 or qwen3-coder.';
@@ -1348,8 +1350,51 @@ function renderNotice(c, item) {
 }
 
 function renderError(c, text) {
-  c.container.append(el('div', { class: 'msg error' }, iconEl('alert'), el('div', { text })));
+  c.container.append(el('div', { class: 'msg error' }, iconEl('alert'),
+    el('div', {}, el('div', { text }),
+      el('div', { class: 'stop-actions' },
+        el('button', { class: 'ghost', title: 'Save everything this conversation saw and did to .qwen/debug/, for diagnosing', onclick: () => exportDebugReport(c) }, iconEl('bug'), 'Save debug report')))));
   scrollChat(c, true);
+}
+
+// Renders this conversation's full debug report (events, redacted settings, history) and
+// saves it into the project, so a person — or a planner-model chat — can read exactly what
+// the agent saw and did, instead of debugging from screenshots.
+async function exportDebugReport(c) {
+  if (!c) return;
+  let sys = '';
+  try {
+    sys = systemPrompt(c);
+  } catch {
+    /* no workspace or very early call; the report is still useful without it */
+  }
+  const text = DebugLog.render({ conv: c, settings: state.settings, appInfo: state.appInfo, nodeHealth: state.nodeHealth, mcp: state.mcp, systemPrompt: sys });
+  if (!state.ws) {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast({ icon: 'check', text: 'Debug report copied to the clipboard. Open a folder to save it as a file instead.', timeout: 9000 });
+    } catch {
+      alert('Open a project folder first, then save the debug report.');
+    }
+    return;
+  }
+  const rel = `.qwen/debug/${c.id}-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.md`;
+  try {
+    await api.write(rel, text);
+  } catch (e) {
+    return alert(cleanError(e));
+  }
+  state.fileIndex = null;
+  renderTree();
+  toast({
+    icon: 'check',
+    timeout: 0,
+    text: [el('b', { text: 'Debug report saved.' }), ` ${rel} — secrets are redacted.`],
+    actions: [
+      { label: 'Open', onClick: () => openFile(rel) },
+      { label: 'Diagnose in a new chat', primary: true, onClick: () => { newChat(); setPrompt(`Read ${rel} and explain what went wrong in that conversation — the model's mistakes, what the app's recovery did, and what to change (settings, model choice, or prompts). Be specific.`, false); } }
+    ]
+  });
 }
 
 // `item` is the saved display entry when restoring; otherwise a new one is recorded.

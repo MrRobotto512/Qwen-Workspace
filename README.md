@@ -105,6 +105,7 @@ On macOS the app installs software with [Homebrew](https://brew.sh) when you ask
 - **Plan and compaction:**
   - For multi-step tasks, Qwen keeps a plan (shown above the message box).
   - When a conversation nears the context window, older turns are summarized automatically. Click the context meter to summarize now.
+- **Debug reports:** when a task goes sideways, click **Save debug report** (on any error message, or in the model chip's menu) and the whole story lands in `.qwen/debug/` as one markdown file: app version, redacted settings (API keys never leave the machine), the event timeline (every request with the model and node that served it, every tool run with its outcome and timing, every retry, failover, nudge, escalation and compaction), and the full message history the model actually saw. The toast's **Diagnose in a new chat** button opens a fresh conversation pre-filled to read the report — point it at the planner model and let it explain what went wrong.
 - **Loop protection:** if Qwen repeats the exact same lookup, the app skips it and tells Qwen to move on. If it keeps stalling, Qwen is nudged to finish or ask a question. A task stops after a set number of steps (Settings → Agent, default 60) so a loop can't run forever; the stop message has a one-click **Continue**.
 
 ## 1. Get a Qwen model running
@@ -232,6 +233,7 @@ src/
     nodes.js         Ollama nodes: settings migration, health-based routing, failover picks
     github.js        GitHub flow helpers: branch slugs, ahead/behind parsing, versions, notes
     lessons.js       QWEN.md Lessons: bullet parsing, section math, dedupe, command summary
+    debuglog.js      Debug reports: event log, settings redaction, markdown rendering
     escalation.js    Escalation triggers: command fail streaks, big-plan detection
     costs.js         Cloud cost meter: monthly spend record, price table math, budget cap
     approvals.js     Approval rules: dangerous-command detection, command chain splitting
