@@ -58,6 +58,15 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('mcp:changed', fn);
   },
 
+  semStatus: () => ipcRenderer.invoke('sem:status'),
+  semIndex: () => ipcRenderer.invoke('sem:index'),
+  semSearch: (query, k) => ipcRenderer.invoke('sem:search', query, k),
+  onSemProgress: (cb) => {
+    const fn = (_e, p) => cb(p);
+    ipcRenderer.on('sem:progress', fn);
+    return () => ipcRenderer.removeListener('sem:progress', fn);
+  },
+
   webSearch: (query) => ipcRenderer.invoke('web:search', query),
   webFetch: (url) => ipcRenderer.invoke('web:fetch', url),
 

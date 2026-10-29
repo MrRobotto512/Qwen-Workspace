@@ -250,6 +250,13 @@
         <div id="s-heavy-result" class="hint"></div>
       </div>
 
+      <div class="section-title">Semantic code index</div>
+      <div class="hint">Lets Qwen search this project by meaning ("where is auth handled?") with a <code>semantic_search</code> tool. Code is chunked at function/class boundaries; embeddings use Ollama's <code>nomic-embed-text</code> when it is installed (<code>ollama pull nomic-embed-text</code>), otherwise a built-in offline embedder. The index lives in <code>.qwen/semindex.json</code> and refreshes incrementally.</div>
+      <div class="row two">
+        <button id="sem-build-btn">Build / refresh index</button>
+        <span id="sem-status" class="hint"></span>
+      </div>
+
       <div class="section-title">Automations</div>
       <div class="hint">Recurring agent tasks. Each runs in the project folder it was created for, while the app is open with that folder; daily ones catch up on launch. Runs show in History with a ⏱ title. Needs Agent mode.</div>
       <div id="auto-list"></div>
@@ -362,6 +369,7 @@
   <script src="models.js"></script>
   <script src="approvals.js"></script>
   <script src="schedule.js"></script>
+  <script src="diffblocks.js"></script>
   <script src="toolparse.js"></script>
   <script src="app.js"></script>
 </body>

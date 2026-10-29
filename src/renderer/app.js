@@ -1,4 +1,4 @@
-/* global monaco, marked, DOMPurify, require, api, icon, iconEl, fileBadge, MODEL_CATALOG, FIT_INFO, recommendModels, recommendLongContext, catalogEntryFor, describeSpecs, formatGB, formatContext, DANGEROUS_COMMAND, commandNeedsApproval, ToolParse */
+/* global monaco, marked, DOMPurify, require, api, icon, iconEl, fileBadge, MODEL_CATALOG, FIT_INFO, recommendModels, recommendLongContext, catalogEntryFor, describeSpecs, formatGB, formatContext, DANGEROUS_COMMAND, commandNeedsApproval, ToolParse, Schedule, SemIndex, diffOps, diffStats, unifiedDiff, diffSegments, applyBlocks */
 'use strict';
 
 // `api` is the bridge exposed by preload.js (window.api).
@@ -187,6 +187,10 @@ async function openWorkspace(dir, silent) {
   });
   closeReview(true);
   state.settings = await api.getSettings();
+  state.semReady = false;
+  api.semStatus().then((st) => {
+    state.semReady = !!st.exists;
+  }).catch(() => {});
   $('#term-shell').textContent = ws.platform === 'win32' ? '· cmd.exe' : '· sh';
   $('#term-out').innerHTML = '';
   await loadConversations();
@@ -1508,6 +1512,15 @@ async function showConvModelMenu(anchor) {
   showMenu(r.left, r.top, items, { above: true });
 }
 
+const SEM_TOOL = {
+  type: 'function',
+  function: {
+    name: 'semantic_search',
+    description: 'Search the project\'s semantic code index: returns the most relevant functions/classes for a concept, plus related files from the import graph. Better than search_code for "where is X handled?" questions; use search_code for exact strings.',
+    parameters: { type: 'object', properties: { query: { type: 'string', description: 'The concept to find, e.g. "where are commands approved before running".' } }, required: ['query'] }
+  }
+};
+
 const CONSULT_TOOL = {
   type: 'function',
   function: {
@@ -1523,6 +1536,7 @@ function toolsFor(c) {
   const deferred = deferredCatalog();
   const tools = [...core, ...deferred.filter((t) => active.has(t.function.name))];
   if (c.skills?.length) tools.push(LOAD_SKILL_TOOL);
+  if (state.semReady) tools.push(SEM_TOOL);
   if (heavyOverride()) tools.push(CONSULT_TOOL);
   if ((heavyOverride() || conversationOverride(c)) && !tools.some((t) => t.function.name === 'run_program')) tools.push(PROGRAM_TOOL);
   if (deferred.some((t) => !active.has(t.function.name))) tools.push(TOOL_SEARCH_TOOL);
@@ -1531,7 +1545,7 @@ function toolsFor(c) {
 
 // Tools that only read can run together; anything that changes files or runs commands is a
 // barrier that runs alone, in the order Qwen asked.
-const READ_ONLY_TOOLS = new Set(['list_files', 'read_file', 'search_code', 'load_skill', 'tool_search', 'web_search', 'fetch_url', 'consult_planner']);
+const READ_ONLY_TOOLS = new Set(['list_files', 'read_file', 'search_code', 'semantic_search', 'load_skill', 'tool_search', 'web_search', 'fetch_url', 'consult_planner']);
 const WEB_PAGE_CHARS = 12_000;
 const READ_PAGE = 400;
 
@@ -1570,6 +1584,7 @@ const TOOL_INFO = {
   run_command: { icon: 'terminal', verb: 'Run', doing: 'Running' },
   install_app: { icon: 'download', verb: 'Install', doing: 'Installing' },
   run_program: { icon: 'zap', verb: 'Program', doing: 'Running a program with' },
+  semantic_search: { icon: 'crosshair', verb: 'Semantic', doing: 'Searching the code index for' },
   install_git: { icon: 'download', verb: 'Install', doing: 'Installing Git' },
   todo_write: { icon: 'list', verb: 'Plan', doing: 'Updating the plan' },
   ask_user: { icon: 'chat', verb: 'Question', doing: 'Waiting for your answer to' },
@@ -1746,6 +1761,7 @@ function describeCall(name, args) {
       return { target: 'Git' };
     case 'consult_planner':
       return { target: `${heavyLabel()}: ${String(args.question || '').slice(0, 60)}`, title: args.question };
+    case 'semantic_search':
     case 'tool_search':
     case 'web_search':
       return { target: `“${args.query || ''}”` };
@@ -1937,6 +1953,11 @@ async function executeTool(c, call, row) {
         row.setBody(r.content);
         const more = !args.file && r.files.length ? `\n\nSupporting files (load one with load_skill and file): ${r.files.join(', ')}` : '';
         return { result: `<skill name="${skill.name}"${args.file ? ` file="${args.file}"` : ''}>\n${truncate(r.content)}\n</skill>${more}`, meta: args.file || `${skill.scope} skill` };
+      }
+      case 'semantic_search': {
+        const r = await api.semSearch(String(args.query || ''));
+        row.setBody(r.text);
+        return { result: truncate(r.text), meta: r.hits ? `${r.hits} hits` : 'no hits', failed: !!r.failed };
       }
       case 'consult_planner': {
         const override = heavyOverride();
@@ -2153,14 +2174,22 @@ async function executeTool(c, call, row) {
   }
 }
 
-// Shared by write_file and edit_file. `before` is null for a new file.
+// Shared by write_file and edit_file. `before` is null for a new file. In ask mode the
+// approval card offers per-block accept/reject; it then resolves { content } with the composed
+// text, and the model is told the file diverged from what it sent.
 async function applyAgentEdit(c, row, p, before, after, title) {
-  const stats = diffStats(before ?? '', after);
   row.setDiffBody(unifiedDiff(before ?? '', after));
+  let partial = false;
   if (needsApproval('edit')) {
-    const ok = await row.requestApproval({ kind: 'edit', question: title, path: p, original: before ?? '', modified: after, stats });
+    const ok = await row.requestApproval({ kind: 'edit', question: title, path: p, original: before ?? '', modified: after, stats: diffStats(before ?? '', after), allowPartial: true });
     if (!ok) return { result: 'The user rejected this change. Do not retry it; ask the user how they would like to proceed.', rejected: true };
+    if (typeof ok === 'object' && typeof ok.content === 'string' && ok.content !== after) {
+      after = ok.content;
+      partial = true;
+      row.setDiffBody(unifiedDiff(before ?? '', after));
+    }
   }
+  const stats = diffStats(before ?? '', after);
   await api.write(p, after);
   syncOpenTab(p, after);
   recordChange(c, p, before, after);
@@ -2175,7 +2204,8 @@ async function applyAgentEdit(c, row, p, before, after, title) {
   }
   row.linkToChange(p);
   const verb = before === null ? 'Created' : 'Edited';
-  return { result: `${verb} ${p} (${after.split('\n').length} lines, +${stats.added} −${stats.removed}).`, metaHtml: statsHtml(stats) };
+  const note = partial ? ' The user accepted only some of the change blocks — the file differs from what you sent; re-read it before editing it again.' : '';
+  return { result: `${verb} ${p} (${after.split('\n').length} lines, +${stats.added} −${stats.removed}).${note}`, metaHtml: statsHtml(stats) };
 }
 
 function normPath(p) {
@@ -3447,12 +3477,31 @@ function makeStepRow(c, container, call, rec) {
         renderHistory();
         const review = () => openReview({ path: opts.path, original: opts.original, modified: opts.modified, pending: true, title: opts.question, onDecide: finish });
         if (opts.kind === 'edit') {
+          // Per-block accept/reject (ported from qws): each contiguous change is a checkbox;
+          // "Apply selected" composes exactly the ticked blocks onto disk.
+          const blocks = opts.allowPartial ? diffSegments(opts.original, opts.modified) : null;
+          const boxes = [];
+          const strip = blocks && blocks.length > 1
+            ? el('div', { class: 'block-strip' }, ...blocks.map((blk) => {
+                const box = el('input', { type: 'checkbox', checked: true });
+                boxes.push(box);
+                return el('label', { class: 'block-chip', title: `-${blk.oldLines.length} +${blk.newLines.length} lines` }, box, `@${blk.startLine}`);
+              }))
+            : null;
+          const applySelected = () => {
+            const accepted = new Set(boxes.map((b, i) => (b.checked ? i : -1)).filter((i) => i >= 0));
+            if (!accepted.size) return finish(false);
+            if (accepted.size === blocks.length) return finish(true);
+            finish({ content: applyBlocks(opts.original, opts.modified, accepted) });
+          };
           bar.append(
             el('div', { class: 'q' }, el('span', { text: opts.question }), el('span', { class: 'stats', html: statsHtml(opts.stats) })),
+            ...(strip ? [strip] : []),
             el('div', { class: 'btns' },
               el('button', { class: 'ghost', onclick: review }, iconEl('columns'), 'Review'),
               el('button', { class: 'ghost danger-text', onclick: () => finish(false) }, 'Reject'),
-              el('button', { class: 'primary', onclick: () => finish(true) }, iconEl('check'), 'Approve'))
+              ...(strip ? [el('button', { class: 'ghost', title: 'Write only the ticked blocks', onclick: applySelected }, iconEl('check'), 'Apply selected')] : []),
+              el('button', { class: 'primary', onclick: () => finish(true) }, iconEl('check'), 'Approve all'))
           );
           if (state.settings.followAgent && c === state.conv) review();
         } else if (opts.kind === 'mcp') {
@@ -3508,88 +3557,8 @@ function scrollChat(c, force) {
 // ===================================================================
 // Line-based LCS diff with common prefix/suffix trimmed, so big files with small edits stay cheap.
 // Returns [op, line, indexInA, indexInB] entries, or null when the changed region is too large.
-function diffOps(a, b) {
-  const A = a === '' ? [] : a.split(/\r?\n/);
-  const B = b === '' ? [] : b.split(/\r?\n/);
-  let pre = 0;
-  while (pre < A.length && pre < B.length && A[pre] === B[pre]) pre++;
-  let suf = 0;
-  while (suf < A.length - pre && suf < B.length - pre && A[A.length - 1 - suf] === B[B.length - 1 - suf]) suf++;
-  const a2 = A.slice(pre, A.length - suf);
-  const b2 = B.slice(pre, B.length - suf);
-  if (a2.length * b2.length > 4_000_000) return null;
-  const n = a2.length;
-  const m = b2.length;
-  const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
-  for (let i = n - 1; i >= 0; i--) {
-    for (let j = m - 1; j >= 0; j--) {
-      dp[i][j] = a2[i] === b2[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-    }
-  }
-  const ops = [];
-  for (let k = 0; k < pre; k++) ops.push([' ', A[k], k, k]);
-  let i = 0;
-  let j = 0;
-  while (i < n || j < m) {
-    if (i < n && j < m && a2[i] === b2[j]) {
-      ops.push([' ', a2[i], i + pre, j + pre]);
-      i++;
-      j++;
-    } else if (j < m && (i >= n || dp[i][j + 1] >= dp[i + 1][j])) {
-      ops.push(['+', b2[j], i + pre, j + pre]);
-      j++;
-    } else {
-      ops.push(['-', a2[i], i + pre, j + pre]);
-      i++;
-    }
-  }
-  for (let k = 0; k < suf; k++) ops.push([' ', A[A.length - suf + k], A.length - suf + k, B.length - suf + k]);
-  return ops;
-}
-
-function diffStats(a, b) {
-  const ops = diffOps(a, b);
-  if (!ops) return { added: b.split('\n').length, removed: a.split('\n').length };
-  let added = 0;
-  let removed = 0;
-  for (const [op] of ops) {
-    if (op === '+') added++;
-    else if (op === '-') removed++;
-  }
-  return { added, removed };
-}
-
-function unifiedDiff(a, b, context = 3) {
-  const ops = diffOps(a, b);
-  if (!ops) return '(change too large for an inline preview — use Review)';
-  const out = [];
-  let k = 0;
-  while (k < ops.length) {
-    if (ops[k][0] === ' ') {
-      k++;
-      continue;
-    }
-    const start = Math.max(0, k - context);
-    let end = k;
-    while (end < ops.length) {
-      if (ops[end][0] !== ' ') {
-        end++;
-        continue;
-      }
-      let run = 0;
-      while (end + run < ops.length && ops[end + run][0] === ' ') run++;
-      if (run > context * 2 || end + run >= ops.length) {
-        end = Math.min(ops.length, end + context);
-        break;
-      }
-      end += run;
-    }
-    out.push(`@@ line ${ops[start][3] + 1} @@`);
-    for (let x = start; x < end; x++) out.push(ops[x][0] + ops[x][1]);
-    k = end;
-  }
-  return out.join('\n') || '(no changes)';
-}
+// diffOps/diffStats/unifiedDiff/diffSegments/applyBlocks live in diffblocks.js (pure,
+// unit-tested); as a classic script it already defines them as globals.
 
 // ===================================================================
 // Terminal
@@ -3854,6 +3823,44 @@ async function addAutomationFromForm() {
 
 const SKILL_SCOPE_TEXT = { project: 'project', claude: 'project · .claude', user: 'personal', claudeuser: 'personal · ~/.claude' };
 
+async function renderSemSettings() {
+  const out = $('#sem-status');
+  if (!out) return;
+  if (!state.ws) {
+    out.textContent = 'Open a project folder first.';
+    return;
+  }
+  const st = await api.semStatus().catch(() => ({ exists: false }));
+  state.semReady = !!st.exists;
+  out.textContent = st.exists
+    ? `${st.chunks} chunks from ${st.files} files · ${st.embedder} · built ${new Date(st.builtAt).toLocaleString()}`
+    : 'No index yet for this project.';
+}
+
+async function buildSemIndex() {
+  const out = $('#sem-status');
+  if (!state.ws) return flash('Open a project folder first.');
+  const btn = $('#sem-build-btn');
+  btn.disabled = true;
+  out.textContent = 'Indexing…';
+  const off = api.onSemProgress((p) => {
+    if (p.phase === 'embed' && p.total) out.textContent = `Embedding ${p.done}/${p.total} chunks…`;
+  });
+  try {
+    const r = await api.semIndex();
+    if (r.ok) {
+      state.semReady = true;
+      out.textContent = `${r.chunks} chunks from ${r.files} files · ${r.embedder} · ${r.embedded} newly embedded`;
+      flash('Semantic index ready — Qwen can now use semantic_search.');
+    } else {
+      out.textContent = r.output || 'Indexing failed.';
+    }
+  } finally {
+    off();
+    btn.disabled = false;
+  }
+}
+
 async function renderSkillsSettings() {
   const list = $('#skills-list');
   if (!list) return;
@@ -3987,6 +3994,7 @@ function openSettings() {
   renderMcpSettings();
   renderSkillsSettings();
   renderAutomations();
+  renderSemSettings();
   $('#skill-install-result').textContent = '';
   $('#s-approvalMode').value = approvalMode();
   $('#s-allowedCommands').value = (s.allowedCommands || []).join(', ');
@@ -4788,6 +4796,7 @@ function bindUi() {
   $('#mcp-add-btn').onclick = addServerFromForm;
   $('#skill-install-btn').onclick = installSkillFromUrl;
   $('#auto-add-btn').onclick = addAutomationFromForm;
+  $('#sem-build-btn').onclick = buildSemIndex;
   $('#auto-kind').onchange = (e) => {
     const daily = e.target.value === 'daily';
     $('#auto-hours-row').classList.toggle('hidden', daily);

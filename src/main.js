@@ -1069,6 +1069,156 @@ ipcMain.handle('program:run', async (event, runId, code, toolNames, timeoutMs) =
   }
 });
 
+// ---------- semantic code index ----------
+// Ported from qws: structural chunks embedded via Ollama (nomic-embed-text) when reachable,
+// else a built-in offline hash embedder; stored as one JSON file per project. The chunk-hash
+// manifest makes refreshes incremental: unchanged files cost nothing.
+const sem = require('./renderer/semindex.js');
+const SEM_EMBED_MODEL = 'nomic-embed-text';
+const SEM_SKIP = new Set(['.git', '.qwen', 'node_modules', '__pycache__', '.venv', 'venv', 'dist', 'build', 'target', '.idea', '.vscode']);
+
+function semIndexPath() {
+  return path.join(workspaceRoot, '.qwen', 'semindex.json');
+}
+
+async function semWalkFiles() {
+  const out = {};
+  const walk = async (dir, rel) => {
+    let entries = [];
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        if (!SEM_SKIP.has(e.name)) await walk(path.join(dir, e.name), r);
+      } else if (sem.SEM_CODE_EXTS.includes(path.extname(e.name).toLowerCase())) {
+        try {
+          const st = await fsp.stat(path.join(dir, e.name));
+          if (st.size <= 512 * 1024) out[r] = await fsp.readFile(path.join(dir, e.name), 'utf8');
+        } catch {
+          /* unreadable */
+        }
+      }
+    }
+  };
+  await walk(workspaceRoot, '');
+  return out;
+}
+
+async function semProbeOllama(s) {
+  try {
+    const res = await fetch(`${ollamaRoot(s)}/api/embed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: SEM_EMBED_MODEL, input: ['probe'] }),
+      signal: AbortSignal.timeout(5000)
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return Array.isArray(data.embeddings) && data.embeddings.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function semEmbed(meta, s, texts) {
+  if (meta.embedder.startsWith('hash-')) return sem.hashEmbed(texts, meta.dim || 256);
+  const out = [];
+  for (let i = 0; i < texts.length; i += 32) {
+    const batch = texts.slice(i, i + 32);
+    const res = await fetch(`${ollamaRoot(s)}/api/embed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: SEM_EMBED_MODEL, input: batch }),
+      signal: AbortSignal.timeout(120_000)
+    });
+    if (!res.ok) throw new Error(`Embedding failed: HTTP ${res.status}`);
+    const data = await res.json();
+    out.push(...(data.embeddings || []));
+  }
+  return out;
+}
+
+// Build or incrementally refresh the index; returns it plus what changed.
+async function semRefresh(progress) {
+  if (!workspaceRoot) throw new Error('No workspace folder is open.');
+  const s = loadSettings();
+  const files = await semWalkFiles();
+  let idx = null;
+  try {
+    idx = JSON.parse(await fsp.readFile(semIndexPath(), 'utf8'));
+  } catch {
+    /* fresh build */
+  }
+  if (!idx || !idx.meta) {
+    const useOllama = await semProbeOllama(s);
+    idx = { meta: { embedder: useOllama ? `ollama-${SEM_EMBED_MODEL}` : 'hash-256', dim: useOllama ? 0 : 256, builtAt: 0 }, files: {}, chunks: [] };
+  }
+  const digests = {};
+  for (const [p, t] of Object.entries(files)) digests[p] = sem.fnv1a64(t);
+  const changed = Object.keys(files).filter((p) => idx.files[p] !== digests[p]);
+  const removedOrChanged = new Set([...changed, ...Object.keys(idx.files).filter((p) => !(p in files))]);
+  const oldVecs = new Map(idx.chunks.map((c) => [c.id, c.vec]));
+  idx.chunks = idx.chunks.filter((c) => !removedOrChanged.has(c.path));
+  const fresh = [];
+  for (const p of changed) for (const c of sem.chunkFile(p, files[p])) fresh.push(c);
+  const toEmbed = fresh.filter((c) => !oldVecs.has(c.id));
+  progress?.({ phase: 'embed', done: 0, total: toEmbed.length });
+  for (let i = 0; i < toEmbed.length; i += 32) {
+    const batch = toEmbed.slice(i, i + 32);
+    const vecs = await semEmbed(idx.meta, s, batch.map(sem.promptText));
+    batch.forEach((c, j) => {
+      c.vec = (vecs[j] || []).map((v) => Math.round(v * 1e5) / 1e5);
+    });
+    if (!idx.meta.dim && vecs[0]) idx.meta.dim = vecs[0].length;
+    progress?.({ phase: 'embed', done: Math.min(i + 32, toEmbed.length), total: toEmbed.length });
+  }
+  for (const c of fresh) if (!c.vec) c.vec = oldVecs.get(c.id);
+  idx.chunks.push(...fresh);
+  idx.files = digests;
+  idx.meta.builtAt = Date.now();
+  await fsp.mkdir(path.dirname(semIndexPath()), { recursive: true });
+  await fsp.writeFile(semIndexPath(), JSON.stringify(idx), 'utf8');
+  return { idx, files, embedded: toEmbed.length, changedFiles: changed.length };
+}
+
+ipcMain.handle('sem:status', async () => {
+  try {
+    const idx = JSON.parse(await fsp.readFile(semIndexPath(), 'utf8'));
+    return { exists: true, chunks: idx.chunks.length, files: Object.keys(idx.files).length, embedder: idx.meta.embedder, builtAt: idx.meta.builtAt };
+  } catch {
+    return { exists: false };
+  }
+});
+
+ipcMain.handle('sem:index', async (event) => {
+  try {
+    const r = await semRefresh((pr) => {
+      if (!event.sender.isDestroyed()) event.sender.send('sem:progress', pr);
+    });
+    return { ok: true, chunks: r.idx.chunks.length, files: Object.keys(r.idx.files).length, embedded: r.embedded, embedder: r.idx.meta.embedder };
+  } catch (err) {
+    return { ok: false, output: err.message };
+  }
+});
+
+ipcMain.handle('sem:search', async (_e, query, k) => {
+  try {
+    const { idx, files } = await semRefresh(null); // incremental: unchanged files cost nothing
+    if (!idx.chunks.length) return { text: 'The semantic index is empty — the project has no indexable code files.', hits: 0 };
+    const s = loadSettings();
+    const [qv] = await semEmbed(idx.meta, s, [String(query || '')]);
+    const top = sem.cosineTopK(qv, idx.chunks, Math.min(12, Math.max(1, Number(k) || 6)));
+    const neighbors = sem.depNeighbors(files, new Set(top.map((t) => t.chunk.path)));
+    return { text: sem.formatHits(top, neighbors), hits: top.length };
+  } catch (err) {
+    return { text: `Semantic search failed: ${err.message}`, hits: 0, failed: true };
+  }
+});
+
 // ---------- web research ----------
 ipcMain.handle('web:search', (_e, query) => web.webSearch(loadSettings(), String(query || '').slice(0, 400)));
 ipcMain.handle('web:fetch', (_e, url) => web.fetchPage(loadSettings(), url));
