@@ -19,7 +19,8 @@ function add(c, kind, data) {
 }
 
 // Settings safe to put in a report: every key that smells like a secret is masked, deep.
-const SECRET_KEY = /apikey|token|secret|password/i;
+// Anchored so counters survive: maxResponseTokens or promptTokens are numbers, not secrets.
+const SECRET_KEY = /secret|password|key$|token$/i;
 
 function redactSettings(s) {
   const walk = (v) => {

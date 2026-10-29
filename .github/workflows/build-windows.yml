@@ -43,6 +43,7 @@ jobs:
       - run: xvfb-run -a npm run test:e2e:github
       - run: xvfb-run -a npm run test:e2e:recipes
       - run: xvfb-run -a npm run test:e2e:lessons
+      - run: xvfb-run -a npm run test:e2e:toolargs
 
   build:
     needs: smoke

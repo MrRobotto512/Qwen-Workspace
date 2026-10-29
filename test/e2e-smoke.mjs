@@ -9,6 +9,7 @@ import path from 'node:path';
 
 const fail = (msg) => {
   console.error(`SMOKE FAIL: ${msg}`);
+  if (process.env.GITHUB_ACTIONS) console.log(`::error title=boot smoke::${String(msg).replace(/\n/g, ' ').slice(0, 800)}`);
   process.exitCode = 1;
 };
 

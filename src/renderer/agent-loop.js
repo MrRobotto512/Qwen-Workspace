@@ -995,7 +995,9 @@ async function runConversation(c) {
     view.finish(calls.length > 0);
 
     const msg = { role: 'assistant', content: stripThink(content) };
-    if (calls.length) msg.tool_calls = calls;
+    // Normalize arguments before the call enters history: one array-shaped `arguments`
+    // (a 7B writing ask_user([{…}])) would 400 every later request on Ollama's native API.
+    if (calls.length) msg.tool_calls = calls.map((tc) => ({ ...tc, function: { ...tc.function, arguments: ToolParse.normalizeToolArgs(tc.function.arguments) } }));
     c.history.push(msg);
     saveConv(c);
     if (!calls.length) {

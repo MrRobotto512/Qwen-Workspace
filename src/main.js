@@ -581,6 +581,8 @@ function toOllamaMessages(messages) {
         } catch {
           /* keep empty */
         }
+        // Ollama requires an object here; a replayed array/scalar would 400 every request.
+        if (!args || typeof args !== 'object' || Array.isArray(args)) args = { value: args };
         return { function: { name: tc.function.name, arguments: args } };
       });
     }
@@ -693,6 +695,8 @@ function toAnthropicRequest(s, payload) {
         } catch {
           /* send an empty input rather than fail the whole request */
         }
+        // tool_use.input must be an object; wrap anything else so the request stays valid.
+        if (!input || typeof input !== 'object' || Array.isArray(input)) input = { value: input };
         content.push({ type: 'tool_use', id: tc.id, name: tc.function.name, input });
       }
       if (content.length) messages.push({ role: 'assistant', content });
