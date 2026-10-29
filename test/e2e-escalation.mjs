@@ -10,6 +10,9 @@ import path from 'node:path';
 
 const fail = (msg) => {
   console.error(`ESCALATION SMOKE FAIL: ${msg}`);
+  // On GitHub Actions, surface the reason as an annotation: readable from the checks
+  // API even when the raw logs are not.
+  if (process.env.GITHUB_ACTIONS) console.log(`::error title=ESCALATION smoke::${String(msg).replace(/\n/g, " ").slice(0, 800)}`);
   process.exitCode = 1;
 };
 
