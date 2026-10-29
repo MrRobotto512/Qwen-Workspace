@@ -40,13 +40,23 @@ test('normalizeNodes survives junk in the saved list', () => {
   assert.ok(nodes[1].id.startsWith('node-'));
 });
 
-test('multiNode is false for the implicit single node and disabled remotes', () => {
+test('multiNode is false only when the enabled set is exactly This PC', () => {
   assert.strictEqual(N.multiNode({ baseUrl: 'http://localhost:11434' }), false);
   assert.strictEqual(
     N.multiNode({ baseUrl: 'http://x', ollamaNodes: [{ id: 'n', baseUrl: 'http://y', enabled: false }] }),
     false
   );
   assert.strictEqual(N.multiNode({ baseUrl: 'http://x', ollamaNodes: [{ id: 'n', baseUrl: 'http://y' }] }), true);
+  // This PC disabled with one remote enabled means "run on the other machine" — must route.
+  assert.strictEqual(
+    N.multiNode({ baseUrl: 'http://x', ollamaNodes: [{ id: 'this-pc', enabled: false }, { id: 'n', baseUrl: 'http://y', enabled: true }] }),
+    true
+  );
+  // Everything disabled: nothing to route to; fall back to plain behavior.
+  assert.strictEqual(
+    N.multiNode({ baseUrl: 'http://x', ollamaNodes: [{ id: 'this-pc', enabled: false }, { id: 'n', baseUrl: 'http://y', enabled: false }] }),
+    false
+  );
 });
 
 test('sameModel treats a missing tag as :latest', () => {

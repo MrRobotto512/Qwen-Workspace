@@ -55,10 +55,14 @@ function normalizeNodes(s) {
   return [thisPc, ...remotes];
 }
 
-// Whether routing is in play at all: until the user saves a node setup or adds a second
-// node, there is nothing to check or route and the app behaves exactly as before.
+// Whether routing is in play at all: it is, unless the enabled set is exactly the implicit
+// "This PC" — then there is nothing to route and the app behaves exactly as it always did.
+// Disabling This PC with one remote enabled MUST route (the user is saying "run on the
+// other machine"), which a plain count-above-one check got wrong.
 function multiNode(s) {
-  return normalizeNodes(s).filter((n) => n.enabled).length > 1;
+  const enabled = normalizeNodes(s).filter((n) => n.enabled);
+  if (!enabled.length) return false;
+  return !(enabled.length === 1 && enabled[0].id === THIS_PC_ID);
 }
 
 // Ollama tags come back like "qwen2.5-coder:7b"; a model with no tag means ":latest".
