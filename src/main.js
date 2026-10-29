@@ -37,6 +37,7 @@ const DEFAULT_SETTINGS = {
   maxSteps: 60, // how many tool rounds the agent may take before stopping
   maxResponseTokens: 4096, // cap on reply length for cloud providers (max_tokens); 0 = no cap
   keepAlive: '-1', // how long Ollama keeps the model loaded: -1 = forever, '5m', '0' = unload now
+  ollamaNodes: [], // extra Ollama servers [{ id, name, baseUrl, enabled, keepAlive }]; "This PC" (baseUrl above) is implicit
   heavy: { enabled: false, provider: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKey: '', model: 'gemini-2.5-flash' },
   automations: [], // recurring agent tasks: { id, name, prompt, workspace, schedule, enabled, lastRun, lastStatus }
   webResearch: true, // lets the agent use web_search and fetch_url
@@ -496,8 +497,9 @@ ipcMain.handle('chat:stream', async (event, id, payload) => {
 function chatError(err, s) {
   if (err.name === 'AbortError') return { ok: true, aborted: true };
   let msg = err.message;
-  if (err.cause?.code === 'ECONNREFUSED') {
-    msg = `Could not connect to ${s.baseUrl}. Is Ollama / LM Studio running? (${err.cause.code})`;
+  const code = err.cause?.code;
+  if (code && /^(ECONN|ETIMEDOUT|EHOST|ENET|EAI_|ENOTFOUND|UND_ERR)/.test(code)) {
+    msg = `Could not connect to ${s.baseUrl}. Is Ollama / LM Studio running? (${code})`;
   }
   return { ok: false, error: msg };
 }
@@ -651,6 +653,27 @@ async function ollamaBase() {
   if (s.provider === 'ollama' || (await isOllama(s))) return ollamaRoot(s);
   return 'http://localhost:11434';
 }
+
+// Health-check a list of Ollama nodes in parallel: GET /api/tags with a short timeout,
+// so a powered-off shop PC costs three seconds once, not a hang. Returns one entry per
+// node: { id, up, models } or { id, up: false, error }.
+ipcMain.handle('nodes:check', async (_e, nodes) => {
+  const list = (Array.isArray(nodes) ? nodes : []).slice(0, 16);
+  return Promise.all(
+    list.map(async (n) => {
+      const root = String(n?.baseUrl || '').trim().replace(/\/+$/, '').replace(/\/v1$/, '');
+      if (!/^https?:\/\//.test(root)) return { id: n?.id, up: false, error: 'Not an http(s) URL' };
+      try {
+        const res = await fetch(`${root}/api/tags`, { signal: AbortSignal.timeout(3000) });
+        if (!res.ok) return { id: n.id, up: false, error: `HTTP ${res.status}` };
+        const json = await res.json();
+        return { id: n.id, up: true, models: (json.models || []).map((m) => m.name).filter(Boolean) };
+      } catch (err) {
+        return { id: n.id, up: false, error: err.cause?.code || err.message };
+      }
+    })
+  );
+});
 
 ipcMain.handle('ollama:tags', async () => {
   const base = await ollamaBase();

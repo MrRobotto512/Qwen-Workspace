@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld('api', {
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
 
   systemSpecs: (force) => ipcRenderer.invoke('system:specs', force),
+  nodesCheck: (nodes) => ipcRenderer.invoke('nodes:check', nodes),
   ollamaTags: () => ipcRenderer.invoke('ollama:tags'),
   ollamaPull: (model) => ipcRenderer.invoke('ollama:pull', model),
   ollamaPullCancel: (model) => ipcRenderer.invoke('ollama:pull-cancel', model),

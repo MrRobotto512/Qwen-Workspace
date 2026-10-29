@@ -61,6 +61,7 @@ const state = {
   hf: new Map(), // Hugging Face repo -> resolved YaRN build ({ status, ollamaId, sizeGB, ... })
   modelInfo: null, // { contextLength, rope } of the model in use, from Ollama
   mcp: [], // connected MCP servers and their tools
+  nodeHealth: { at: 0, byId: {} }, // Ollama node health: id -> { up, models, error }
   warned: new Set() // one-time notices already shown this session
 };
 
@@ -1008,6 +1009,19 @@ async function showConvModelMenu(anchor) {
   } catch {
     /* Ollama not reachable; menu still works */
   }
+  // With more than one Ollama node, show each node's reachability at a glance.
+  if (state.settings.provider === 'ollama' && Nodes.multiNode(state.settings)) {
+    refreshNodeHealth();
+    for (const n of Nodes.normalizeNodes(state.settings).filter((x) => x.enabled)) {
+      const hh = state.nodeHealth.byId[n.id];
+      items.push({
+        label: n.name,
+        desc: hh?.up ? `Node online · ${(hh.models || []).length} models` : `Node offline${hh?.error ? ` · ${hh.error}` : ''}`,
+        icon: hh?.up ? 'server' : 'alert',
+        onClick: () => { openSettings(); selectSettingsPage('Ollama nodes'); }
+      });
+    }
+  }
   items.push({ label: 'Model settings…', icon: 'settings', onClick: openSettings });
   showMenu(r.left, r.top, items, { above: true });
 }
@@ -1693,7 +1707,48 @@ function applySettingsToUi() {
   $('#approval-label').textContent = APPROVAL_MODES[mode].label;
   btn.title = `Approvals: ${APPROVAL_MODES[mode].desc}`;
   btn.classList.toggle('hidden', !s.agentMode);
+  syncNodeRouting();
   renderStatusbar();
+}
+
+// ---------- Ollama nodes: health checks and the status pill ----------
+// Routing only wakes up when more than one node is enabled; with the implicit single
+// "This PC" node there are no checks, no timer and no pill — exactly the old behavior.
+let nodeTimer = null;
+
+async function refreshNodeHealth(force) {
+  const s = state.settings;
+  if (!s || s.provider !== 'ollama' || !Nodes.multiNode(s)) return state.nodeHealth;
+  if (!force && Date.now() - state.nodeHealth.at < 25_000) return state.nodeHealth;
+  const nodes = Nodes.normalizeNodes(s);
+  const results = await api.nodesCheck(nodes.map((n) => ({ id: n.id, baseUrl: n.baseUrl }))).catch(() => []);
+  state.nodeHealth = { at: Date.now(), byId: Object.fromEntries(results.map((r) => [r.id, r])) };
+  renderNodeStatus();
+  return state.nodeHealth;
+}
+
+function syncNodeRouting() {
+  const on = state.settings?.provider === 'ollama' && Nodes.multiNode(state.settings);
+  clearInterval(nodeTimer);
+  nodeTimer = null;
+  if (on) {
+    nodeTimer = setInterval(() => refreshNodeHealth(true), 60_000);
+    refreshNodeHealth(true);
+  }
+  renderNodeStatus();
+}
+
+function renderNodeStatus() {
+  const pill = $('#sb-nodes');
+  if (!pill) return;
+  const s = state.settings;
+  const on = s?.provider === 'ollama' && Nodes.multiNode(s);
+  pill.classList.toggle('hidden', !on);
+  if (!on) return;
+  const sum = Nodes.summarize(Nodes.normalizeNodes(s), state.nodeHealth.byId);
+  pill.classList.toggle('bad', sum.up < sum.total);
+  pill.lastChild.textContent = `Nodes ${sum.up}/${sum.total}`;
+  pill.title = `Ollama nodes (click for settings)\n${sum.detail}`;
 }
 
 function renderStatusbar() {
@@ -2160,6 +2215,7 @@ function bindUi() {
   $('#s-fetch-models').onclick = fetchModels;
   $('#s-searchProvider').onchange = renderSearchFields;
   $('#mcp-add-btn').onclick = addServerFromForm;
+  $('#node-add-btn').onclick = addNodeFromForm;
   $('#skill-install-btn').onclick = installSkillFromUrl;
   $('#auto-add-btn').onclick = addAutomationFromForm;
   $('#sem-build-btn').onclick = buildSemIndex;
@@ -2170,6 +2226,10 @@ function bindUi() {
     $('#auto-catchup-row').hidden = !daily;
   };
   $('#sb-mcp').onclick = openSettings;
+  $('#sb-nodes').onclick = () => {
+    openSettings();
+    selectSettingsPage('Ollama nodes');
+  };
   $('#s-save').onclick = saveSettingsFromUi;
   $('#s-cancel').onclick = () => $('#settings-modal').classList.add('hidden');
   $('#s-close').onclick = () => $('#settings-modal').classList.add('hidden');

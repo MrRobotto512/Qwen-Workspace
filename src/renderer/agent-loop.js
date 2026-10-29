@@ -604,6 +604,9 @@ async function runConversation(c) {
   const retriedBusy = new Set(); // models that already got one same-model retry after a 503/429
   const modelSwap = new Map(); // overloaded model -> working sibling, for the rest of this task
   let cloudDead = false; // every cloud sibling was busy; finish on the local default model
+  const nodeRetried = new Set(); // Ollama nodes that already got one retry after not answering
+  const deadNodes = new Set(); // Ollama nodes given up on for the rest of this task
+  let lastNodeId = null; // which node the previous step ran on, to announce changes once
 
   const note = (text) => {
     const item = { t: 'notice', text };
@@ -653,7 +656,20 @@ async function runConversation(c) {
       override = { provider: sNow.provider, baseUrl: sNow.baseUrl, apiKey: sNow.apiKey, model: modelSwap.get(sNow.model) };
     }
     escalateNext = false;
-    const view = addAssistantMessage(c, null, override ? override.model : null);
+    // Local requests route across Ollama nodes when more than one is enabled: the first
+    // healthy node that has the model gets the request, with its own keep_alive.
+    let node = null;
+    if (!override && state.settings.provider === 'ollama' && Nodes.multiNode(state.settings)) {
+      await refreshNodeHealth();
+      node = Nodes.pickNode(Nodes.normalizeNodes(state.settings), state.nodeHealth.byId, state.settings.model, deadNodes);
+      if (node) {
+        if (node.id !== Nodes.THIS_PC_ID) override = { baseUrl: node.baseUrl, keepAlive: node.keepAlive ?? state.settings.keepAlive };
+        if (lastNodeId && node.id !== lastNodeId) note(`Running on the ${node.name} node.`);
+        else if (!lastNodeId && node.id !== Nodes.THIS_PC_ID) note(`This PC's node doesn't have ${state.settings.model} ready — running on ${node.name}.`);
+        lastNodeId = node.id;
+      }
+    }
+    const view = addAssistantMessage(c, null, override?.model || null);
     const id = `r${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
     c.chatId = id;
     setActivity(c, esc ? `Handing off to ${esc.model}` : step === 0 ? 'Thinking' : 'Working');
@@ -694,6 +710,26 @@ async function runConversation(c) {
     }
 
     if (!res.ok) {
+      // A node that stopped answering mid-task (shop PC switched off, Wi-Fi drop) gets one
+      // retry, then the task moves to the next healthy node that has the model and says so.
+      if (node && Nodes.isConnectionError(res.error)) {
+        dropEmptyTurn();
+        if (!nodeRetried.has(node.id)) {
+          nodeRetried.add(node.id);
+          note(`${node.name} did not answer — retrying.`);
+          await new Promise((r) => setTimeout(r, 2000));
+          continue;
+        }
+        deadNodes.add(node.id);
+        await refreshNodeHealth(true);
+        const next = Nodes.nextNode(Nodes.normalizeNodes(state.settings), state.nodeHealth.byId, state.settings.model, deadNodes);
+        if (next) {
+          note(`${node.name} is unreachable — moving to ${next.name} for the rest of this task.`);
+          lastNodeId = next.id;
+          continue;
+        }
+        // No node left; fall through to the normal error message.
+      }
       // "Busy" (503/429) gets a retry, then a sibling; a retired/unknown model (404) switches
       // to a sibling at once. Siblings come from the provider's live /models list, so the app
       // keeps working when the provider renames or retires models. For a cloud helper the last
@@ -918,7 +954,15 @@ async function compactConversation(c, { manual } = {}) {
   const head = h.slice(0, cut);
   const before = contextUse(c).tokens;
   setActivity(c, 'Summarizing earlier messages');
+  // Summarize on whichever node is reachable, so compaction doesn't die with a downed node.
+  let compactOverride;
+  if (state.settings.provider === 'ollama' && Nodes.multiNode(state.settings)) {
+    await refreshNodeHealth();
+    const n = Nodes.pickNode(Nodes.normalizeNodes(state.settings), state.nodeHealth.byId, state.settings.model);
+    if (n && n.id !== Nodes.THIS_PC_ID) compactOverride = { baseUrl: n.baseUrl, keepAlive: n.keepAlive ?? state.settings.keepAlive };
+  }
   const res = await api.chatStream(`k${Date.now()}`, {
+    override: compactOverride,
     messages: [
       { role: 'system', content: 'You compress coding-agent transcripts into a working summary for the same agent to continue from.' },
       { role: 'user', content: `<transcript>\n${transcriptForSummary(head, Math.floor(size * 0.6 * 3.5))}\n</transcript>\n\n${COMPACT_PROMPT}` }

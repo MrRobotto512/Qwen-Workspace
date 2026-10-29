@@ -34,6 +34,7 @@ jobs:
       - run: npm test
       - run: xvfb-run -a npm run test:e2e
       - run: xvfb-run -a npm run test:e2e:agent
+      - run: xvfb-run -a npm run test:e2e:nodes
 
   build:
     needs: smoke

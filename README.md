@@ -75,6 +75,7 @@ On macOS the app installs software with [Homebrew](https://brew.sh) when you ask
 - **Block-level diff approval:** in Ask mode, an edit's approval card shows one checkbox per change block — untick what you don't want and **Apply selected** writes exactly the accepted blocks. Qwen is told the file diverged so it re-reads before editing again.
 - **Tool programs (codemode):** with a cloud/planner model driving, Qwen can batch many tool calls into one short JavaScript program (`run_program`) — read ten files, collect results, apply the same edit everywhere — instead of one call per turn. The program runs in a locked-down sandbox (no network, file system, require or dynamic code; only the normal tools, each still under your approval rules; 50-call cap) and the program itself shows in an approval card first, like a command.
 - **Automations:** recurring agent tasks — "every morning at 9, run the tests and fix simple failures", "every 4 hours, sweep TODOs". Set them up in **Settings → Automations** (every N hours, or daily at a time with catch-up on launch). Each runs in the project it was created for while the app is open, shows up in History with a ⏱ title, and can be paused, run now, or deleted.
+- **Ollama nodes (run on more than one PC):** add a second Ollama server by URL in **Settings → Ollama nodes** — e.g. a shop PC on your network — and requests go to the first node that is online and has your model. If a node stops answering mid-task, the app retries once, moves the task to the next node, and says so in the transcript. Each node gets its own keep-alive (a rarely-used node can take `5m` so it frees its VRAM), the status bar shows how many nodes are up, and the Models window lists what each remote node has installed. With only "This PC" enabled, nothing changes. The app only connects to URLs you type in; getting the shop PC reachable (LAN, VPN) is up to you, and Ollama on it must listen beyond localhost (`OLLAMA_HOST=0.0.0.0`).
 - **Per-conversation model switch:** a model chip in the message box flips just that conversation between your default local Qwen, the planner model (e.g. Gemini), or any installed Ollama model — no trip to Settings. Messages driven by a non-default model carry a badge.
 - **Planner handoff (two models):**
   - Let a local Qwen do the grunt work and hand the hard parts to a stronger "planner" model (e.g. Gemini 2.5 Pro, or another Qwen in the cloud). Set it up in **Settings → Planner (heavy model) handoff**.
@@ -222,6 +223,7 @@ src/
     styles.css       Dark theme
     icons.js         Line icons and file-type badges
     models.js        Qwen model catalog and hardware fit estimates
+    nodes.js         Ollama nodes: settings migration, health-based routing, failover picks
     approvals.js     Approval rules: dangerous-command detection, command chain splitting
     toolparse.js     Text tool-call parsing, stall/tutorial detection, model failover helpers
     schedule.js      Automation schedule parsing (every N minutes / daily at HH:MM)
