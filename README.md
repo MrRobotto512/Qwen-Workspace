@@ -95,6 +95,7 @@ On macOS the app installs software with [Homebrew](https://brew.sh) when you ask
 - **Workflows:**
   - Bundled starter setups you install into a project from the home screen.
   - **Software factory:** adapted from the [multi-agent original](https://github.com/zazencodes/zazencodes-season-3/tree/main/src/software-factory-claude-code) for a single local model. Say "run the factory: <feature>" and Qwen runs it through spec → build → review (code + security) → decide, on its own git branch, writing a record of each stage under `factory/jobs/`. Nothing is merged or pushed without you asking.
+- **QWEN.md learns from each task (Lessons):** after an agent task that ran commands, the local model proposes up to 3 durable lessons — a build command that worked, an error and its fix, a toolchain quirk — as an edit to a `## Lessons` section of QWEN.md, shown in the block-level diff card. Nothing is written without your approval; chat-only tasks and tasks with no commands are skipped; repeats of what QWEN.md already says are deduped away; and when the section fills past 40 lines the proposal merges old entries instead of growing forever. Turn it off in Settings → Agent.
 - **Project memory and skills:**
   - Put standing instructions for Qwen in `QWEN.md` (or `AGENTS.md`) at the project root.
   - Put task-specific instructions in `.qwen/skills/<name>/SKILL.md`. Personal skills that apply to every project go in `%APPDATA%\qwen-workspace\skills\`.
@@ -230,6 +231,7 @@ src/
     models.js        Qwen model catalog and hardware fit estimates
     nodes.js         Ollama nodes: settings migration, health-based routing, failover picks
     github.js        GitHub flow helpers: branch slugs, ahead/behind parsing, versions, notes
+    lessons.js       QWEN.md Lessons: bullet parsing, section math, dedupe, command summary
     escalation.js    Escalation triggers: command fail streaks, big-plan detection
     costs.js         Cloud cost meter: monthly spend record, price table math, budget cap
     approvals.js     Approval rules: dangerous-command detection, command chain splitting

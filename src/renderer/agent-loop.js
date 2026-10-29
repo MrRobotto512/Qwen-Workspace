@@ -598,7 +598,101 @@ async function send() {
     setBusy(c, false);
     saveConv(c, true);
     flushSpend();
+    proposeLessons(c);
   }
+}
+
+// ---------- QWEN.md Lessons: the project gets smarter with each task ----------
+// After an agent task that ran commands, the local model proposes at most 3 durable
+// lessons (a build command that worked, an error and its fix, a toolchain quirk) as an
+// edit to QWEN.md's "## Lessons" section — shown in the block-level diff approval card.
+// Nothing is written without approval; chat-only tasks and tasks with no commands skip it.
+async function proposeLessons(c) {
+  try {
+    if (state.settings.lessonsEnabled === false || !state.ws || c.mode !== 'agent' || c.stopRequested) return;
+    const summary = Lessons.commandSummary(c.history);
+    if (!summary.ran) return;
+    let md = '';
+    try {
+      md = await api.read('QWEN.md');
+    } catch {
+      md = '';
+    }
+    const existing = Lessons.sectionBullets(md);
+    setActivity(c, 'Noting lessons from this task');
+    const res = await api.chatStream(`lessons${Date.now()}`, {
+      messages: [
+        { role: 'system', content: 'You maintain a project\'s QWEN.md notes for an AI coding agent. From a task\'s command history, extract at most 3 durable lessons a future task in this project would need: a build or test command that worked, an error and the fix that worked, or a toolchain quirk. Only project-specific, durable facts — no task trivia, nothing the existing notes already say. Reply with only "- " bullet lines (at most 3), or exactly NONE.' },
+        { role: 'user', content: `Existing lessons in QWEN.md:\n${existing.join('\n') || '(none)'}\n\nWhat this task ran:\n${summary.text}` }
+      ]
+    });
+    setActivity(c, '');
+    if (!res.ok) return;
+    const bullets = Lessons.dedupeLessons(Lessons.parseLessons(stripThink(res.content || '')), md);
+    if (!bullets.length) return;
+
+    let proposed = Lessons.withLessons(md, bullets);
+    if (proposed.sectionLines > Lessons.SECTION_CAP) {
+      // The section is full: propose a merge of old entries instead of endless growth.
+      const merged = await api.chatStream(`lessons${Date.now()}m`, {
+        messages: [
+          { role: 'system', content: `You compact a project's lesson notes. Merge overlapping entries, keep every distinct fact, drop nothing important. Reply with only "- " bullet lines, at most ${Lessons.SECTION_CAP - 4} of them.` },
+          { role: 'user', content: `Current lessons:\n${existing.join('\n')}\n\nNew lessons to fold in:\n${bullets.join('\n')}` }
+        ]
+      });
+      const mergedBullets = merged.ok ? Lessons.parseLessons(stripThink(merged.content || ''), Lessons.SECTION_CAP - 4) : [];
+      if (mergedBullets.length) proposed = { content: Lessons.replaceSection(md, mergedBullets) };
+    }
+    if (!proposed.content || proposed.content === md) return;
+
+    const decision = await lessonsCard(c, md, proposed.content);
+    if (!decision) return;
+    const finalContent = decision === true ? proposed.content : decision.content;
+    await api.write('QWEN.md', finalContent);
+    recordChange(c, 'QWEN.md', md || null, finalContent);
+    c.memoryLoaded = false; // the next turn reads the updated notes
+    flash('QWEN.md updated');
+  } catch {
+    /* lessons must never break or block a finished task */
+  }
+}
+
+// The lessons proposal as a transcript card with the same per-block controls as an edit
+// approval: Review opens the diff, checkboxes pick blocks, nothing happens on Reject.
+function lessonsCard(c, original, modified) {
+  return new Promise((resolve) => {
+    const blocks = diffSegments(original, modified);
+    const boxes = [];
+    const node = el('div', { class: 'msg escalate-card lessons-card' }, iconEl('book'),
+      el('div', { class: 'grow' },
+        el('div', {}, el('b', { text: 'Lessons from this task' }), ` — proposed for QWEN.md’s "Lessons" section. `, el('span', { class: 'stats', html: statsHtml(diffStats(original, modified)) })),
+        blocks && blocks.length > 1
+          ? el('div', { class: 'block-strip' }, ...blocks.map((blk) => {
+              const box = el('input', { type: 'checkbox', checked: true });
+              boxes.push(box);
+              return el('label', { class: 'block-chip', title: `-${blk.oldLines.length} +${blk.newLines.length} lines` }, box, `@${blk.startLine}`);
+            }))
+          : null,
+        el('div', { class: 'stop-actions' },
+          el('button', { class: 'ghost', onclick: () => openReview({ path: 'QWEN.md', original, modified, pending: true, title: 'Lessons for QWEN.md', onDecide: done }) }, iconEl('columns'), 'Review'),
+          el('button', { class: 'ghost danger-text', onclick: () => done(false) }, 'Reject'),
+          boxes.length
+            ? el('button', { class: 'ghost', title: 'Write only the ticked blocks', onclick: () => {
+                const accepted = new Set(boxes.map((b, i) => (b.checked ? i : -1)).filter((i) => i >= 0));
+                if (!accepted.size) return done(false);
+                if (accepted.size === blocks.length) return done(true);
+                done({ content: applyBlocks(original, modified, accepted) });
+              } }, iconEl('check'), 'Apply selected')
+            : null,
+          el('button', { class: 'primary', onclick: () => done(true) }, iconEl('check'), 'Add to QWEN.md'))));
+    function done(v) {
+      node.remove();
+      if (state.review?.onDecide === done) closeReview(true);
+      resolve(v);
+    }
+    c.container.append(node);
+    scrollChat(c, true);
+  });
 }
 
 // Re-enters the loop on the existing history, with no new user message — used by the
@@ -617,6 +711,7 @@ async function rerunConversation(c) {
     setBusy(c, false);
     saveConv(c, true);
     flushSpend();
+    proposeLessons(c);
   }
 }
 

@@ -229,6 +229,7 @@
       <label class="check"><input type="checkbox" id="s-followAgent" /> Follow Qwen: open files in the editor as Qwen reads and edits them</label>
       <label class="check"><input type="checkbox" id="s-includeCurrentFile" /> Attach the open file to messages by default</label>
       <label class="check"><input type="checkbox" id="s-branchPerTask" /> Branch per task: when a task first edits a file in a git repo, work on a new qwen/&lt;task&gt; branch</label>
+      <label class="check"><input type="checkbox" id="s-lessonsEnabled" /> Lessons: after a task that ran commands, propose up to 3 durable notes for QWEN.md (you approve the diff)</label>
       <label>Approvals
         <select id="s-approvalMode">
           <option value="ask">Ask — approve every edit and command</option>
@@ -414,6 +415,7 @@
   <script src="toolparse.js"></script>
   <script src="nodes.js"></script>
   <script src="github.js"></script>
+  <script src="lessons.js"></script>
   <script src="escalation.js"></script>
   <script src="costs.js"></script>
   <script src="providers.js"></script>

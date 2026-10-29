@@ -15,6 +15,7 @@ const fail = (msg) => {
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qw-gh-'));
 const bare = path.join(root, 'origin.git');
+const bare2 = path.join(root, 'published.git'); // what the fake `gh repo create` wires up
 const ws = path.join(root, 'project');
 const other = path.join(root, 'other'); // a second clone, to make the origin move ahead
 const noRemote = path.join(root, 'fresh'); // a repo with no remote, for Publish to GitHub
@@ -26,6 +27,7 @@ const G = 'git -c user.name=T -c user.email=t@t.t -c commit.gpgsign=false';
 
 // ---- repos ----
 run(`git init --bare --initial-branch=main ${JSON.stringify(bare)}`, root);
+run(`git init --bare --initial-branch=main ${JSON.stringify(bare2)}`, root);
 run(`git clone ${JSON.stringify(bare)} ${JSON.stringify(ws)}`, root);
 fs.writeFileSync(path.join(ws, 'readme.md'), 'hello\n');
 run(`${G} add -A && ${G} commit -m "feat: initial" && git push -u origin main`, ws);
@@ -40,7 +42,7 @@ fs.writeFileSync(path.join(fakeBin, 'gh'), `#!/bin/sh
 echo "gh $@" >> ${JSON.stringify(ghLog)}
 case "$1 $2" in
   "auth status") exit 0 ;;
-  "repo create") git remote add origin ${JSON.stringify(bare)} 2>/dev/null; echo "https://github.com/mock/$3"; exit 0 ;;
+  "repo create") git remote add origin ${JSON.stringify(bare2)} 2>/dev/null; echo "https://github.com/mock/$3"; exit 0 ;;
   "pr create") echo "https://github.com/mock/repo/pull/7"; exit 0 ;;
   "release create") echo "https://github.com/mock/repo/releases/tag/$3"; exit 0 ;;
 esac
@@ -132,6 +134,19 @@ try {
   if (!/repo create fresh --private --source \. --remote origin/.test(ghCalls())) fail(`gh repo create was not invoked as expected:\n${ghCalls()}`);
   const remotes = run('git remote', noRemote).trim();
   if (remotes !== 'origin') fail(`the fake gh should have added the origin remote, got "${remotes}"`);
+  // publishRepoFlow chains into pushFlow (confirm accepted by the dialog handler). Wait for
+  // the push to land before closing — tearing down while its dialog is up hangs app.close().
+  const pushDeadline = Date.now() + 20_000;
+  let pushed = false;
+  while (Date.now() < pushDeadline && !pushed) {
+    try {
+      run('git rev-parse main', bare2);
+      pushed = true;
+    } catch {
+      await new Promise((r) => setTimeout(r, 300));
+    }
+  }
+  if (!pushed) fail('the publish flow never pushed main to the new origin');
 } catch (e) {
   fail(String(e).split('\n')[0]);
 } finally {
