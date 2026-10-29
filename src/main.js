@@ -1695,7 +1695,13 @@ ipcMain.handle('git:commit', async (_e, message) => {
   const tmp = path.join(app.getPath('userData'), `commit-msg-${Date.now()}.txt`);
   await fsp.writeFile(tmp, msg + '\n', 'utf8');
   try {
-    const r = await runGit(['commit', '-F', tmp], cwd);
+    let r = await runGit(['commit', '-F', tmp], cwd);
+    // A fresh PC (e.g. with the portable Git the app installed) has no git identity yet,
+    // and git refuses to commit without one. Fall back to a local app identity so the
+    // first commit just works; the user's own git config wins whenever it exists.
+    if (r.code !== 0 && /Author identity unknown|Please tell me who you are|empty ident name|unable to auto-detect email/i.test(r.output)) {
+      r = await runGit(['-c', 'user.name=Qwen Workspace', '-c', 'user.email=qwen-workspace@localhost', 'commit', '-F', tmp], cwd);
+    }
     return { ok: r.code === 0, output: r.output };
   } finally {
     fsp.rm(tmp, { force: true }).catch(() => {});
