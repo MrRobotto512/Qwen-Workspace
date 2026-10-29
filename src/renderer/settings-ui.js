@@ -191,6 +191,64 @@ function selectSettingsPage(key) {
   box.querySelector('.set-content').scrollTop = 0;
 }
 
+// The node list being edited in the dialog; written back on Save. "This PC" mirrors the
+// Model section (URL and keep-alive), so only its enabled flag is editable here.
+let settingsNodes = null;
+
+function renderNodesSettings() {
+  const list = $('#nodes-list');
+  list.replaceChildren(...settingsNodes.map((n) => {
+    const isThis = n.id === Nodes.THIS_PC_ID;
+    const h = state.nodeHealth.byId[n.id];
+    const status = !n.enabled ? 'off' : h ? (h.up ? 'ready' : 'error') : 'connecting';
+    const sub = el('div', {
+      class: `mcp-sub${status === 'error' ? ' bad' : ''}`,
+      text: isThis ? `${n.baseUrl} — URL and keep-alive come from the Model section` : `${n.baseUrl}${n.keepAlive ? ` · keep ${n.keepAlive}` : ''}`
+    });
+    const test = el('button', {
+      class: 'ghost',
+      text: 'Test',
+      onclick: async () => {
+        sub.textContent = 'Checking…';
+        const url = isThis ? $('#s-baseUrl').value.trim() : n.baseUrl;
+        const [r] = await api.nodesCheck([{ id: n.id, baseUrl: url }]);
+        sub.classList.toggle('bad', !r?.up);
+        sub.textContent = r?.up ? `Online — ${r.models.length} model${r.models.length === 1 ? '' : 's'}: ${r.models.slice(0, 6).join(', ')}${r.models.length > 6 ? '…' : ''}` : `Not reachable: ${r?.error || 'no answer'}`;
+      }
+    });
+    return el('div', { class: 'mcp-item' },
+      el('span', { class: `dot ${status}` }),
+      el('div', { class: 'mcp-main' }, el('div', { class: 'mcp-name', text: n.name }), sub),
+      test,
+      el('label', { class: 'toggle', title: 'Use this node' },
+        el('input', { type: 'checkbox', checked: n.enabled, onchange: (e) => { n.enabled = e.target.checked; } })),
+      !isThis
+        ? el('button', { class: 'icon-btn', title: 'Remove', onclick: () => { settingsNodes = settingsNodes.filter((x) => x.id !== n.id); renderNodesSettings(); } }, iconEl('trash'))
+        : null);
+  }));
+}
+
+function addNodeFromForm() {
+  const name = $('#node-new-name').value.trim();
+  const baseUrl = $('#node-new-url').value.trim().replace(/\/+$/, '');
+  const keepAlive = $('#node-new-keep').value.trim();
+  const out = $('#node-add-result');
+  if (!/^https?:\/\//.test(baseUrl)) {
+    out.textContent = 'The node URL must start with http:// or https:// (e.g. http://192.168.1.50:11434).';
+    return;
+  }
+  if (settingsNodes.some((n) => n.baseUrl === baseUrl)) {
+    out.textContent = 'That URL is already in the list.';
+    return;
+  }
+  settingsNodes.push({ id: Nodes.nodeId(baseUrl), name: name || baseUrl.replace(/^https?:\/\//, ''), baseUrl, enabled: true, keepAlive: keepAlive || undefined });
+  $('#node-new-name').value = '';
+  $('#node-new-url').value = '';
+  $('#node-new-keep').value = '';
+  out.textContent = 'Added. Save to keep it.';
+  renderNodesSettings();
+}
+
 function openSettings() {
   const s = state.settings;
   for (const k of ['provider', 'baseUrl', 'apiKey', 'model', 'temperature', 'fontSize', 'contextLength', 'maxResponseTokens', 'keepAlive', 'searchProvider', 'searchApiKey', 'searxngUrl']) $(`#s-${k}`).value = s[k] ?? '';
@@ -217,6 +275,10 @@ function openSettings() {
   $('#s-heavy-model').value = h.model || '';
   $('#s-heavy-fields').classList.toggle('hidden', !h.enabled);
   $('#s-test-result').textContent = '';
+  settingsNodes = Nodes.normalizeNodes(s).map((n) => ({ ...n }));
+  $('#node-add-result').textContent = '';
+  renderNodesSettings();
+  refreshNodeHealth(true).then(() => { if (!$('#settings-modal').classList.contains('hidden')) renderNodesSettings(); });
   buildSettingsPages();
   selectSettingsPage(settingsPageKey);
   $('#settings-modal').classList.remove('hidden');
@@ -243,6 +305,15 @@ async function saveSettingsFromUi() {
     apiKey: $('#s-heavy-apiKey').value.trim(),
     model: $('#s-heavy-model').value.trim()
   };
+  // Nodes: remotes are saved as entered; "This PC" only remembers its enabled flag (its URL
+  // and keep-alive live in the plain settings). A pristine setup saves [] so nothing changes.
+  const thisPc = settingsNodes.find((n) => n.id === Nodes.THIS_PC_ID);
+  const remotes = settingsNodes
+    .filter((n) => n.id !== Nodes.THIS_PC_ID)
+    .map((n) => ({ id: n.id, name: n.name, baseUrl: n.baseUrl, enabled: n.enabled, keepAlive: n.keepAlive }));
+  patch.ollamaNodes = remotes.length || (thisPc && !thisPc.enabled)
+    ? [{ id: Nodes.THIS_PC_ID, enabled: !thisPc || thisPc.enabled }, ...remotes]
+    : [];
   state.settings = await api.setSettings(patch);
   $('#settings-modal').classList.add('hidden');
   applySettingsToUi();

@@ -36,6 +36,36 @@ async function openModels(mode) {
   state.specs = specs;
   state.tags = tags;
   renderModels();
+  renderOtherNodes();
+  refreshNodeHealth(true).then(renderOtherNodes);
+}
+
+// Read-only view of what each remote Ollama node has installed. Downloading and the
+// hardware-fit estimates stay about this PC; a remote node manages its own models.
+function renderOtherNodes() {
+  const box = $('#m-nodes');
+  if (!box) return;
+  const s = state.settings;
+  const remotes = s.provider === 'ollama' ? Nodes.normalizeNodes(s).filter((n) => n.id !== Nodes.THIS_PC_ID) : [];
+  if (!remotes.length) {
+    box.replaceChildren();
+    return;
+  }
+  box.replaceChildren(
+    el('div', { class: 'section-title', text: 'Other nodes' }),
+    ...remotes.map((n) => {
+      const h = state.nodeHealth.byId[n.id];
+      const models = h?.up ? h.models || [] : [];
+      return el('div', { class: 'mcp-item' },
+        el('span', { class: `dot ${!n.enabled ? '' : h?.up ? 'ready' : 'error'}` }),
+        el('div', { class: 'mcp-main' },
+          el('div', { class: 'mcp-name', text: `${n.name}${n.enabled ? '' : ' (disabled)'}` }),
+          el('div', {
+            class: 'mcp-sub',
+            title: models.join('\n'),
+            text: !n.enabled && !h ? n.baseUrl : h?.up ? (models.length ? models.join(', ') : 'No models downloaded') : `Not reachable${h?.error ? `: ${h.error}` : ''}`
+          })));
+    }));
 }
 
 function installedNames() {
