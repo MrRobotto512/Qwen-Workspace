@@ -10,6 +10,8 @@ test('redactSettings masks every secret-looking key, deep, and keeps the rest', 
     searxngUrl: 'http://localhost:8080',
     heavy: { enabled: true, provider: 'anthropic', apiKey: 'sk-ant-xyz', model: 'claude-opus-5-5' },
     mcpServers: [{ name: 'rea', token: 'tok-1', command: 'npx rea' }],
+    authToken: 'bearer-abc',
+    maxResponseTokens: 4096,
     monthlyCapUSD: 20
   };
   const r = D.redactSettings(s);
@@ -23,6 +25,8 @@ test('redactSettings masks every secret-looking key, deep, and keeps the rest', 
   assert.strictEqual(r.heavy.model, 'claude-opus-5-5'); // non-secrets survive
   assert.strictEqual(r.mcpServers[0].command, 'npx rea');
   assert.strictEqual(r.monthlyCapUSD, 20);
+  assert.strictEqual(r.authToken, '•••redacted•••');
+  assert.strictEqual(r.maxResponseTokens, 4096); // "Tokens" is a counter, not a secret
   assert.strictEqual(r.apiKeyEmpty ?? D.redactSettings({ apiKey: '' }).apiKey, ''); // empty stays visibly empty
 });
 

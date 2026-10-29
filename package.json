@@ -15,6 +15,7 @@
     "test:e2e:github": "node test/e2e-github.mjs",
     "test:e2e:recipes": "node test/e2e-recipes.mjs",
     "test:e2e:lessons": "node test/e2e-lessons.mjs",
+    "test:e2e:toolargs": "node test/e2e-toolargs.mjs",
     "dist:mac": "electron-builder --mac dmg zip"
   },
   "author": "",

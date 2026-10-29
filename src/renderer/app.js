@@ -1392,7 +1392,13 @@ async function exportDebugReport(c) {
     text: [el('b', { text: 'Debug report saved.' }), ` ${rel} — secrets are redacted.`],
     actions: [
       { label: 'Open', onClick: () => openFile(rel) },
-      { label: 'Diagnose in a new chat', primary: true, onClick: () => { newChat(); setPrompt(`Read ${rel} and explain what went wrong in that conversation — the model's mistakes, what the app's recovery did, and what to change (settings, model choice, or prompts). Be specific.`, false); } }
+      { label: 'Diagnose in a new chat', primary: true, onClick: () => {
+        newChat();
+        // Diagnosis is planner work: a small local model reading its own crash report
+        // tends to re-crash the same way. Use the heavy model when one is set up.
+        if (heavyOverride()) setConvModel(state.conv, 'heavy');
+        setPrompt(`Read ${rel} and explain what went wrong in that conversation — the model's mistakes, what the app's recovery did, and what to change (settings, model choice, or prompts). Be specific.`, false);
+      } }
     ]
   });
 }

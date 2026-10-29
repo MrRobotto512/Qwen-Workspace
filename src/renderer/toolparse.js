@@ -147,6 +147,22 @@ function isDeadModelError(text) {
 // Sibling models worth trying when one is overloaded or retired. `available` is the provider's
 // live /models list when we could fetch it; the static family is only the offline fallback.
 // Ranking: pro before flash before flash-lite, newest version first.
+// Tool-call arguments must be a JSON *object* on the wire: Ollama's and Anthropic's native
+// APIs reject arrays and scalars, and because the history replays every earlier call, one
+// bad `arguments` bricks the whole conversation with a 400 on every later request. Valid
+// JSON that isn't an object gets wrapped; unparsable text stays as-is (executors handle it).
+function normalizeToolArgs(argText) {
+  const raw = String(argText ?? '').trim();
+  if (!raw) return '{}';
+  try {
+    const v = JSON.parse(raw);
+    if (v && typeof v === 'object' && !Array.isArray(v)) return raw;
+    return JSON.stringify({ value: v });
+  } catch {
+    return raw;
+  }
+}
+
 const GEMINI_FAMILY = ['gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'];
 const CLAUDE_FAMILY = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'];
 
@@ -183,6 +199,6 @@ function modelAlternates(model, available) {
   return pool.filter((m) => m !== failed).sort((a, b) => cls(a) - cls(b) || ver(b) - ver(a));
 }
 
-const ToolParseExports = { TOOL_TEXT_MARKER, jsonToolCallRe, textToolCallStart, readJsonObject, extractTextToolCalls, announcesAction, looksLikeInstructions, stripFakeReminders, isBusyModelError, isDeadModelError, modelAlternates, GEMINI_FAMILY };
+const ToolParseExports = { TOOL_TEXT_MARKER, jsonToolCallRe, textToolCallStart, readJsonObject, extractTextToolCalls, announcesAction, looksLikeInstructions, stripFakeReminders, isBusyModelError, isDeadModelError, modelAlternates, normalizeToolArgs, GEMINI_FAMILY };
 if (typeof module !== 'undefined' && module.exports) module.exports = ToolParseExports;
 if (typeof window !== 'undefined') window.ToolParse = ToolParseExports;

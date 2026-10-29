@@ -155,3 +155,15 @@ test('modelAlternates for claude falls back to the built-in family and never pic
 test('isBusyModelError treats 529 overloaded as busy', () => {
   assert.ok(TP.isBusyModelError('HTTP 529 from https://api.anthropic.com/v1: {"type":"error","error":{"type":"overloaded_error"}}'));
 });
+
+test('normalizeToolArgs keeps objects, wraps arrays and scalars, passes junk through', () => {
+  assert.strictEqual(TP.normalizeToolArgs('{"command":"make"}'), '{"command":"make"}');
+  assert.strictEqual(TP.normalizeToolArgs(''), '{}');
+  assert.strictEqual(TP.normalizeToolArgs(undefined), '{}');
+  // The real-world bricker: a 7B calling ask_user with a bare array.
+  assert.strictEqual(TP.normalizeToolArgs('[{"question":"what?"}]'), '{"value":[{"question":"what?"}]}');
+  assert.strictEqual(TP.normalizeToolArgs('"hello"'), '{"value":"hello"}');
+  assert.strictEqual(TP.normalizeToolArgs('42'), '{"value":42}');
+  assert.strictEqual(TP.normalizeToolArgs('null'), '{"value":null}');
+  assert.strictEqual(TP.normalizeToolArgs('{broken'), '{broken'); // unparsable stays for the executor's own error path
+});
