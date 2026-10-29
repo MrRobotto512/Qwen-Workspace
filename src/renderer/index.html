@@ -85,6 +85,7 @@
             <button class="icon-btn" id="btn-revert-all" title="Revert all changes"><span data-icon="undo"></span></button>
           </div>
         </div>
+        <div id="git-bar" class="git-bar hidden"></div>
         <div id="changes-list" class="scroll"></div>
       </section>
     </aside>
@@ -163,6 +164,7 @@
     <div class="spacer"></div>
     <span class="sb" id="sb-status"></span>
     <button class="sb hidden" id="sb-mcp" title="MCP servers"><span data-icon="plug"></span><span></span></button>
+    <button class="sb hidden" id="sb-git" title="Git sync"><span data-icon="gitCommit"></span><span></span></button>
     <button class="sb hidden" id="sb-nodes" title="Ollama nodes"><span data-icon="server"></span><span></span></button>
     <button class="sb hidden" id="sb-cost" title="Cloud spend this month"><span data-icon="sparkles"></span><span></span></button>
     <button class="sb sb-update hidden" id="sb-update"><span data-icon="download"></span><span id="sb-update-text"></span></button>
@@ -226,6 +228,7 @@
       <label class="check"><input type="checkbox" id="s-agentMode" /> Agent mode: Qwen can use tools (needs a model with tool calling)</label>
       <label class="check"><input type="checkbox" id="s-followAgent" /> Follow Qwen: open files in the editor as Qwen reads and edits them</label>
       <label class="check"><input type="checkbox" id="s-includeCurrentFile" /> Attach the open file to messages by default</label>
+      <label class="check"><input type="checkbox" id="s-branchPerTask" /> Branch per task: when a task first edits a file in a git repo, work on a new qwen/&lt;task&gt; branch</label>
       <label>Approvals
         <select id="s-approvalMode">
           <option value="ask">Ask — approve every edit and command</option>
@@ -410,6 +413,7 @@
   <script src="diffblocks.js"></script>
   <script src="toolparse.js"></script>
   <script src="nodes.js"></script>
+  <script src="github.js"></script>
   <script src="escalation.js"></script>
   <script src="costs.js"></script>
   <script src="providers.js"></script>

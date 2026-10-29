@@ -191,6 +191,7 @@ async function openWorkspace(dir, silent) {
   $('#term-out').innerHTML = '';
   await loadConversations();
   renderAll();
+  startGitSyncTimer();
 }
 
 async function pickWorkspace() {
@@ -439,7 +440,10 @@ function recordChange(c, path, before, after) {
   if ((original !== null && original === after) || (original === null && after === null)) {
     c.changes.delete(path);
   } else {
+    const first = !c.changes.size;
     c.changes.set(path, { original, deleted: after === null, ...diffStats(original ?? '', after ?? '') });
+    // The task's first change can move the work onto its own qwen/<task> branch (opt-in).
+    if (first) maybeTaskBranch(c);
   }
   if (c === state.conv) renderChanges();
   saveConv(c);
@@ -2285,6 +2289,7 @@ function bindUi() {
     openSettings();
     selectSettingsPage('Escalation & costs');
   };
+  $('#sb-git').onclick = (e) => showGitSyncMenu(e.currentTarget);
   $('#s-save').onclick = saveSettingsFromUi;
   $('#s-cancel').onclick = () => $('#settings-modal').classList.add('hidden');
   $('#s-close').onclick = () => $('#settings-modal').classList.add('hidden');

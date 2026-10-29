@@ -39,6 +39,7 @@ const DEFAULT_SETTINGS = {
   keepAlive: '-1', // how long Ollama keeps the model loaded: -1 = forever, '5m', '0' = unload now
   ollamaNodes: [], // extra Ollama servers [{ id, name, baseUrl, enabled, keepAlive }]; "This PC" (baseUrl above) is implicit
   escalation: { failStreak: false, failStreakN: 2, bigPlan: false, bigPlanN: 5 }, // planner-handoff triggers, all off by default
+  branchPerTask: false, // agent tasks that edit files start a qwen/<task> branch
   prices: {}, // $/1M tokens per model, user-entered: { 'gemini-2.5-pro': { in: 1.25, out: 10 } }
   monthlyCapUSD: 0, // when > 0 and the month's priced spend reaches it, escalations ask first
   spend: { month: '', models: {} }, // running cloud token counts, written by the renderer

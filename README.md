@@ -49,6 +49,7 @@ On macOS the app installs software with [Homebrew](https://brew.sh) when you ask
   - Edits that need your approval appear as a full-size diff with **Approve** / **Reject**.
 - **Changes panel:** every file the current conversation created or edited, with added/removed line counts. Click one to see its diff, or revert it. Reverting only undoes that conversation's changes.
 - **Git built in:** clone a repo from the home screen, and commit (with an AI-written message) and push from the Changes panel. If Git isn't on your PC, the app offers to download a portable copy into its own folder — no separate install and no admin rights — so clone, commit and push just work.
+- **GitHub flow:** GitHub is the source of truth. The status bar shows your branch with ahead/behind arrows ("↓3 ↑1", fetched on open and every 10 minutes) and a one-click fast-forward Pull (never a merge — on conflicts it shows git's output and changes nothing). The Changes panel's git bar adds **Publish to GitHub** for a folder with no remote (name + private/public card, private by default), **Open pull request** from a task branch (title and description drafted from the commits and diff, editable before `gh pr create`), and **Publish release** (tag from `package.json`/`pyproject.toml`, notes drafted from the commits since the last tag, editable before `gh release create`). After a push from a non-default branch the app offers the PR directly. An optional **Branch per task** setting moves each agent task onto its own `qwen/<task>` branch the moment it first edits a file. Everything runs through the GitHub CLI: the app detects `gh`, offers to install it (winget / Homebrew), and signs you in with `gh auth login --web` in a real terminal — tokens live in gh's own store, never in the app's settings. Every GitHub action asks first, in every approval mode.
 - **Approval modes** (in the message box):
   - **Ask:** approve every edit and command.
   - **Auto-edit** (default): edits apply right away, and commands ask unless you've marked them "Always allow".
@@ -227,6 +228,7 @@ src/
     icons.js         Line icons and file-type badges
     models.js        Qwen model catalog and hardware fit estimates
     nodes.js         Ollama nodes: settings migration, health-based routing, failover picks
+    github.js        GitHub flow helpers: branch slugs, ahead/behind parsing, versions, notes
     escalation.js    Escalation triggers: command fail streaks, big-plan detection
     costs.js         Cloud cost meter: monthly spend record, price table math, budget cap
     approvals.js     Approval rules: dangerous-command detection, command chain splitting
