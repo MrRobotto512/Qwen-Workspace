@@ -213,12 +213,27 @@ Steps, conventions and gotchas go here. Other files in the folder can be loaded 
 src/
   main.js            Electron main process: window, file system, commands, streaming model API
   preload.js         Safe bridge exposed to the UI as window.api
-  renderer/
-    index.html       Layout
-    icons.js         Line icons and file-type badges
-    styles.css       Dark theme
-    models.js        Qwen model catalog and hardware fit estimates
-    app.js           Editor, explorer, chat, agent loop, diff view, terminal, updates, model picker
+  mcp.js             MCP server connections (stdio and HTTP) for the main process
+  web.js             Web search and page fetch for the web tools
   hardware.js        GPU / VRAM / RAM / CPU detection
   updater.js         Update checks against GitHub Releases (electron-updater for the installer)
+  renderer/          Classic scripts sharing one global scope, loaded in index.html order
+    index.html       Layout and script order
+    styles.css       Dark theme
+    icons.js         Line icons and file-type badges
+    models.js        Qwen model catalog and hardware fit estimates
+    approvals.js     Approval rules: dangerous-command detection, command chain splitting
+    toolparse.js     Text tool-call parsing, stall/tutorial detection, model failover helpers
+    schedule.js      Automation schedule parsing (every N minutes / daily at HH:MM)
+    semindex.js      Semantic index: code chunking, hash embeddings, cosine search, dep graph
+    diffblocks.js    Diff engine: ops, stats, unified view, block segments, partial apply
+    providers.js     Provider catalog, planner (heavy) model, per-conversation override
+    tools.js         Agent tool definitions, per-conversation toolset, tool display map
+    git.js           Git flows: ensure/install git, commit card, push, clone
+    history.js       Conversations: create, persist, restore, History panel
+    agent-loop.js    The send/stream/tool loop, approvals, execution, recovery, compaction
+    automations.js   Recurring agent tasks: scheduler tick and settings list
+    settings-ui.js   Settings panel, model lists, connection checks, skills and MCP settings
+    models-ui.js     "Models for this PC": catalog, downloads, YaRN builds
+    app.js           Wiring: editor, explorer, chat UI, diff view, terminal, updates, menus
 ```
