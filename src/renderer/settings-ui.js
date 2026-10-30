@@ -319,6 +319,9 @@ function openSettings() {
   settingsNodes = Nodes.normalizeNodes(s).map((n) => ({ ...n }));
   $('#node-add-result').textContent = '';
   renderNodesSettings();
+  settingsDevices = (s.devices || []).map((d) => ({ ...d }));
+  $('#device-add-result').textContent = '';
+  renderRemoteSettings();
   const esc = s.escalation || {};
   $('#s-esc-failstreak').checked = !!esc.failStreak;
   $('#s-esc-failstreak-n').value = esc.failStreakN || 2;
@@ -355,6 +358,12 @@ async function saveSettingsFromUi() {
     apiKey: $('#s-heavy-apiKey').value.trim(),
     model: $('#s-heavy-model').value.trim()
   };
+  patch.remoteAccess = {
+    ...(state.settings.remoteAccess || {}),
+    enabled: $('#s-remote-enabled').checked,
+    port: Math.min(65535, Math.max(1024, parseInt($('#s-remote-port').value, 10) || 8931))
+  };
+  patch.devices = settingsDevices.filter((d) => d.url);
   patch.escalation = {
     failStreak: $('#s-esc-failstreak').checked,
     failStreakN: Math.min(10, Math.max(2, parseInt($('#s-esc-failstreak-n').value, 10) || 2)),

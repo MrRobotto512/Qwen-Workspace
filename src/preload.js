@@ -97,6 +97,15 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('git:install-progress', fn);
   },
 
+  remoteState: () => ipcRenderer.invoke('remote:state'),
+  remoteCall: (device, path, method, body) => ipcRenderer.invoke('remote:call', device, path, method, body),
+  remoteAnswer: (id, result) => ipcRenderer.invoke('remote:answer', id, result),
+  onRemoteAsk: (cb) => {
+    const fn = (_e, p) => cb(p);
+    ipcRenderer.on('remote:ask', fn);
+    return () => ipcRenderer.removeListener('remote:ask', fn);
+  },
+
   convList: (workspace) => ipcRenderer.invoke('conv:list', workspace),
   convLoad: (id) => ipcRenderer.invoke('conv:load', id),
   convSave: (conv) => ipcRenderer.invoke('conv:save', conv),

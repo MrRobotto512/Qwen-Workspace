@@ -387,6 +387,24 @@ button.sb:hover { background: var(--bg-3); color: var(--text); }
 .msg-escalate:hover { opacity: 1 !important; color: var(--accent-2); }
 .msg.escalate-card { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--border-2); border-radius: 10px; padding: 10px 12px; background: var(--accent-bg); color: var(--text); }
 
+/* Remote sessions: device sections in History and the live viewer. */
+#remote-history { padding: 4px 10px 10px; }
+#remote-history h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: var(--text-3); margin: 8px 0 4px; }
+.remote-dev-head { display: flex; align-items: center; gap: 7px; padding: 5px 2px; color: var(--text-2); font-size: 12px; }
+.remote-dev-head .name { font-weight: 600; }
+.remote-conv { display: flex; align-items: center; gap: 7px; width: 100%; text-align: left; background: none; border: none; border-radius: 6px; padding: 5px 8px; color: var(--text-2); font-size: 12.5px; cursor: pointer; }
+.remote-conv:hover { background: var(--bg-3); color: var(--text); }
+.remote-conv .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.remote-conv .meta { color: var(--text-3); font-size: 11px; }
+.remote-conv .st-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); flex: none; }
+.remote-conv .st-dot.running, .remote-conv .st-dot.waiting { background: var(--yellow); }
+.remote-conv .st-dot.done { background: var(--green); }
+.remote-conv .st-dot.error, .remote-conv .st-dot.stopped { background: var(--red); }
+.remote-box { width: min(900px, calc(100vw - 48px)); height: calc(100vh - 60px); max-height: none; overflow: hidden; }
+#remote-log { flex: 1; min-height: 0; overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; padding: 10px; background: var(--bg-1); }
+.remote-compose { display: flex; gap: 8px; }
+.remote-compose input { flex: 1; }
+
 /* Remove buttons on recent-folder entries (menu rows and the home screen list). */
 .mi .mi-x { margin-left: auto; opacity: 0; flex: none; }
 .mi:hover .mi-x { opacity: .7; }

@@ -136,6 +136,7 @@ require(['vs/editor/editor.main'], async () => {
   checkConnection();
   initUpdates();
   initMcp();
+  api.onRemoteAsk(handleRemoteAsk); // paired devices starting/continuing/stopping sessions here
   await pickDefaultModel();
 
   if (state.settings.lastWorkspace) await openWorkspace(state.settings.lastWorkspace, true);
@@ -383,6 +384,8 @@ function showView(view, toggle) {
   $$('.view').forEach((v) => v.classList.toggle('hidden', v.id !== `view-${view}`));
   if (view === 'search') setTimeout(() => $('#search-input').focus(), 0);
   if (view === 'changes') renderChanges();
+  if (view === 'history') startRemoteHistory();
+  else stopRemoteHistory();
   saveLayout();
 }
 
@@ -2400,6 +2403,19 @@ function bindUi() {
   $('#mcp-add-btn').onclick = addServerFromForm;
   $('#node-add-btn').onclick = addNodeFromForm;
   $('#price-add-btn').onclick = addPriceFromForm;
+  $('#device-add-btn').onclick = addDeviceFromForm;
+  $('#remote-close').onclick = closeRemoteViewer;
+  $('#remote-send').onclick = sendRemoteMessage;
+  $('#remote-stop').onclick = stopRemoteConversation;
+  $('#remote-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendRemoteMessage();
+    }
+  });
+  $('#remote-modal').onmousedown = (e) => {
+    if (e.target.id === 'remote-modal') closeRemoteViewer();
+  };
   $('#skill-install-btn').onclick = installSkillFromUrl;
   $('#auto-add-btn').onclick = addAutomationFromForm;
   $('#sem-build-btn').onclick = buildSemIndex;
