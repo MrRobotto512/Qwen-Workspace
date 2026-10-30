@@ -42,7 +42,8 @@ const DEFAULT_SETTINGS = {
   branchPerTask: false, // agent tasks that edit files start a qwen/<task> branch
   remoteAccess: { enabled: false, port: 8931, token: '' }, // let paired devices view and drive this app's conversations
   devices: [], // paired peers: [{ id, name, url, token }]
-  lessonsEnabled: true, // after a task that ran commands, propose lessons for QWEN.md (always behind the diff card)
+  lessonsEnabled: true,
+  reviewPass: false, // planner reviews each task's diff and hands fixes back (2 rounds max) // after a task that ran commands, propose lessons for QWEN.md (always behind the diff card)
   prices: {}, // $/1M tokens per model, user-entered: { 'gemini-2.5-pro': { in: 1.25, out: 10 } }
   monthlyCapUSD: 0, // when > 0 and the month's priced spend reaches it, escalations ask first
   spend: { month: '', models: {} }, // running cloud token counts, written by the renderer

@@ -96,6 +96,7 @@ On macOS the app installs software with [Homebrew](https://brew.sh) when you ask
 - **Workflows:**
   - Bundled starter setups you install into a project from the home screen.
   - **Software factory:** adapted from the [multi-agent original](https://github.com/zazencodes/zazencodes-season-3/tree/main/src/software-factory-claude-code) for a single local model. Say "run the factory: <feature>" and Qwen runs it through spec → build → review (code + security) → decide, on its own git branch, writing a record of each stage under `factory/jobs/`. Nothing is merged or pushed without you asking.
+- **Review pass (planner reviews, Qwen fixes):** the eye button in the Changes panel — or the optional "after every task" toggle in Settings → Escalation & costs — sends the conversation's diff to the planner model, which returns concrete findings: file, line, what breaks, and the exact fix. One click hands them to the local model to implement (through the normal edit approvals), a second automatic review confirms the fixes, and anything that survives two rounds gets implemented by the planner directly instead of ping-ponging. Reviews respect the monthly budget cap and show up on the cost meter; style nits are explicitly out of scope — it hunts real defects.
 - **QWEN.md learns from each task (Lessons):** after an agent task that ran commands, the local model proposes up to 3 durable lessons — a build command that worked, an error and its fix, a toolchain quirk — as an edit to a `## Lessons` section of QWEN.md, shown in the block-level diff card. Nothing is written without your approval; chat-only tasks and tasks with no commands are skipped; repeats of what QWEN.md already says are deduped away; and when the section fills past 40 lines the proposal merges old entries instead of growing forever. Turn it off in Settings → Agent.
 - **Project memory and skills:**
   - Put standing instructions for Qwen in `QWEN.md` (or `AGENTS.md`) at the project root.
@@ -237,6 +238,7 @@ src/
     lessons.js       QWEN.md Lessons: bullet parsing, section math, dedupe, command summary
     debuglog.js      Debug reports: event log, settings redaction, markdown rendering
     remote-ui.js     Remote sessions: host-side run handlers, device list, live viewer
+    reviewpass.js    Review pass: diff packaging, findings parsing, fix-handover prompts
     escalation.js    Escalation triggers: command fail streaks, big-plan detection
     costs.js         Cloud cost meter: monthly spend record, price table math, budget cap
     approvals.js     Approval rules: dangerous-command detection, command chain splitting

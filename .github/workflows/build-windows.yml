@@ -45,6 +45,7 @@ jobs:
       - run: xvfb-run -a npm run test:e2e:lessons
       - run: xvfb-run -a npm run test:e2e:toolargs
       - run: xvfb-run -a npm run test:e2e:remote
+      - run: xvfb-run -a npm run test:e2e:review
 
   build:
     needs: smoke
