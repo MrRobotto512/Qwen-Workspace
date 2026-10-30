@@ -599,6 +599,7 @@ async function send() {
     saveConv(c, true);
     flushSpend();
     proposeLessons(c);
+    maybeReviewPass(c);
   }
 }
 
@@ -695,6 +696,106 @@ function lessonsCard(c, original, modified) {
   });
 }
 
+// ---------- Review pass: the planner reviews a task's diff, the local model fixes ----------
+// Judgment on the strong model (mostly cheap input tokens), typing on the free one. Findings
+// arrive as a card; nothing is applied without the usual edit approvals, and after
+// RP_MAX_ROUNDS the surviving findings go to the planner to implement directly.
+
+// The auto trigger, called when a task finishes: only in agent mode, only when files
+// changed, only with a planner configured, and never past the round cap.
+function maybeReviewPass(c) {
+  if (!state.settings.reviewPass || !c || c.mode !== 'agent' || c.stopRequested) return;
+  if (!c.changes.size || !heavyOverride() || c.reviewBusy) return;
+  if ((c.reviewRounds || 0) >= ReviewPass.RP_MAX_ROUNDS) return;
+  reviewChanges(c, { auto: true });
+}
+
+async function reviewChanges(c, { auto } = {}) {
+  if (!c || !c.changes.size) {
+    if (!auto) flash('No changes in this conversation to review');
+    return;
+  }
+  const planner = heavyOverride();
+  if (!planner) {
+    if (!auto) toast({ icon: 'sparkles', text: 'Set up a planner model first (Settings → Planner); the review runs on it.', actions: [{ label: 'Open Settings', primary: true, onClick: openSettings }] });
+    return;
+  }
+  if (c.reviewBusy) return;
+  if (!c.capApproved && Costs.capReached(state.settings.spend, state.settings.prices, state.settings.monthlyCapUSD)) {
+    if (!(await askBudgetCard(c))) return;
+    c.capApproved = true;
+  }
+  c.reviewBusy = true;
+  const noticeItem = { t: 'notice', text: `Review pass: ${heavyLabel()} is reading ${c.changes.size} changed file${c.changes.size === 1 ? '' : 's'}…` };
+  c.display.push(noticeItem);
+  renderNotice(c, noticeItem);
+  DebugLog.add(c, 'notice', { text: noticeItem.text });
+  try {
+    const files = [];
+    for (const [p, ch] of c.changes) {
+      const current = ch.deleted ? null : await api.read(p).catch(() => null);
+      files.push({ path: p, original: ch.original, current, deleted: !!ch.deleted });
+    }
+    const res = await api.chatStream(`review${Date.now()}`, {
+      override: planner,
+      messages: [
+        { role: 'system', content: ReviewPass.REVIEW_SYSTEM },
+        { role: 'user', content: ReviewPass.reviewRequest(files) }
+      ]
+    });
+    if (res.usage && !['ollama', 'lmstudio'].includes(planner.provider)) recordSpend(c, planner.model, res.usage.promptTokens || 0, res.usage.completionTokens || 0);
+    if (!res.ok) {
+      addError(c, `The review pass failed: ${res.error}`);
+      return;
+    }
+    c.reviewRounds = (c.reviewRounds || 0) + 1;
+    const findings = ReviewPass.parseFindings(stripThink(res.content || ''));
+    if (!findings.length) {
+      const okItem = { t: 'notice', text: `Review pass (round ${c.reviewRounds}): no findings — ${heavyLabel()} considers the change sound.` };
+      c.display.push(okItem);
+      renderNotice(c, okItem);
+      saveConv(c);
+      return;
+    }
+    reviewCard(c, findings);
+  } finally {
+    c.reviewBusy = false;
+  }
+}
+
+function reviewCard(c, findings) {
+  const round = c.reviewRounds;
+  const finalRound = round >= ReviewPass.RP_MAX_ROUNDS;
+  const node = el('div', { class: 'msg escalate-card review-card' }, iconEl('eye'),
+    el('div', { class: 'grow' },
+      el('div', {}, el('b', { text: `Review pass (round ${round}): ${findings.length} finding${findings.length === 1 ? '' : 's'}` }), finalRound ? ' — final round; fixes run on the planner.' : ''),
+      el('div', { class: 'review-findings' }, ...findings.map((f, i) =>
+        el('div', { class: 'review-finding' },
+          el('div', { class: 'rf-head', text: `${i + 1}. ${f.file}${f.line ? `:${f.line}` : ''}` }),
+          el('div', { class: 'rf-issue', text: f.issue }),
+          el('div', { class: 'rf-fix', text: `Fix: ${f.fix}` })))),
+      el('div', { class: 'stop-actions' },
+        el('button', { class: 'ghost', onclick: () => node.remove() }, 'Dismiss'),
+        !finalRound ? el('button', { class: 'ghost', onclick: () => { if (sendFindings(c, findings, false)) node.remove(); } }, 'Fix with Qwen') : null,
+        el('button', { class: 'primary', onclick: () => { if (sendFindings(c, findings, true)) node.remove(); } }, finalRound ? 'Fix with the planner' : 'Fix with planner'))));
+  c.container.append(node);
+  scrollChat(c, true);
+}
+
+function sendFindings(c, findings, onPlanner) {
+  if (c.busy) {
+    flash('Wait for the current task to finish first');
+    return false;
+  }
+  if (onPlanner) c.escalateRequested = true;
+  const text = ReviewPass.fixPrompt(findings, c.reviewRounds);
+  addUserMessage(c, text, []);
+  c.history.push({ role: 'user', content: text });
+  renderHistory();
+  runRemoteConversation(c); // the shared background runner; its finally re-reviews when auto is on
+  return true;
+}
+
 // Re-enters the loop on the existing history, with no new user message — used by the
 // Escalate button after the transcript was rewound to an earlier point.
 async function rerunConversation(c) {
@@ -712,6 +813,7 @@ async function rerunConversation(c) {
     saveConv(c, true);
     flushSpend();
     proposeLessons(c);
+    maybeReviewPass(c);
   }
 }
 

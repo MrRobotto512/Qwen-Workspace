@@ -480,6 +480,7 @@ function renderChanges() {
   badge.textContent = String(n);
   badge.classList.toggle('hidden', !n);
   $('#btn-revert-all').classList.toggle('hidden', !n);
+  $('#btn-review').classList.toggle('hidden', !n);
   $('#btn-commit').classList.toggle('hidden', !state.ws);
   $('#btn-push').classList.toggle('hidden', !state.ws);
   const list = $('#changes-list');
@@ -2404,6 +2405,7 @@ function bindUi() {
   $('#node-add-btn').onclick = addNodeFromForm;
   $('#price-add-btn').onclick = addPriceFromForm;
   $('#device-add-btn').onclick = addDeviceFromForm;
+  $('#btn-review').onclick = () => reviewChanges(state.conv);
   $('#remote-close').onclick = closeRemoteViewer;
   $('#remote-send').onclick = sendRemoteMessage;
   $('#remote-stop').onclick = stopRemoteConversation;

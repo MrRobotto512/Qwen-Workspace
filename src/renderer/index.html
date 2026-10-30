@@ -81,6 +81,7 @@
         <div class="view-head">
           <span class="view-title">Changes in this conversation</span>
           <div class="view-actions">
+            <button class="icon-btn" id="btn-review" title="Review this conversation's changes with the planner model"><span data-icon="eye"></span></button>
             <button class="icon-btn" id="btn-commit" title="Commit with git"><span data-icon="gitCommit"></span></button>
             <button class="icon-btn" id="btn-push" title="Push with git"><span data-icon="arrowUp"></span></button>
             <button class="icon-btn" id="btn-revert-all" title="Revert all changes"><span data-icon="undo"></span></button>
@@ -293,6 +294,7 @@
       <label class="check"><input type="checkbox" id="s-esc-failstreak" /> Escalate when the same command keeps failing</label>
       <label>Failures in a row before escalating <input id="s-esc-failstreak-n" type="number" min="2" max="10" /></label>
       <label class="check"><input type="checkbox" id="s-esc-bigplan" /> Suggest the planner when a plan touches many files (asks, never switches silently)</label>
+      <label class="check"><input type="checkbox" id="s-reviewPass" /> Review pass: after a task edits files, the planner reviews the diff and hands concrete fixes back (2 rounds max; also available any time from the Changes panel's eye button)</label>
       <label>Files in the plan before suggesting <input id="s-esc-bigplan-n" type="number" min="2" max="50" /></label>
       <label>Monthly cloud budget, USD
         <input id="s-monthly-cap" type="number" min="0" step="1" />
@@ -451,6 +453,7 @@
   <script src="lessons.js"></script>
   <script src="debuglog.js"></script>
   <script src="remote-ui.js"></script>
+  <script src="reviewpass.js"></script>
   <script src="escalation.js"></script>
   <script src="costs.js"></script>
   <script src="providers.js"></script>

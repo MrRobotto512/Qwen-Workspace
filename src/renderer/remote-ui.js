@@ -34,6 +34,7 @@ async function runRemoteConversation(c) {
     saveConv(c, true);
     flushSpend();
     proposeLessons(c);
+    maybeReviewPass(c);
   }
 }
 
