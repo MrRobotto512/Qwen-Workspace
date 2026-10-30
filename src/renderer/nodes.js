@@ -13,6 +13,11 @@
 // only remembers the enabled flag. Remote nodes are whatever the user added by URL.
 const THIS_PC_ID = 'this-pc';
 
+// Keep-alive a remote node uses when none was set on it. Remote boxes are usually shared
+// machines, so by default they free their VRAM after 5 idle minutes instead of inheriting
+// the global keep-alive (often -1 = pinned forever, which only makes sense on This PC).
+const REMOTE_KEEP_DEFAULT = '5m';
+
 function cleanUrl(u) {
   return String(u || '').trim().replace(/\/+$/, '');
 }
@@ -50,7 +55,7 @@ function normalizeNodes(s) {
       name: nodeName(n),
       baseUrl: cleanUrl(n.baseUrl),
       enabled: n.enabled !== false,
-      keepAlive: typeof n.keepAlive === 'string' && n.keepAlive.trim() ? n.keepAlive.trim() : undefined
+      keepAlive: typeof n.keepAlive === 'string' && n.keepAlive.trim() ? n.keepAlive.trim() : REMOTE_KEEP_DEFAULT
     }));
   return [thisPc, ...remotes];
 }
@@ -130,6 +135,6 @@ function summarize(nodes, health) {
   return { up, total: enabled.length, detail };
 }
 
-const NodesExports = { THIS_PC_ID, nodeId, normalizeNodes, multiNode, sameModel, nodeHasModel, pickNode, nextNode, isConnectionError, summarize };
+const NodesExports = { THIS_PC_ID, REMOTE_KEEP_DEFAULT, nodeId, normalizeNodes, multiNode, sameModel, nodeHasModel, pickNode, nextNode, isConnectionError, summarize };
 if (typeof module !== 'undefined' && module.exports) module.exports = NodesExports;
 if (typeof window !== 'undefined') window.Nodes = NodesExports;

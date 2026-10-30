@@ -241,7 +241,7 @@ function addNodeFromForm() {
     out.textContent = 'That URL is already in the list.';
     return;
   }
-  settingsNodes.push({ id: Nodes.nodeId(baseUrl), name: name || baseUrl.replace(/^https?:\/\//, ''), baseUrl, enabled: true, keepAlive: keepAlive || undefined });
+  settingsNodes.push({ id: Nodes.nodeId(baseUrl), name: name || baseUrl.replace(/^https?:\/\//, ''), baseUrl, enabled: true, keepAlive: keepAlive || Nodes.REMOTE_KEEP_DEFAULT });
   $('#node-new-name').value = '';
   $('#node-new-url').value = '';
   $('#node-new-keep').value = '';

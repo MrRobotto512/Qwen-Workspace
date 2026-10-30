@@ -22,6 +22,7 @@ const madeFile = path.join(ws, 'step1.txt');
 // ---- scripted Ollama servers (native /api/chat NDJSON) ----
 const MODEL = 'fake-model:latest';
 const counts = { aChats: 0, bChats: 0 };
+const keeps = { a: [], b: [] }; // keep_alive as it arrives on each node's wire
 
 function makeNode(name, onChat) {
   const sockets = new Set();
@@ -62,8 +63,9 @@ const ndjson = (res, lines) => {
 
 // Node A: one tool-call turn; the next chat gets its socket destroyed mid-request and the
 // whole server dies with it (the "shop PC switched off" moment), so the retry is refused too.
-const nodeA = makeNode('A', (res) => {
+const nodeA = makeNode('A', (res, body) => {
   counts.aChats++;
+  try { keeps.a.push(JSON.parse(body).keep_alive); } catch {}
   if (counts.aChats > 1) {
     nodeA.kill();
     return;
@@ -75,8 +77,9 @@ const nodeA = makeNode('A', (res) => {
 });
 
 // Node B: always answers with the finishing turn.
-const nodeB = makeNode('B', (res) => {
+const nodeB = makeNode('B', (res, body) => {
   counts.bChats++;
+  try { keeps.b.push(JSON.parse(body).keep_alive); } catch {}
   ndjson(res, [
     { message: { role: 'assistant', content: 'Finished on the shop node.' } },
     { done: true, done_reason: 'stop', prompt_eval_count: 60 }
@@ -165,6 +168,11 @@ try {
   });
   if (counts.aChats !== 2) fail(`expected 2 chats on node A (tool turn + the killed one), saw ${counts.aChats}`);
   if (counts.bChats < 1) fail('node B never served a chat');
+  // The Shop PC was added with the keep-alive field left empty, so every request it got must
+  // carry the remote default — the node unloads the model after 5 idle minutes. This PC keeps
+  // following the global setting (-1 = pinned).
+  if (!keeps.b.length || !keeps.b.every((k) => k === '5m')) fail(`remote node B should get keep_alive "5m" on every chat, saw ${JSON.stringify(keeps.b)}`);
+  if (!keeps.a.every((k) => k === -1)) fail(`This PC should keep the global keep_alive -1, saw ${JSON.stringify(keeps.a)}`);
 } catch (e) {
   fail(String(e).split('\n')[0]);
 } finally {
