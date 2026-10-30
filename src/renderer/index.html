@@ -74,6 +74,7 @@
           <input id="history-search" placeholder="Search conversations…" spellcheck="false" />
         </div>
         <div id="history-list" class="scroll"></div>
+        <div id="remote-history"></div>
       </section>
 
       <section class="view hidden" id="view-changes">
@@ -269,6 +270,24 @@
         <div id="s-heavy-result" class="hint"></div>
       </div>
 
+      <div class="section-title">Remote sessions</div>
+      <div class="hint">See and drive this app's conversations from your other PCs (and theirs from here). Pair over your own network — e.g. Tailscale. <b>The pairing code is a password:</b> whoever has it can run this PC's agent with this PC's approval settings.</div>
+      <label class="check"><input type="checkbox" id="s-remote-enabled" /> Allow other devices to view and drive this app's sessions</label>
+      <div class="row two">
+        <label>Port <input id="s-remote-port" type="number" min="1024" max="65535" /></label>
+        <label>Pairing code <input id="s-remote-token" readonly spellcheck="false" /></label>
+      </div>
+      <div id="s-remote-state" class="hint"></div>
+      <div class="hint">Paired devices (this PC as the viewer): add the other PC's URL, e.g. <code>http://100.88.91.13:8931</code>, and the pairing code it shows.</div>
+      <div id="device-list"></div>
+      <div class="mcp-add">
+        <input id="device-new-name" placeholder="Name (e.g. Home desktop)" spellcheck="false" />
+        <input id="device-new-url" placeholder="http://100.88.91.13:8931" spellcheck="false" />
+        <input id="device-new-code" placeholder="Pairing code from the other device (QW-XXXX-XXXX-XXXX)" spellcheck="false" />
+        <button id="device-add-btn" class="ghost"><span data-icon="plus"></span>Add device</button>
+      </div>
+      <div id="device-add-result" class="hint"></div>
+
       <div class="section-title">Escalation &amp; costs</div>
       <div class="hint">When the local model struggles, hand the step to the planner automatically — and see what cloud models cost. Both triggers are off by default; an <b>Escalate</b> button (✦, top-right of every reply) can also re-run any step on the planner by hand.</div>
       <label class="check"><input type="checkbox" id="s-esc-failstreak" /> Escalate when the same command keeps failing</label>
@@ -383,6 +402,20 @@
     </div>
   </div>
 
+  <!-- Remote session viewer -->
+  <div id="remote-modal" class="modal hidden">
+    <div class="modal-box models-box remote-box">
+      <div class="modal-head"><h2 id="remote-title">Remote session</h2><button class="icon-btn" id="remote-close" title="Close"><span data-icon="x"></span></button></div>
+      <div id="remote-status" class="hint"></div>
+      <div id="remote-log" class="conv-log scroll"></div>
+      <div class="remote-compose">
+        <input id="remote-input" placeholder="Send a message to this session (it runs on the other PC)…" spellcheck="true" />
+        <button id="remote-send" class="primary"><span data-icon="arrowUp"></span></button>
+        <button id="remote-stop" class="ghost danger-text">Stop</button>
+      </div>
+    </div>
+  </div>
+
   <div id="toasts"></div>
 
   <!-- Go to file / attach file -->
@@ -417,6 +450,7 @@
   <script src="github.js"></script>
   <script src="lessons.js"></script>
   <script src="debuglog.js"></script>
+  <script src="remote-ui.js"></script>
   <script src="escalation.js"></script>
   <script src="costs.js"></script>
   <script src="providers.js"></script>

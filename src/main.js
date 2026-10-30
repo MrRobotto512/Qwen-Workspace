@@ -40,6 +40,8 @@ const DEFAULT_SETTINGS = {
   ollamaNodes: [], // extra Ollama servers [{ id, name, baseUrl, enabled, keepAlive }]; "This PC" (baseUrl above) is implicit
   escalation: { failStreak: false, failStreakN: 2, bigPlan: false, bigPlanN: 5 }, // planner-handoff triggers, all off by default
   branchPerTask: false, // agent tasks that edit files start a qwen/<task> branch
+  remoteAccess: { enabled: false, port: 8931, token: '' }, // let paired devices view and drive this app's conversations
+  devices: [], // paired peers: [{ id, name, url, token }]
   lessonsEnabled: true, // after a task that ran commands, propose lessons for QWEN.md (always behind the diff card)
   prices: {}, // $/1M tokens per model, user-entered: { 'gemini-2.5-pro': { in: 1.25, out: 10 } }
   monthlyCapUSD: 0, // when > 0 and the month's priced spend reaches it, escalations ask first
@@ -187,6 +189,7 @@ app.whenReady().then(() => {
   mcp.setOnChange(() => mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents.send('mcp:changed', mcp.describe()));
   mcp.connectAll(loadSettings().mcpServers).catch(() => {});
   gitAvailable().then((ok) => ok && ensureGitLongPaths()).catch(() => {});
+  syncRemote();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -199,7 +202,12 @@ app.on('window-all-closed', () => {
 ipcMain.handle('settings:get', () => loadSettings());
 ipcMain.handle('settings:set', (_e, patch) => {
   const s = { ...loadSettings(), ...patch };
+  // First enable of remote sessions mints the pairing code; it never changes on its own.
+  if (s.remoteAccess?.enabled && !s.remoteAccess.token) {
+    s.remoteAccess = { ...s.remoteAccess, token: remoteSessions.makeToken() };
+  }
   saveSettings(s);
+  syncRemote();
   return s;
 });
 
@@ -784,6 +792,90 @@ async function streamAnthropic(s, payload, signal, send) {
 
   return { ok: true, content, reasoning, toolCalls, finishReason, usage: { promptTokens, completionTokens } };
 }
+
+// ---------- remote sessions (other devices viewing/driving this app) ----------
+const remoteSessions = require('./remote');
+const os = require('os');
+
+// Actions that must run in the renderer (the agent loop lives there) go over a small
+// request/response bridge: main sends remote:ask with an id, the renderer answers via
+// remote:answer. A missing or wedged renderer turns into a clean HTTP error.
+const remotePending = new Map();
+let remoteSeq = 0;
+
+function askRenderer(kind, payload, timeoutMs = 15_000) {
+  return new Promise((resolve) => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return resolve({ ok: false, code: 503, error: 'The host app window is not ready.' });
+    }
+    const id = ++remoteSeq;
+    const timer = setTimeout(() => {
+      remotePending.delete(id);
+      resolve({ ok: false, code: 504, error: 'The host app did not answer in time.' });
+    }, timeoutMs);
+    remotePending.set(id, (result) => {
+      clearTimeout(timer);
+      resolve(result);
+    });
+    mainWindow.webContents.send('remote:ask', { id, kind, payload });
+  });
+}
+
+ipcMain.handle('remote:answer', (_e, id, result) => {
+  remotePending.get(id)?.(result || { ok: true });
+  remotePending.delete(id);
+  return true;
+});
+
+const remoteDeps = {
+  token: () => loadSettings().remoteAccess?.token || '',
+  info: () => ({ app: 'qwen-workspace', version: app.getVersion(), device: os.hostname(), platform: process.platform, workspace: workspaceRoot || null }),
+  listConvs: () => readConvIndex(),
+  loadConv: (id) => {
+    if (!/^[\w-]+$/.test(String(id))) return null;
+    try {
+      return JSON.parse(fs.readFileSync(convFile(id), 'utf8'));
+    } catch {
+      return null;
+    }
+  },
+  startConversation: ({ text, title }) => askRenderer('start', { text, title }),
+  sendMessage: (id, { text }) => {
+    const meta = readConvIndex().find((c) => c.id === id);
+    if (!meta) return Promise.resolve({ ok: false, code: 404, error: 'No such conversation' });
+    if (meta.workspace && meta.workspace !== workspaceRoot) {
+      return Promise.resolve({ ok: false, code: 409, error: `That conversation belongs to ${meta.workspace}. Open that folder on the host first.` });
+    }
+    return askRenderer('message', { id, text });
+  },
+  stop: (id) => askRenderer('stop', { id })
+};
+
+function syncRemote() {
+  remoteSessions.syncServer(loadSettings(), remoteDeps, (m) => console.log(m));
+}
+
+ipcMain.handle('remote:state', () => remoteSessions.serverState());
+
+// The viewer side goes through main (renderer fetch would trip CORS/CSP): call a paired
+// device's API with its stored pairing code.
+ipcMain.handle('remote:call', async (_e, device, pathName, method = 'GET', body) => {
+  try {
+    const base = String(device?.url || '').trim().replace(/\/+$/, '');
+    if (!/^https?:\/\//.test(base)) return { ok: false, status: 0, error: 'The device URL must start with http://' };
+    if (!/^\/qw\//.test(String(pathName))) return { ok: false, status: 0, error: 'Bad path' };
+    const res = await fetch(base + pathName, {
+      method,
+      headers: { Authorization: `Bearer ${device.token || ''}`, 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(8000)
+    });
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, data };
+  } catch (err) {
+    return { ok: false, status: 0, error: err.cause?.code || err.message };
+  }
+});
 
 // ---------- app info & updates ----------
 ipcMain.handle('app:info', () => ({ version: app.getVersion(), kind: updater.installKind(), releasesUrl: updater.RELEASES_URL, platform: process.platform }));
