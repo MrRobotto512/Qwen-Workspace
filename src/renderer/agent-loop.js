@@ -954,7 +954,9 @@ async function runConversation(c) {
       await refreshNodeHealth();
       node = Nodes.pickNode(Nodes.normalizeNodes(state.settings), state.nodeHealth.byId, state.settings.model, deadNodes);
       if (node) {
-        if (node.id !== Nodes.THIS_PC_ID) override = { baseUrl: node.baseUrl, keepAlive: node.keepAlive ?? state.settings.keepAlive };
+        // normalizeNodes guarantees a keepAlive on every remote (the user's value or the
+        // 5m default), so the node — not the global setting — decides how long its model stays.
+        if (node.id !== Nodes.THIS_PC_ID) override = { baseUrl: node.baseUrl, keepAlive: node.keepAlive };
         if (lastNodeId && node.id !== lastNodeId) note(`Running on the ${node.name} node.`);
         else if (!lastNodeId && node.id !== Nodes.THIS_PC_ID) note(`This PC's node doesn't have ${state.settings.model} ready — running on ${node.name}.`);
         lastNodeId = node.id;
@@ -1314,7 +1316,7 @@ async function compactConversation(c, { manual } = {}) {
   if (state.settings.provider === 'ollama' && Nodes.multiNode(state.settings)) {
     await refreshNodeHealth();
     const n = Nodes.pickNode(Nodes.normalizeNodes(state.settings), state.nodeHealth.byId, state.settings.model);
-    if (n && n.id !== Nodes.THIS_PC_ID) compactOverride = { baseUrl: n.baseUrl, keepAlive: n.keepAlive ?? state.settings.keepAlive };
+    if (n && n.id !== Nodes.THIS_PC_ID) compactOverride = { baseUrl: n.baseUrl, keepAlive: n.keepAlive };
   }
   const res = await api.chatStream(`k${Date.now()}`, {
     override: compactOverride,

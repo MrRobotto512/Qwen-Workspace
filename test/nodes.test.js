@@ -31,6 +31,24 @@ test('normalizeNodes keeps This PC first and mirrors settings, remotes follow', 
   );
 });
 
+test('remote nodes default to the 5m keep-alive so they free VRAM when idle', () => {
+  const s = {
+    baseUrl: 'http://localhost:11434',
+    keepAlive: '-1', // the global pin-forever must NOT leak onto remote machines
+    ollamaNodes: [
+      { id: 'node-shop', name: 'Shop PC', baseUrl: 'http://192.168.1.50:11434' },
+      { id: 'node-attic', name: 'Attic', baseUrl: 'http://192.168.1.60:11434', keepAlive: '30m' },
+      { id: 'node-blank', name: 'Blank', baseUrl: 'http://192.168.1.70:11434', keepAlive: '   ' }
+    ]
+  };
+  const nodes = N.normalizeNodes(s);
+  assert.strictEqual(nodes[0].keepAlive, '-1'); // This PC still follows the Model section
+  assert.strictEqual(nodes[1].keepAlive, N.REMOTE_KEEP_DEFAULT);
+  assert.strictEqual(N.REMOTE_KEEP_DEFAULT, '5m');
+  assert.strictEqual(nodes[2].keepAlive, '30m'); // an explicit value still wins
+  assert.strictEqual(nodes[3].keepAlive, '5m'); // whitespace counts as unset
+});
+
 test('normalizeNodes survives junk in the saved list', () => {
   const s = { baseUrl: 'http://localhost:11434', ollamaNodes: [null, 42, {}, { baseUrl: '  ' }, { baseUrl: 'http://a:1' }] };
   const nodes = N.normalizeNodes(s);
