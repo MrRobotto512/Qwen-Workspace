@@ -145,6 +145,11 @@ async function allowCommandPrefix(prefix) {
 }
 
 // ---------- tool execution ----------
+// Whether the model answering this conversation looks vision-capable (by its name).
+function modelSeesImages(c) {
+  return VISION_MODEL.test(String(conversationOverride(c)?.model || c.model || state.settings.model || ''));
+}
+
 async function executeTool(c, call, row) {
   const name = call.function.name;
   let args;
@@ -169,7 +174,17 @@ async function executeTool(c, call, row) {
     try {
       const r = await api.mcpCall(name, args);
       row.setBody(r.text);
-      return { result: truncate(r.text), meta: r.isError ? 'error' : 'done', failed: r.isError };
+      const imgs = r.images || [];
+      for (const img of imgs) row.setImage?.(`data:${img.mime};base64,${img.data}`);
+      // Images go to the model the way test_app screenshots do; a model that can't see them is told so.
+      const vision = imgs.length && modelSeesImages(c);
+      const note = imgs.length && !vision ? `\n(${imgs.length === 1 ? 'An image was' : `${imgs.length} images were`} returned, but the current model does not look able to see images.)` : '';
+      return {
+        result: truncate(r.text) + note,
+        meta: r.isError ? 'error' : imgs.length ? `${imgs.length} image${imgs.length === 1 ? '' : 's'}` : 'done',
+        failed: r.isError,
+        images: vision ? imgs.map((img, i) => ({ ...img, note: `Image ${i + 1} returned by ${label} ${mcpToolShort(name)}.` })) : null
+      };
     } catch (e) {
       return { result: `Error calling ${name}: ${cleanError(e)}` };
     }
@@ -447,7 +462,7 @@ async function executeTool(c, call, row) {
         }
         setActivity(c, `Testing ${cmd}`);
         const r = await api.guiTest({ command: cmd, waitSeconds: args.wait_seconds, windowTitle: args.window_title, actions: pa.actions });
-        const vision = VISION_MODEL.test(String(conversationOverride(c)?.model || c.model || state.settings.model || ''));
+        const vision = modelSeesImages(c);
         const text = GuiTest.summarize(r, !!(r.shot && vision));
         row.setBody(text);
         if (r.shot) row.setImage?.(`data:image/png;base64,${r.shot.png}`);
@@ -1501,6 +1516,43 @@ async function pickHighPerfTarget(currentModel) {
 // context window (the KV cache grows with it) or a smaller model.
 const spillChecked = new Set();
 const spillSeen = new Map(); // model -> spill info, for the slow hint on the status line
+const predictedSpill = new Set(); // models warned about before loading
+const fitPredicted = new Set(); // baseUrl|model|ctx already estimated this session
+
+// Before a model's first request, estimate whether it fits the GPU at the configured context
+// (LM Studio's estimate-only idea, for Ollama): weights + KV cache vs this PC's detected VRAM, or
+// what a remote node held when something last spilled there. Runs alongside the request, so the
+// warning — with Fit to GPU — shows while the slow first step is still going, not after it.
+async function predictGpuFit(c, baseUrl, model, isThisPc) {
+  const ctx = Number(state.settings.contextLength) || 0;
+  const key = `${baseUrl}|${model}|${ctx}`;
+  if (!ctx || fitPredicted.has(key)) return;
+  fitPredicted.add(key);
+  let vram = Number(state.settings.nodeVram?.[baseUrl]) || 0;
+  if (!vram && isThisPc) {
+    const specs = state.specs || (await api.systemSpecs().catch(() => null));
+    if (specs) state.specs = specs;
+    vram = (specs?.gpu?.vramGB || 0) * 1024 ** 3;
+  }
+  if (!vram) return;
+  const facts = await api.ollamaFitInfo(baseUrl, model).catch(() => null);
+  const p = Nodes.predictFit({ weights: facts?.fileSize, kvPerToken: Nodes.kvBytesPerToken(facts?.modelInfo), ctx, vram });
+  if (!p || p.fits) return;
+  predictedSpill.add(model);
+  const where = isThisPc ? "this PC's GPU" : 'that node\'s GPU';
+  const advice = p.fitCtx
+    ? `Fit to GPU sets "Context window" to ${p.fitCtx} so all of it fits; or pick a smaller model.`
+    : 'Even a 4K context window would not fit it — pick a smaller model (for example the 8B size of the same family).';
+  const text = `Heads-up: ${model} with a ${ctx}-token context window needs about ${p.neededGB} GB, but ${where} has about ${p.vramGB} GB — part of it will run on the CPU, several times slower. ${advice}`;
+  const item = { t: 'notice', text };
+  c.display.push(item);
+  renderNotice(c, item);
+  DebugLog.add(c, 'notice', { text });
+  const actions = p.fitCtx
+    ? [{ label: `Fit to GPU (${p.fitCtx})`, onClick: () => fitToGpu(p.fitCtx, model) }, { label: 'Open Settings', onClick: openSettings }]
+    : [{ label: 'Open Settings', onClick: openSettings }];
+  toast({ key: 'gpu-fit', icon: 'alert', timeout: 30000, text, actions });
+}
 async function checkGpuSpill(c, baseUrl, model) {
   const key = `${baseUrl}|${model}`;
   if (spillChecked.has(key)) return;
@@ -1509,6 +1561,12 @@ async function checkGpuSpill(c, baseUrl, model) {
   const sp = Nodes.spillInfo(ps, model);
   if (!sp) return;
   spillSeen.set(model, sp);
+  // A spill shows how much this machine's GPU really holds — what the fit prediction needs next time.
+  const held = ps.reduce((n, x) => n + (Number(x.size_vram) || 0), 0);
+  if (held > 0 && state.settings.nodeVram?.[baseUrl] !== held) {
+    state.settings = await api.setSettings({ nodeVram: { ...(state.settings.nodeVram || {}), [baseUrl]: held } });
+  }
+  if (predictedSpill.has(model)) return; // already warned before the model loaded
   let host = baseUrl;
   try {
     host = new URL(baseUrl).host;
@@ -1537,6 +1595,7 @@ async function checkGpuSpill(c, baseUrl, model) {
 async function fitToGpu(ctx, model) {
   state.settings = await api.setSettings({ contextLength: ctx });
   spillSeen.delete(model);
+  predictedSpill.delete(model);
   for (const k of [...spillChecked]) if (k.endsWith(`|${model}`)) spillChecked.delete(k); // re-check after the reload
   flash(`Context window set to ${ctx} — ${model} reloads to fit the GPU on its next step`);
 }
@@ -1797,6 +1856,10 @@ async function runConversation(c) {
     };
     paintProgress();
     const progTimer = setInterval(paintProgress, 1000);
+    if ((override?.provider || state.settings.provider) === 'ollama') {
+      const fitBase = override?.baseUrl || state.settings.baseUrl;
+      predictGpuFit(c, fitBase, stepModel, !override?.baseUrl || fitBase === state.settings.baseUrl).catch(() => {});
+    }
     const sawToken = (phase) => {
       if (!prog.firstAt) prog.firstAt = Date.now();
       prog.tokens++;

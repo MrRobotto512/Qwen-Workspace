@@ -47,3 +47,22 @@ test('fitContext: the largest context that fits the GPU, or none', () => {
   assert.equal(N.fitContext({ size: 10 * GB, size_vram: 10 * GB, file_size: 9 * GB }, 8192), null, 'already fits');
   assert.equal(N.fitContext({ size: 10 * GB, size_vram: 5 * GB }, 8192), null, 'no file size: cannot tell');
 });
+
+test('kvBytesPerToken reads Ollama model_info; predictFit says whether it fits before loading', () => {
+  // qwen3:14b-like: 40 layers, 8 KV heads, 128-dim keys and values → 160 KiB per token.
+  const info = { 'general.architecture': 'qwen3', 'qwen3.block_count': 40, 'qwen3.attention.head_count': 40, 'qwen3.attention.head_count_kv': 8, 'qwen3.attention.key_length': 128, 'qwen3.attention.value_length': 128 };
+  assert.equal(N.kvBytesPerToken(info), 40 * 8 * 256 * 2);
+  assert.equal(N.kvBytesPerToken({ 'general.architecture': 'llama', 'llama.block_count': 32, 'llama.attention.head_count': 32, 'llama.attention.head_count_kv': [8, 8], 'llama.embedding_length': 4096 }), 32 * 8 * 256 * 2);
+  assert.equal(N.kvBytesPerToken({ 'general.architecture': 'gemma3', 'gemma3.attention.sliding_window': 1024, 'gemma3.block_count': 34 }), null);
+  assert.equal(N.kvBytesPerToken({}), null);
+  const GB = 1e9;
+  const kv = N.kvBytesPerToken(info);
+  // The field report: 9.3 GB of weights, 32K context, a 12 GB card.
+  const p = N.predictFit({ weights: 9.3 * GB, kvPerToken: kv, ctx: 32768, vram: 12 * GB });
+  assert.equal(p.fits, false);
+  assert.equal(p.neededGB, 15.2);
+  assert.ok(p.fitCtx >= 8192 && p.fitCtx <= 12288 && p.fitCtx % 1024 === 0, JSON.stringify(p));
+  assert.equal(N.predictFit({ weights: 5 * GB, kvPerToken: kv, ctx: 16384, vram: 12 * GB }).fits, true);
+  assert.deepEqual(N.predictFit({ weights: 11.5 * GB, kvPerToken: kv, ctx: 32768, vram: 12 * GB }), { fits: false, neededGB: 17.4, vramGB: 12, tooSmall: true });
+  assert.equal(N.predictFit({ weights: 0, kvPerToken: kv, ctx: 1, vram: 1 }), null);
+});

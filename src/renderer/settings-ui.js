@@ -142,6 +142,21 @@ function sanitizeServerId(name) {
   return String(name || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40);
 }
 
+async function setupGimpFromSettings() {
+  const out = $('#gimp-setup-result');
+  if (!confirm('Set up GIMP for Qwen?\n\n• Download gimp-mcp (open source, GPL-3.0) into QWS\'s data folder\n• Install its plugin into your GIMP 3 plug-ins folder\n• Add a "GIMP" MCP server here (it runs with uv)\n\nNothing in your projects changes.')) return;
+  out.className = 'hint';
+  out.textContent = 'Setting up GIMP…';
+  const r = await api.gimpSetup().catch((e) => ({ ok: false, message: cleanError(e) }));
+  if (r.ok && r.server) {
+    const configs = (state.settings.mcpServers || []).filter((c) => sanitizeServerId(c.name) !== sanitizeServerId(r.server.name));
+    configs.push(r.server);
+    await saveServers(configs);
+  }
+  out.className = r.ok ? (r.uvMissing ? 'hint' : 'hint ok') : 'hint bad';
+  out.textContent = [...(r.steps || []).map((s) => `✓ ${s}`), r.message].join('\n');
+}
+
 async function addServerFromForm() {
   const name = $('#mcp-new-name').value.trim();
   const cmd = $('#mcp-new-cmd').value.trim();

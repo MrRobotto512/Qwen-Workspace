@@ -2512,6 +2512,7 @@ function bindUi() {
   $('#s-fetch-models').onclick = fetchModels;
   $('#s-searchProvider').onchange = renderSearchFields;
   $('#mcp-add-btn').onclick = addServerFromForm;
+  $('#gimp-setup-btn').onclick = setupGimpFromSettings;
   $('#node-add-btn').onclick = addNodeFromForm;
   $('#price-add-btn').onclick = addPriceFromForm;
   $('#device-add-btn').onclick = addDeviceFromForm;
