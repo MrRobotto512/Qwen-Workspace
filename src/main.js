@@ -44,6 +44,8 @@ const DEFAULT_SETTINGS = {
   remoteAccess: { enabled: false, port: 8931, token: '' }, // let paired devices view and drive this app's conversations
   devices: [], // paired peers: [{ id, name, url, token }]
   lessonsEnabled: true,
+  checksGate: true, // run the project's approved .qwen/checks.json before and after agent tasks
+  checksApproved: {}, // project root -> the exact checks.json text the user allowed to run
   skillWriter: true, // after a long task that worked, propose a reusable skill (approval card)
   reviewPass: false, // planner reviews each task's diff and hands fixes back (2 rounds max) // after a task that ran commands, propose lessons for QWEN.md (always behind the diff card)
   planFirst: false, // a conversation's first turn runs on the ⚡ node's strongest model, restricted to planning (todo_write)
