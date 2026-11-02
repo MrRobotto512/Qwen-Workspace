@@ -1257,10 +1257,26 @@ async function runConversation(c) {
       highPerf: escLocal || undefined,
       plan: planTurn || undefined
     });
+    // Reasoning-loop watch (from Strata): every ~2K characters of thinking, measure how much of
+    // the recent thinking repeats whole 12-word passages; a model going in circles is stopped
+    // here instead of burning the step until the token limit.
+    let thinkBuf = '';
+    let nextLoopCheck = 2048;
+    let loopCaught = false;
     const off = api.onChatEvent((ev) => {
       if (ev.id !== id) return;
       if (ev.type === 'delta') view.appendContent(ev.data);
-      else if (ev.type === 'reasoning') view.appendReasoning(ev.data);
+      else if (ev.type === 'reasoning') {
+        view.appendReasoning(ev.data);
+        thinkBuf += ev.data;
+        if (!loopCaught && thinkBuf.length >= nextLoopCheck) {
+          nextLoopCheck = thinkBuf.length + 2048;
+          if (ToolParse.reasoningRepeatCoverage(thinkBuf) >= ToolParse.LOOP_COVERAGE) {
+            loopCaught = true;
+            api.chatAbort(id);
+          }
+        }
+      }
     });
     const res = await api.chatStream(id, {
       messages: requestMessages(c),
@@ -1276,6 +1292,16 @@ async function runConversation(c) {
         ? { ok: true, aborted: true }
         : { ok: true, finishReason: res.finishReason, chars: (res.content || '').length, toolCalls: (res.toolCalls || []).length, promptTokens: res.usage?.promptTokens, completionTokens: res.usage?.completionTokens })
       : { ok: false, error: String(res.error || '').slice(0, 400) });
+    if (loopCaught) {
+      // Not the user's Stop: the loop watch aborted a model thinking in circles. Push it to act,
+      // and let the ladder hand the step to something stronger.
+      view.finish(false);
+      dropEmptyTurn();
+      note('Qwen\'s thinking was going in circles — stopped it and told it to act.');
+      c.history.push({ role: 'user', content: '<system-reminder>\nYour reasoning started repeating itself in circles and was stopped. Do not re-verify what you already checked. Decide now and act: make the next tool call for the current step (or answer, if the task is done).\n</system-reminder>' });
+      escalate('Reasoning loop');
+      continue;
+    }
     if (res.ok && !res.aborted) view.setFinal(res.content || '', res.reasoning || '');
     // Cloud responses report prompt/completion tokens; feed the cost meter. Local providers
     // (Ollama / LM Studio) are free and skipped.
@@ -1394,6 +1420,28 @@ async function runConversation(c) {
       calls = parsed.calls;
       content = parsed.cleaned;
       view.setContent(content);
+    }
+    // Every tool the model may name this turn: loaded ones plus deferred ones (which run by
+    // name too). Used to rescue calls from the thinking and to repair garbled names.
+    const knownTools = useTools ? [...new Set([...toolsFor(c), ...deferredCatalog()].map((t) => t.function.name))] : [];
+    // A call written inside the thinking, with no answer and no real call: run it (Strata's
+    // rules decide whether it is an act or a mention).
+    if (useTools && !calls.length && !stripThink(content).trim()) {
+      const thinking = res.reasoning || (/<think>([\s\S]*?)(?:<\/think>|$)/.exec(content)?.[1] || '');
+      const rescued = ToolParse.rescueReasoningCalls(thinking, knownTools, res.finishReason);
+      if (rescued.length) {
+        calls = rescued;
+        DebugLog.add(c, 'notice', { text: `rescued ${rescued.length} tool call(s) written inside the thinking: ${rescued.map((r) => r.function.name).join(', ')}` });
+      }
+    }
+    // Garbled tool names ("mcp__fs=write_file", " run_command ") mapped back to real tools.
+    if (calls.length && knownTools.length) {
+      calls = calls.map((tc) => {
+        const fixed = ToolParse.resolveToolName(tc.function.name, knownTools);
+        if (!fixed || fixed === tc.function.name) return tc;
+        DebugLog.add(c, 'notice', { text: `repaired tool name "${tc.function.name}" → ${fixed}` });
+        return { ...tc, function: { ...tc.function, name: fixed } };
+      });
     }
     view.finish(calls.length > 0);
 

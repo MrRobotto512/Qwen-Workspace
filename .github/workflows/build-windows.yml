@@ -45,6 +45,7 @@ jobs:
       - run: xvfb-run -a npm run test:e2e:planfirst
       - run: xvfb-run -a npm run test:e2e:steer
       - run: xvfb-run -a npm run test:e2e:goal
+      - run: xvfb-run -a npm run test:e2e:hardening
       - run: xvfb-run -a npm run test:e2e:github
       - run: xvfb-run -a npm run test:e2e:recipes
       - run: xvfb-run -a npm run test:e2e:lessons
