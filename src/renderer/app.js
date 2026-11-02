@@ -1631,6 +1631,10 @@ function makeStepRow(c, container, call, rec) {
     rec.diff = false;
     body.textContent = text.length > 8000 ? text.slice(0, 8000) + '\n…' : text;
   };
+  const setImage = (src) => {
+    body.append(el('img', { class: 'step-shot', src, alt: 'Screenshot' }));
+    row.classList.add('open');
+  };
   const setDiffBody = (diffText) => {
     rec.body = diffText.length > 8000 ? diffText.slice(0, 8000) : diffText;
     rec.diff = true;
@@ -1663,6 +1667,7 @@ function makeStepRow(c, container, call, rec) {
     doing: info.doing,
     target: d.target,
     setBody,
+    setImage,
     setDiffBody,
     setVerb,
     linkToChange,

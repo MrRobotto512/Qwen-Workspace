@@ -166,6 +166,27 @@ const CORE_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'test_app',
+      description: 'Test a desktop GUI app you built: launch it, wait for its window, and get back whether it started or crashed, its console output and (for models that can see images) a screenshot of the window; then it is closed. Optionally click, type and press keys in it first, like a user, to check that it works. Use it before telling the user a GUI app is done.',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: { type: 'string', description: 'How to start the app from the project root, e.g. "python main.py", "npm start" or "dist\\Calculator.exe".' },
+          wait_seconds: { type: 'number', description: 'How long to wait for the window, 1–60 (default 8).' },
+          window_title: { type: 'string', description: 'Optional: part of the window title, when the app opens more than one window.' },
+          actions: {
+            type: 'array',
+            description: 'Optional, in order: {"click": [x, y]} with pixel coordinates from a previous test_app screenshot, {"type": "text"}, {"key": "Enter"} (also Tab, Escape, Backspace, arrows), {"wait": 1}.',
+            items: { type: 'object' }
+          }
+        },
+        required: ['command']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
       name: 'install_app',
       description: 'Install an application or tool with the system package manager: winget on Windows, Homebrew on macOS. Use this when the user asks to install an app, or a task needs one. On Windows pass the winget package id when you know it (e.g. "Google.Chrome", "Kitware.CMake"), otherwise a name to search for; on macOS pass the Homebrew formula or cask name (e.g. "cmake", "visual-studio-code") and set cask true for GUI apps. If several packages match, the result lists them so you can retry exactly. Needs the user\'s approval. For Git on Windows, prefer install_git, which works even without winget.',
       parameters: {
@@ -212,7 +233,7 @@ const PROGRAM_TOOL = {
   }
 };
 // Meta tools stay outside programs: they steer the conversation, not the project.
-const PROGRAM_EXCLUDED = new Set(['delegate_tasks', 'run_program', 'consult_planner', 'tool_search', 'load_skill', 'ask_user', 'todo_write']);
+const PROGRAM_EXCLUDED = new Set(['test_app', 'delegate_tasks', 'run_program', 'consult_planner', 'tool_search', 'load_skill', 'ask_user', 'todo_write']);
 
 const DEFERRED_TOOLS = [
   {
@@ -420,7 +441,8 @@ const TOOL_INFO = {
   tool_search: { icon: 'search', verb: 'Find tools', doing: 'Looking up tools for' },
   search_history: { icon: 'history', verb: 'Past chats', doing: 'Searching past conversations for' },
   remember: { icon: 'star', verb: 'Remember', doing: 'Saving to personal memory' },
-  delegate_tasks: { icon: 'server', verb: 'Delegate', doing: 'Running subagents for' }
+  delegate_tasks: { icon: 'server', verb: 'Delegate', doing: 'Running subagents for' },
+  test_app: { icon: 'play', verb: 'Test app', doing: 'Testing the app' }
 };
 
 // Context is assembled in layers, from least to most likely to change, so Ollama can reuse its
@@ -495,6 +517,8 @@ function describeCall(name, args) {
       return { target: args.id ? `conversation ${args.id}` : String(args.query || '') };
     case 'remember':
       return { target: String(args.fact || '') };
+    case 'test_app':
+      return { target: `${String(args.command || '')}${Array.isArray(args.actions) && args.actions.length ? ` · ${args.actions.length} action${args.actions.length === 1 ? '' : 's'}` : ''}` };
     case 'delegate_tasks': {
       const list = Array.isArray(args.tasks) ? args.tasks : [];
       return { target: `${list.length} subtask${list.length === 1 ? '' : 's'}: ${list.map((t) => String(t?.task || t || '').slice(0, 40)).join(' · ')}`, title: list.map((t) => String(t?.task || t || '')).join('\n') };

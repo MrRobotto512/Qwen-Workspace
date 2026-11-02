@@ -435,6 +435,30 @@ async function executeTool(c, call, row) {
         const hint = ToolParse.cmdShellHint(cmd, r.output, state.ws?.platform);
         return { result: `Exit code: ${r.code}\n${truncate(r.output || '(no output)')}${hint ? `\n${hint}` : ''}`, meta: `exit ${r.code}`, failed: r.code !== 0 };
       }
+      case 'test_app': {
+        const cmd = String(args.command || '').trim();
+        if (!cmd) return { result: 'Error: empty command.' };
+        const pa = GuiTest.parseActions(args.actions);
+        if (pa.error) return { result: `Error: ${pa.error}`, failed: true };
+        // Launching an app runs code: it asks exactly like run_command would.
+        if (needsApproval('command', cmd)) {
+          const ok = await row.requestApproval({ kind: 'command', question: 'Launch this app to test it?', command: `${cmd}${pa.actions.length ? `\n# then: ${pa.actions.map(GuiTest.describeAction).join('; ')}` : ''}`, dangerous: DANGEROUS_COMMAND.test(cmd) });
+          if (!ok) return { result: 'The user declined to launch the app. Do not retry it; ask the user how they would like to test it.', rejected: true };
+        }
+        setActivity(c, `Testing ${cmd}`);
+        const r = await api.guiTest({ command: cmd, waitSeconds: args.wait_seconds, windowTitle: args.window_title, actions: pa.actions });
+        const vision = VISION_MODEL.test(String(conversationOverride(c)?.model || c.model || state.settings.model || ''));
+        const text = GuiTest.summarize(r, !!(r.shot && vision));
+        row.setBody(text);
+        if (r.shot) row.setImage?.(`data:image/png;base64,${r.shot.png}`);
+        const failed = !!r.error || !r.windowFound || !r.alive || !!r.actionError;
+        return {
+          result: truncate(text),
+          meta: r.error ? 'error' : !r.windowFound ? (r.exitCode != null ? 'crashed' : 'no window') : !r.alive ? 'exited' : 'ran',
+          failed,
+          images: r.shot && vision ? [{ mime: 'image/png', data: r.shot.png, note: `Screenshot from test_app: the "${r.windowTitle}" window (${r.shot.width}×${r.shot.height} px).` }] : null
+        };
+      }
       case 'run_program': {
         const code = String(args.code || '').trim();
         if (!code) return { result: 'Error: empty program.' };
@@ -1981,12 +2005,19 @@ async function runConversation(c) {
       const rows = batch.map((call) => view.addStep(call));
       setActivity(c, rows.length > 1 ? `Running ${rows.length} lookups` : `${rows[0].doing} ${rows[0].target}`);
       const outs = await Promise.all(batch.map((call, i) => runOrSkip(c, call, rows[i], seen, step)));
+      const shots = [];
       batch.forEach((call, i) => {
         rows[i].done(outs[i]);
         c.history.push({ role: 'tool', tool_call_id: call.id, content: outs[i].result });
+        if (outs[i].images?.length) shots.push(...outs[i].images);
         if (outs[i].progress) progressed = true;
         if (outs[i].failed && !outs[i].rejected) roundFailed = true;
       });
+      // Tool results are text-only on every API, so a screenshot rides in a user turn right
+      // after them (only the newest image-bearing turn keeps its images in later requests).
+      if (shots.length) {
+        c.history.push({ role: 'user', content: `<system-reminder>\n${shots.map((s) => s.note).join('\n')}\n</system-reminder>`, images: shots.map((s) => ({ mime: s.mime, data: s.data })) });
+      }
       if (c === state.conv) updateCtxMeter();
       saveConv(c);
     }

@@ -53,6 +53,9 @@ jobs:
       - run: xvfb-run -a npm run test:e2e:skills
       - run: xvfb-run -a npm run test:e2e:checksgate
       - run: xvfb-run -a npm run test:e2e:subagents
+      - name: GUI automation tools for the test_app smoke (clicks + a window manager)
+        run: sudo apt-get update -q && sudo apt-get install -y -q xdotool openbox
+      - run: xvfb-run -a npm run test:e2e:guiapp
       - run: xvfb-run -a npm run test:e2e:github
       - run: xvfb-run -a npm run test:e2e:recipes
       - run: xvfb-run -a npm run test:e2e:lessons
