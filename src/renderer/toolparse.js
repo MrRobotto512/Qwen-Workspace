@@ -288,6 +288,85 @@ function cmdShellHint(command, output, platform) {
   return hints.length ? `Hint: ${hints.join(' ')}` : null;
 }
 
-const ToolParseExports = { TOOL_TEXT_MARKER, jsonToolCallRe, textToolCallStart, readJsonObject, extractTextToolCalls, announcesAction, looksLikeInstructions, stripFakeReminders, forgedToolResponse, isBusyModelError, isDeadModelError, modelAlternates, normalizeToolArgs, deniesCapability, deferredListing, cmdShellHint, GEMINI_FAMILY };
+// ---- Small-model hardening, ported from Strata (github.com/Niko1221/Strata, MIT) ----
+
+// Tool calls a model wrote INSIDE its thinking. Small Qwen models do this constantly; the turn
+// then ends with no call and no answer and the task just stops. Strata's rules (serve/
+// frontend.py, 37 recorded specimens) decide when such a call is an act rather than a mention:
+// the thinking must END with whole <tool_call>…</tool_call> blocks (whitespace only between
+// and after), each starting at the beginning of a line (not mid-sentence, indented or quoted)
+// and outside a code fence, naming a declared tool — and a turn cut off by the token limit
+// never counts (the model was mid-thought). Anything else stays thinking.
+function rescueReasoningCalls(reasoning, names, finish) {
+  if (finish === 'length') return [];
+  const declared = new Set(names || []);
+  let tail = String(reasoning || '').replace(/\s+$/, '');
+  const blocks = [];
+  for (;;) {
+    if (!tail.endsWith('</tool_call>')) break;
+    const open = tail.lastIndexOf('<tool_call>');
+    if (open < 0) break;
+    const before = tail.slice(0, open);
+    if (before && !/\n$/.test(before)) break; // mid-sentence, indented or quoted: a mention
+    const fences = (before.match(/^(```|~~~)/gm) || []).length;
+    if (fences % 2) break; // inside a fenced example
+    blocks.unshift(tail.slice(open));
+    tail = before.replace(/\s+$/, '');
+  }
+  const calls = [];
+  for (const block of blocks) {
+    for (const call of extractTextToolCalls(block, [...declared]).calls) {
+      if (declared.has(call.function.name)) calls.push(call); // a wrapper naming no declared tool stays text
+    }
+  }
+  return calls.map((call, i) => ({ ...call, id: `call_think_${Date.now()}_${i}` }));
+}
+
+// A tool name a small model garbled, mapped back to a known tool — or null. Separators get
+// mangled ("mcp__fs=write_file", "mcp__fs.write_file", "mcp__fs_write_file"), spaces creep in
+// ("<function= capture>"), and a bare "write_file" stands for the one MCP tool ending in it.
+// Never guesses: two candidates means no match. (Strata: serve/test_tool_name_alias.py,
+// test_tool_name_space.py.)
+function resolveToolName(raw, known) {
+  const name = String(raw || '').trim();
+  const list = [...new Set(known || [])];
+  if (list.includes(name)) return name;
+  const canon = (s) => String(s).toLowerCase().replace(/[\s=.:/\\-]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+  const c = canon(name);
+  if (!c) return null;
+  const exact = list.filter((k) => canon(k) === c);
+  if (exact.length) return exact.length === 1 ? exact[0] : null;
+  const bare = list.filter((k) => /^mcp_/.test(canon(k)) && canon(k).endsWith(`_${c}`));
+  return bare.length === 1 ? bare[0] : null;
+}
+
+// How much of the recent thinking is covered by 12-word passages seen at least three times —
+// a model reasoning in circles. A port of Strata's reasoning_repeat_coverage (serve/server.py):
+// a 2,000-word recent window over at most 30,000 words of history, plus a check that the last
+// 2,048 characters aren't one short pattern (period ≤ 64) repeated, which reads as fully looped.
+const LOOP_COVERAGE = 0.25;
+function reasoningRepeatCoverage(text) {
+  const t = String(text || '');
+  const tail = t.slice(-2048).toLowerCase();
+  if (tail.length === 2048) {
+    for (let p = 1; p <= 64; p++) if (tail.slice(p) === tail.slice(0, -p)) return 1;
+  }
+  const words = (t.toLowerCase().match(/\w+|[^\w\s]/g) || []).slice(-30000);
+  const width = 12;
+  const window = 2000;
+  if (words.length < window) return 0;
+  const grams = [];
+  for (let i = 0; i + width <= words.length; i++) grams.push(words.slice(i, i + width).join('\u0001'));
+  const counts = new Map();
+  for (const g of grams) counts.set(g, (counts.get(g) || 0) + 1);
+  const start = words.length - window;
+  const covered = new Set();
+  for (let i = start; i < grams.length; i++) {
+    if (counts.get(grams[i]) >= 3) for (let j = i; j < i + width; j++) covered.add(j);
+  }
+  return covered.size / (words.length - start);
+}
+
+const ToolParseExports = { rescueReasoningCalls, resolveToolName, reasoningRepeatCoverage, LOOP_COVERAGE, TOOL_TEXT_MARKER, jsonToolCallRe, textToolCallStart, readJsonObject, extractTextToolCalls, announcesAction, looksLikeInstructions, stripFakeReminders, forgedToolResponse, isBusyModelError, isDeadModelError, modelAlternates, normalizeToolArgs, deniesCapability, deferredListing, cmdShellHint, GEMINI_FAMILY };
 if (typeof module !== 'undefined' && module.exports) module.exports = ToolParseExports;
 if (typeof window !== 'undefined') window.ToolParse = ToolParseExports;
