@@ -1506,7 +1506,9 @@ async function pickHighPerfTarget(currentModel) {
   const pick = Nodes.pickHighPerf(nodes, health, currentModel, MODEL_CATALOG);
   if (!pick) return null;
   return {
-    override: { provider: 'ollama', baseUrl: pick.node.baseUrl, apiKey: '', model: pick.model, keepAlive: pick.node.keepAlive },
+    override: pick.kind === 'lmstudio'
+      ? Nodes.nodeOverride(pick.node, health[pick.node.id], pick.model)
+      : { provider: 'ollama', baseUrl: pick.node.baseUrl, apiKey: '', model: pick.model, keepAlive: pick.node.keepAlive },
     label: `${pick.model} on ${pick.node.name}`
   };
 }
@@ -1810,7 +1812,8 @@ async function runConversation(c) {
       if (node) {
         // normalizeNodes guarantees a keepAlive on every remote (the user's value or the
         // 5m default), so the node — not the global setting — decides how long its model stays.
-        if (node.id !== Nodes.THIS_PC_ID) override = { baseUrl: node.baseUrl, keepAlive: node.keepAlive };
+        // An LM Studio node also gets its own model key, idle ttl and (optional) draft model.
+        override = Nodes.nodeOverride(node, state.nodeHealth.byId[node.id], state.settings.model) || override;
         if (lastNodeId && node.id !== lastNodeId) note(`Running on the ${node.name} node.`);
         else if (!lastNodeId && node.id !== Nodes.THIS_PC_ID) {
           const thisH = state.nodeHealth.byId[Nodes.THIS_PC_ID];
@@ -1906,6 +1909,7 @@ async function runConversation(c) {
             ok: true, finishReason: res.finishReason, chars: (res.content || '').length, toolCalls: (res.toolCalls || []).length,
             promptTokens: res.usage?.promptTokens, completionTokens: res.usage?.completionTokens || (prog.tokens || undefined),
             promptMs: res.usage?.promptMs, loadMs: res.usage?.loadMs, genTokPerSec: res.usage?.genTokPerSec,
+            draftModel: res.usage?.draftModel, draftAccepted: res.usage?.draftAccepted,
             firstMs: prog.firstAt ? prog.firstAt - prog.startedAt : undefined, ms: Date.now() - prog.startedAt
           })
       : { ok: false, error: String(res.error || '').slice(0, 400) });

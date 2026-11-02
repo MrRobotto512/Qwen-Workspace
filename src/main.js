@@ -616,6 +616,13 @@ ipcMain.handle('chat:stream', async (event, id, payload) => {
   // other providers (e.g. Gemini's compatibility layer) send usage on their own and we take
   // it whenever a chunk carries it.
   if (['openrouter', 'dashscope'].includes(s.provider)) body.stream_options = { include_usage: true };
+  // LM Studio: unload after the node's idle time, speculative decoding with a draft model,
+  // and usage in the stream so progress/debug reports get real token counts.
+  if (s.provider === 'lmstudio') {
+    if (Number(s.ttl) > 0) body.ttl = Number(s.ttl);
+    if (s.draftModel) body.draft_model = s.draftModel;
+    body.stream_options = { include_usage: true };
+  }
 
   try {
     const res = await fetch(apiUrl(s, '/chat/completions'), {
@@ -639,7 +646,16 @@ ipcMain.handle('chat:stream', async (event, id, payload) => {
 
     const handleChunk = (json) => {
       if (json.usage && (json.usage.prompt_tokens || json.usage.completion_tokens)) {
-        usage = { promptTokens: json.usage.prompt_tokens || 0, completionTokens: json.usage.completion_tokens || 0 };
+        usage = { ...(usage || {}), promptTokens: json.usage.prompt_tokens || 0, completionTokens: json.usage.completion_tokens || 0 };
+      }
+      // LM Studio's stats: generation speed, and how many draft tokens speculative decoding kept.
+      if (json.stats && typeof json.stats === 'object') {
+        const st = json.stats;
+        usage = { ...(usage || {}) };
+        if (Number(st.tokens_per_second) > 0) usage.genTokPerSec = Math.round(Number(st.tokens_per_second) * 10) / 10;
+        if (st.draft_model) usage.draftModel = st.draft_model;
+        if (Number(st.total_draft_tokens_count) > 0) usage.draftAccepted = Math.round((Number(st.accepted_draft_tokens_count) / Number(st.total_draft_tokens_count)) * 100);
+        if (Number(st.time_to_first_token) > 0) usage.promptMs = Math.round(Number(st.time_to_first_token) * 1000);
       }
       const choice = json.choices?.[0];
       if (!choice) return;
@@ -1116,6 +1132,35 @@ async function ollamaBase() {
 // Health-check a list of Ollama nodes in parallel: GET /api/tags with a short timeout,
 // so a powered-off shop PC costs three seconds once, not a hang. Returns one entry per
 // node: { id, up, models } or { id, up: false, error }.
+// LM Studio's native model list (GET /api/v1/models): LLM keys plus what QWS uses for routing
+// and the draft-model pick — size, parameters, context, vision/tool capabilities, loaded state.
+async function lmStudioModels(root) {
+  try {
+    const r = await fetch(`${root}/api/v1/models`, { signal: AbortSignal.timeout(8000) });
+    if (r.status === 401 || r.status === 403) return { models: [], lmModels: [], error: 'LM Studio asks for an API token: turn off "Require Authentication" in its Developer → Server Settings (QWS does not store tokens)' };
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!Array.isArray(j?.models)) return null;
+    const llms = j.models.filter((m) => m.type === 'llm' && m.key);
+    return {
+      models: llms.map((m) => m.key),
+      lmModels: llms.map((m) => ({
+        key: m.key,
+        type: m.type,
+        params: m.params_string || null,
+        sizeBytes: m.size_bytes || 0,
+        maxContext: m.max_context_length || null,
+        vision: !!m.capabilities?.vision,
+        tools: !!m.capabilities?.trained_for_tool_use,
+        loaded: (m.loaded_instances || []).length > 0,
+        format: m.format || null
+      }))
+    };
+  } catch {
+    return null;
+  }
+}
+
 ipcMain.handle('nodes:check', async (_e, nodes) => {
   const list = (Array.isArray(nodes) ? nodes : []).slice(0, 16);
   return Promise.all(
@@ -1130,9 +1175,12 @@ ipcMain.handle('nodes:check', async (_e, nodes) => {
         const verP = fetch(`${root}/api/version`, { signal: AbortSignal.timeout(8000) })
           .then((r) => (r.ok ? r.json() : null)).then((j) => j?.version).catch(() => undefined);
         const res = await fetch(`${root}/api/tags`, { signal: AbortSignal.timeout(8000) });
-        if (!res.ok) return { id: n.id, up: false, error: `HTTP ${res.status}` };
-        const json = await res.json();
-        return { id: n.id, up: true, models: (json.models || []).map((m) => m.name).filter(Boolean), version: await verP };
+        const json = res.ok ? await res.json().catch(() => null) : null;
+        if (Array.isArray(json?.models)) return { id: n.id, up: true, kind: 'ollama', models: json.models.map((m) => m.name).filter(Boolean), version: await verP };
+        // Not Ollama: maybe LM Studio's server (the app or headless `lms daemon up`).
+        const lm = await lmStudioModels(root);
+        if (lm) return { id: n.id, up: true, kind: 'lmstudio', ...lm };
+        return { id: n.id, up: false, error: res.ok ? 'Answers, but is neither Ollama nor LM Studio' : `HTTP ${res.status}` };
       } catch (err) {
         return { id: n.id, up: false, error: permissionHint(err.cause?.code || err.message) };
       }

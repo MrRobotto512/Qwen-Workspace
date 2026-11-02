@@ -222,3 +222,36 @@ test('probeVerdict grades the answer and the call arguments, not just a reply', 
   assert.strictEqual(words.prompt.ok, false);
   assert.ok(/did not call the tool/.test(words.tool.detail));
 });
+
+test('LM Studio nodes: loose model names, ttl, draft pick, and the per-request override', () => {
+  const N = require('../src/renderer/nodes.js');
+  assert.equal(N.looseModelKey('qwen3:14b'), N.looseModelKey('qwen/qwen3-14b'));
+  assert.equal(N.looseModelKey('qwen2.5-coder:7b'), N.looseModelKey('lmstudio-community/Qwen2.5-Coder-7B-Instruct-GGUF'));
+  assert.notEqual(N.looseModelKey('qwen3:14b'), N.looseModelKey('qwen3:8b'));
+  assert.equal(N.lmModelFor('qwen3:14b', ['qwen/qwen3-8b', 'qwen/qwen3-14b']), 'qwen/qwen3-14b');
+  assert.equal(N.lmModelFor('qwen3:14b', ['qwen/qwen3-8b'], 'qwen/qwen3-8b'), 'qwen/qwen3-8b', 'a pinned node model wins');
+  assert.equal(N.lmModelFor('llama3', ['qwen/qwen3-8b']), null);
+  assert.deepEqual(['5m', '1h', '45s', '300', '-1', '0', '', 'soon'].map(N.ttlSeconds), [300, 3600, 45, 300, null, null, null, null]);
+  const lm = [
+    { key: 'qwen/qwen3-14b', params: '14B' }, { key: 'qwen/qwen3-4b', params: '4B' }, { key: 'qwen/qwen3-1.7b', params: '1.7B' },
+    { key: 'qwen/qwen3-0.6b', params: '0.6B' }, { key: 'llama-3.2-1b-instruct', params: '1B' }, { key: 'text-embedding-nomic', type: 'embedding', params: '0.1B' }
+  ];
+  assert.equal(N.suggestDraft('qwen/qwen3-14b', lm), 'qwen/qwen3-1.7b', 'largest same-family model at most a quarter of the size');
+  assert.equal(N.suggestDraft('qwen/qwen3-4b', lm), 'qwen/qwen3-0.6b');
+  assert.equal(N.suggestDraft('llama-3.2-1b-instruct', lm), null);
+  // a node health with LM Studio models: the loose match counts as "has the model"
+  const h = { up: true, kind: 'lmstudio', models: lm.map((m) => m.key), lmModels: lm };
+  assert.equal(N.nodeHasModel(h, 'qwen3:14b'), true);
+  assert.equal(N.nodeHasModel({ ...h, kind: 'ollama' }, 'qwen3:14b'), false, 'Ollama nodes keep exact matching');
+  const node = { id: 'node-lm', baseUrl: 'http://10.0.0.5:1234', keepAlive: '5m', kind: 'lmstudio', draftModel: 'auto' };
+  assert.deepEqual(N.nodeOverride(node, h, 'qwen3:14b'), { provider: 'lmstudio', baseUrl: 'http://10.0.0.5:1234/v1', apiKey: '', model: 'qwen/qwen3-14b', ttl: 300, draftModel: 'qwen/qwen3-1.7b' });
+  assert.equal(N.nodeOverride({ ...node, draftModel: 'missing/model' }, h, 'qwen3:14b').draftModel, undefined, 'a draft model the node does not have is dropped');
+  assert.equal(N.nodeOverride({ id: 'this-pc', baseUrl: 'http://localhost:11434' }, { up: true, kind: 'ollama' }, 'x'), null);
+  assert.deepEqual(N.nodeOverride({ id: 'node-b', baseUrl: 'http://b:11434', keepAlive: '5m' }, { up: true, kind: 'ollama' }, 'x'), { baseUrl: 'http://b:11434', keepAlive: '5m' });
+  assert.equal(N.normalizeNodes({ ollamaNodes: [{ id: 'node-lm', baseUrl: 'http://10.0.0.5:1234', kind: 'lmstudio', draftModel: 'auto' }] })[1].kind, 'lmstudio');
+  // ⚡ pick on an LM Studio node keeps the node's own model key
+  const cat = [{ id: 'qwen3:14b', rank: 7 }, { id: 'qwen2.5-coder:7b', rank: 5 }];
+  const pick = N.pickHighPerf([{ id: 'node-lm', enabled: true, highPerf: true }], { 'node-lm': h }, 'qwen2.5-coder:7b', cat);
+  assert.equal(pick.model, 'qwen/qwen3-14b');
+  assert.equal(pick.kind, 'lmstudio');
+});

@@ -57,7 +57,10 @@ function normalizeNodes(s) {
       baseUrl: cleanUrl(n.baseUrl),
       enabled: n.enabled !== false,
       highPerf: n.highPerf === true,
-      keepAlive: typeof n.keepAlive === 'string' && n.keepAlive.trim() ? n.keepAlive.trim() : REMOTE_KEEP_DEFAULT
+      keepAlive: typeof n.keepAlive === 'string' && n.keepAlive.trim() ? n.keepAlive.trim() : REMOTE_KEEP_DEFAULT,
+      ...(n.kind === 'lmstudio' ? { kind: 'lmstudio' } : {}),
+      ...(typeof n.model === 'string' && n.model.trim() ? { model: n.model.trim() } : {}),
+      ...(typeof n.draftModel === 'string' && n.draftModel.trim() ? { draftModel: n.draftModel.trim() } : {})
     }));
   return [thisPc, ...remotes];
 }
@@ -82,7 +85,8 @@ function sameModel(a, b) {
 }
 
 function nodeHasModel(h, model) {
-  return !!h && h.up === true && Array.isArray(h.models) && h.models.some((m) => sameModel(m, model));
+  if (!h || h.up !== true || !Array.isArray(h.models)) return false;
+  return h.models.some((m) => sameModel(m, model) || (h.kind === 'lmstudio' && looseSame(m, model)));
 }
 
 // Pick the node a request should run on. `health` maps node id -> {up, models}, `exclude`
@@ -122,7 +126,7 @@ const HIGH_PERF_FLOOR = 5.9;
 // is MODEL_CATALOG (passed in so this stays pure for tests).
 function pickHighPerf(nodes, health, currentModel, catalog) {
   const cat = catalog || [];
-  const entryFor = (id) => cat.find((m) => sameModel(m.id, id));
+  const entryFor = (id) => cat.find((m) => sameModel(m.id, id)) || cat.find((m) => looseSame(m.id, id));
   const curRank = entryFor(currentModel)?.rank;
   const floor = typeof curRank === 'number' ? curRank : HIGH_PERF_FLOOR;
   let best = null;
@@ -133,10 +137,85 @@ function pickHighPerf(nodes, health, currentModel, catalog) {
     for (const m of h.models || []) {
       const e = entryFor(m);
       if (!e || e.rank <= floor) continue;
-      if (!best || e.rank > best.rank) best = { node: n, model: e.id, rank: e.rank };
+      if (!best || e.rank > best.rank) best = { node: n, model: h.kind === 'lmstudio' ? m : e.id, rank: e.rank, kind: h.kind || 'ollama' };
     }
   }
   return best;
+}
+
+// ---------- LM Studio nodes (from LM Studio's API: lmstudio-ai/docs) ----------
+// A node can run LM Studio's server (the app, or the headless `lms daemon up`) instead of Ollama.
+// Model names differ ("qwen3:14b" in Ollama, "qwen/qwen3-14b" in LM Studio), so they are matched
+// on a loose key; requests carry LM Studio's `ttl` (idle unload, from the node's keep-alive) and,
+// when set, a `draft_model` for speculative decoding — a small same-family model proposes tokens
+// the big one verifies, typically 1.5–2× faster generation with identical output.
+
+// "qwen3:14b", "qwen/qwen3-14b", "Qwen3-14B-GGUF" → "qwen3-14b"; "qwen2.5-coder:7b" and
+// "qwen2.5-coder-7b-instruct" → "qwen2-5-coder-7b".
+function looseModelKey(name) {
+  return String(name || '')
+    .toLowerCase()
+    .replace(/^[^/]*\//, '')
+    .replace(/:latest$/, '')
+    .replace(/[:_.\s]+/g, '-')
+    .replace(/-(instruct|it|chat|gguf|mlx)(?=-|$)/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+const looseSame = (a, b) => !!a && !!b && looseModelKey(a) === looseModelKey(b);
+
+// The LM Studio model key to run for `model` on a node: its own pinned model when set, else the
+// key that loosely matches the global model name, else null.
+function lmModelFor(model, keys, pinned) {
+  const list = keys || [];
+  if (pinned && list.includes(pinned)) return pinned;
+  return list.find((k) => k === model) || list.find((k) => looseSame(k, model)) || null;
+}
+
+// Ollama-style keep-alive ("5m", "1h", "30s", "300") → LM Studio ttl seconds; null = no ttl.
+function ttlSeconds(keepAlive) {
+  const m = /^\s*(\d+(?:\.\d+)?)\s*([smh]?)\s*$/i.exec(String(keepAlive ?? ''));
+  if (!m) return null;
+  const n = Number(m[1]) * ({ s: 1, m: 60, h: 3600 }[m[2].toLowerCase()] || 1);
+  return n > 0 ? Math.round(n) : null;
+}
+
+// Billions of parameters from "14B", "0.6B", or a name like "qwen3-1.7b".
+function paramsB(m) {
+  const fromString = /(\d+(?:\.\d+)?)\s*b\b/i.exec(String(m?.params || m?.params_string || ''));
+  const fromKey = /(?:^|[-_/:])(\d+(?:\.\d+)?)b(?=$|[-_])/i.exec(String(m?.key || ''));
+  const v = Number((fromString || fromKey || [])[1]);
+  return Number.isFinite(v) && v > 0 ? v : null;
+}
+const familyKey = (key) => looseModelKey(key).replace(/-\d+(?:-\d+)?b(?=-|$)/, '').replace(/-a\d+b/, '');
+
+// "Auto" draft model: same family, an LLM, at most a quarter of the main model's size (LM
+// Studio's guideline: 7B → ≤1B, 14B → ≤3B) — the largest such, since bigger drafts guess better.
+function suggestDraft(mainKey, lmModels) {
+  const list = lmModels || [];
+  const main = list.find((m) => m.key === mainKey) || { key: mainKey };
+  const size = paramsB(main);
+  if (!size) return null;
+  const fam = familyKey(mainKey);
+  const fits = list
+    .filter((m) => m.key !== mainKey && (m.type || 'llm') === 'llm' && familyKey(m.key) === fam)
+    .map((m) => ({ key: m.key, b: paramsB(m) }))
+    .filter((m) => m.b && m.b <= size / 4);
+  fits.sort((a, b) => b.b - a.b);
+  return fits[0]?.key || null;
+}
+
+// The per-request override for routing a step to `node`. Ollama This PC: none (the global
+// settings already point at it). Ollama remote: its URL and keep-alive. LM Studio: provider,
+// /v1 URL, the resolved model key, ttl and draft model. `model` is the model the step wants.
+function nodeOverride(node, health, model) {
+  if ((health?.kind || node.kind) === 'lmstudio') {
+    const key = lmModelFor(model, health?.models, node.model) || node.model || model;
+    const draft = node.draftModel === 'auto' ? suggestDraft(key, health?.lmModels) : node.draftModel && (health?.models || []).includes(node.draftModel) ? node.draftModel : null;
+    return { provider: 'lmstudio', baseUrl: `${cleanUrl(node.baseUrl).replace(/\/v1$/, '')}/v1`, apiKey: '', model: key, ttl: ttlSeconds(node.keepAlive), draftModel: draft || undefined };
+  }
+  if (node.id === THIS_PC_ID) return null;
+  return { baseUrl: node.baseUrl, keepAlive: node.keepAlive };
 }
 
 // A request that never reached a server, as opposed to a server that answered with an
@@ -252,6 +331,6 @@ function probeVerdict(promptText, toolMessage) {
   return { ok: prompt.ok && tool.ok, prompt, tool };
 }
 
-const NodesExports = { THIS_PC_ID, REMOTE_KEEP_DEFAULT, nodeId, normalizeNodes, multiNode, sameModel, nodeHasModel, pickNode, nextNode, pickHighPerf, spillInfo, fitContext, kvBytesPerToken, predictFit, probeVerdict, PROBE_PROMPT, PROBE_TOOL_PROMPT, PROBE_TOOL, isConnectionError, summarize };
+const NodesExports = { THIS_PC_ID, REMOTE_KEEP_DEFAULT, nodeId, normalizeNodes, multiNode, sameModel, nodeHasModel, pickNode, nextNode, pickHighPerf, spillInfo, fitContext, kvBytesPerToken, predictFit, looseModelKey, looseSame, lmModelFor, ttlSeconds, suggestDraft, nodeOverride, probeVerdict, PROBE_PROMPT, PROBE_TOOL_PROMPT, PROBE_TOOL, isConnectionError, summarize };
 if (typeof module !== 'undefined' && module.exports) module.exports = NodesExports;
 if (typeof window !== 'undefined') window.Nodes = NodesExports;
