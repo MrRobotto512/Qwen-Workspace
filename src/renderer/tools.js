@@ -212,7 +212,7 @@ const PROGRAM_TOOL = {
   }
 };
 // Meta tools stay outside programs: they steer the conversation, not the project.
-const PROGRAM_EXCLUDED = new Set(['run_program', 'consult_planner', 'tool_search', 'load_skill', 'ask_user', 'todo_write']);
+const PROGRAM_EXCLUDED = new Set(['delegate_tasks', 'run_program', 'consult_planner', 'tool_search', 'load_skill', 'ask_user', 'todo_write']);
 
 const DEFERRED_TOOLS = [
   {
@@ -320,6 +320,37 @@ const CONSULT_TOOL = {
   }
 };
 
+const DELEGATE_TOOL = {
+  type: 'function',
+  function: {
+    name: 'delegate_tasks',
+    description: 'Run 2 to 4 INDEPENDENT subtasks at the same time, each by a fresh agent on a different Ollama machine; you get back only each one\'s short summary and the files it changed. Use it when work splits cleanly — separate files or separate questions — never for steps that depend on each other. Each subagent starts with no memory of this conversation: put everything it needs in the task and context.',
+    parameters: {
+      type: 'object',
+      properties: {
+        tasks: {
+          type: 'array',
+          description: '2 to 4 subtasks.',
+          items: {
+            type: 'object',
+            properties: {
+              task: { type: 'string', description: 'What this subagent should do, including which files it owns.' },
+              context: { type: 'string', description: 'Facts it needs from this conversation: paths, decisions, code to follow.' }
+            },
+            required: ['task']
+          }
+        }
+      },
+      required: ['tasks']
+    }
+  }
+};
+
+// Parallel subagents need somewhere to run in parallel: Ollama with more than one node enabled.
+function subagentsAvailable(c) {
+  return !c?.isSubagent && state.settings.subagents !== false && state.settings.provider === 'ollama' && Nodes.multiNode(state.settings);
+}
+
 function toolsFor(c) {
   const active = new Set(c.activeTools || []);
   const core = state.settings.webResearch === false ? CORE_TOOLS.filter((t) => !WEB_TOOLS.has(t.function.name)) : CORE_TOOLS;
@@ -330,7 +361,9 @@ function toolsFor(c) {
   if (heavyOverride()) tools.push(CONSULT_TOOL);
   if ((heavyOverride() || conversationOverride(c)) && !tools.some((t) => t.function.name === 'run_program')) tools.push(PROGRAM_TOOL);
   if (deferred.some((t) => !active.has(t.function.name))) tools.push(TOOL_SEARCH_TOOL);
-  return tools;
+  if (subagentsAvailable(c)) tools.push(DELEGATE_TOOL);
+  // A subagent runs unattended next to others: nobody is there to answer its questions.
+  return c.isSubagent ? tools.filter((t) => t.function.name !== 'ask_user') : tools;
 }
 
 // Tools that only read can run together; anything that changes files or runs commands is a
@@ -386,7 +419,8 @@ const TOOL_INFO = {
   consult_planner: { icon: 'sparkles', verb: 'Consult', doing: 'Asking the planner about' },
   tool_search: { icon: 'search', verb: 'Find tools', doing: 'Looking up tools for' },
   search_history: { icon: 'history', verb: 'Past chats', doing: 'Searching past conversations for' },
-  remember: { icon: 'star', verb: 'Remember', doing: 'Saving to personal memory' }
+  remember: { icon: 'star', verb: 'Remember', doing: 'Saving to personal memory' },
+  delegate_tasks: { icon: 'server', verb: 'Delegate', doing: 'Running subagents for' }
 };
 
 // Context is assembled in layers, from least to most likely to change, so Ollama can reuse its
@@ -461,6 +495,10 @@ function describeCall(name, args) {
       return { target: args.id ? `conversation ${args.id}` : String(args.query || '') };
     case 'remember':
       return { target: String(args.fact || '') };
+    case 'delegate_tasks': {
+      const list = Array.isArray(args.tasks) ? args.tasks : [];
+      return { target: `${list.length} subtask${list.length === 1 ? '' : 's'}: ${list.map((t) => String(t?.task || t || '').slice(0, 40)).join(' · ')}`, title: list.map((t) => String(t?.task || t || '')).join('\n') };
+    }
     case 'ask_user': {
       const qs = Array.isArray(args.questions) ? args.questions : [args];
       return { target: qs.length > 1 ? `${qs.length} questions` : String(qs[0]?.question || '') };
