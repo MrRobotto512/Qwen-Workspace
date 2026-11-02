@@ -225,6 +225,10 @@
         <button id="node-add-btn" class="ghost"><span data-icon="plus"></span>Add node</button>
       </div>
       <div id="node-add-result" class="hint"></div>
+      <div id="node-diag-box" class="hidden">
+        <pre id="node-diag"></pre>
+        <button id="node-diag-copy" class="ghost">Copy report</button>
+      </div>
 
       <div class="section-title">Agent</div>
       <label class="check"><input type="checkbox" id="s-agentMode" /> Agent mode: Qwen can use tools (needs a model with tool calling)</label>
@@ -456,6 +460,7 @@
   <script src="remote-ui.js"></script>
   <script src="reviewpass.js"></script>
   <script src="claudecode.js"></script>
+  <script src="diagnose.js"></script>
   <script src="escalation.js"></script>
   <script src="costs.js"></script>
   <script src="providers.js"></script>

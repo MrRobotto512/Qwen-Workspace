@@ -4,6 +4,7 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const { spawn, execFileSync } = require('child_process');
 const vm = require('node:vm');
+const net = require('node:net');
 const updater = require('./updater');
 const { detectSpecs } = require('./hardware');
 const web = require('./web');
@@ -940,6 +941,65 @@ ipcMain.handle('nodes:check', async (_e, nodes) => {
       }
     })
   );
+});
+
+// Connection doctor probes: run from the app's own process so they fail exactly the way the
+// app fails (per-app firewall rules and macOS local-network denial hit here, not in a user's
+// PowerShell/Terminal). The renderer's diagnose.js turns these steps into a verdict.
+ipcMain.handle('nodes:diagnose', async (_e, baseUrl) => {
+  const steps = [];
+  const timed = async (step, fn) => {
+    const t0 = Date.now();
+    try {
+      steps.push({ step, ok: true, detail: await fn(), ms: Date.now() - t0 });
+      return true;
+    } catch (err) {
+      // A DOMException's .code is a legacy NUMBER (AbortSignal.timeout → 23); prefer string
+      // codes, then the exception name, so the report says "TimeoutError", not "23".
+      const code = err.cause?.code || (typeof err.code === 'string' ? err.code : null) || (err.name !== 'Error' ? err.name : null) || err.message;
+      steps.push({ step, ok: false, detail: code, ms: Date.now() - t0 });
+      return false;
+    }
+  };
+  const root = String(baseUrl || '').trim().replace(/\/+$/, '').replace(/\/v1$/, '');
+  let u = null;
+  try {
+    u = new URL(root);
+    if (!/^https?:$/.test(u.protocol)) throw new Error('not an http(s) URL');
+    steps.push({ step: 'parse', ok: true, detail: `${u.hostname}:${u.port || (u.protocol === 'https:' ? 443 : 80)}` });
+  } catch (err) {
+    steps.push({ step: 'parse', ok: false, detail: err.message });
+    return steps;
+  }
+  const port = Number(u.port || (u.protocol === 'https:' ? 443 : 80));
+  // WHATWG URL keeps the brackets on an IPv6 literal ("[::1]"); net.connect would hand that
+  // string to DNS and report a false ENOTFOUND, so they come off here.
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  // Raw TCP first: a bare socket surfaces the exact errno (EACCES vs ECONNREFUSED vs
+  // ETIMEDOUT), which is the whole diagnosis.
+  await timed('tcp', () => new Promise((resolve, reject) => {
+    const s = net.connect({ host, port });
+    const t = setTimeout(() => { s.destroy(); reject(Object.assign(new Error('ETIMEDOUT'), { code: 'ETIMEDOUT' })); }, 5000);
+    s.once('connect', () => { clearTimeout(t); s.destroy(); resolve('connected'); });
+    s.once('error', (err) => { clearTimeout(t); reject(err); });
+  }));
+  // The cleaned root, not u.origin: a reverse-proxied node ("https://host/ollama") keeps its
+  // path prefix this way, matching exactly what nodes:check and the chat path request.
+  await timed('http', async () => {
+    const r = await fetch(`${root}/api/version`, { signal: AbortSignal.timeout(6000) });
+    if (!r.ok) throw Object.assign(new Error(`HTTP ${r.status}`), { code: `HTTP ${r.status}` });
+    const j = await r.json().catch(() => null);
+    return `Ollama ${j?.version || '?'} answered`;
+  });
+  // Control probe: can this app connect ANYWHERE at all? Distinguishes "this node's path is
+  // blocked" from "the app itself is blocked".
+  await timed('control', async () => {
+    const r = await fetch('http://127.0.0.1:11434/api/version', { signal: AbortSignal.timeout(4000) });
+    return `loopback 11434 ${r.ok ? 'answers' : `HTTP ${r.status}`}`;
+  });
+  const proxies = ['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy'].filter((k) => process.env[k]);
+  steps.push({ step: 'env', ok: true, detail: proxies.length ? `proxy variables set: ${proxies.join(', ')}` : 'no proxy environment variables' });
+  return steps;
 });
 
 ipcMain.handle('ollama:tags', async () => {

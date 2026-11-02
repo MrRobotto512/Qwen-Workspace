@@ -225,6 +225,11 @@ function renderNodesSettings() {
         title: 'High-performance node: when Qwen gets stuck, the next step runs here on the strongest model this node has installed — before any money goes to the cloud planner.',
         onclick: () => { n.highPerf = !n.highPerf; renderNodesSettings(); }
       }, iconEl('zap')),
+      el('button', {
+        class: 'icon-btn',
+        title: 'Connection doctor: probe this node from inside the app (raw TCP, HTTP, a loopback control) and explain exactly what is blocking it.',
+        onclick: () => diagnoseNode(n)
+      }, iconEl('bug')),
       test,
       el('label', { class: 'toggle', title: 'Use this node' },
         el('input', { type: 'checkbox', checked: n.enabled, onchange: (e) => { n.enabled = e.target.checked; } })),
@@ -232,6 +237,22 @@ function renderNodesSettings() {
         ? el('button', { class: 'icon-btn', title: 'Remove', onclick: () => { settingsNodes = settingsNodes.filter((x) => x.id !== n.id); renderNodesSettings(); } }, iconEl('trash'))
         : null);
   }));
+}
+
+// The Connection doctor: probes run in the main process (the same process whose requests
+// fail), diagnose.js interprets them, and the report lands under the node list — pasteable
+// into a bug report instead of debugging per-app firewalls by screenshot.
+let diagSeq = 0; // a slow early probe must not overwrite a newer one's report
+async function diagnoseNode(n) {
+  const seq = ++diagSeq;
+  const box = $('#node-diag-box');
+  const pre = $('#node-diag');
+  box.classList.remove('hidden');
+  const url = n.id === Nodes.THIS_PC_ID ? ($('#s-baseUrl').value.trim() || n.baseUrl) : n.baseUrl;
+  pre.textContent = `Probing ${n.name} (${url})…`;
+  const steps = await api.nodesDiagnose(url).catch((e) => [{ step: 'probe', ok: false, detail: cleanError(e) }]);
+  if (seq !== diagSeq) return;
+  pre.textContent = Diagnose.diagReport(n.name, url, steps, state.appInfo?.platform, state.appInfo?.version);
 }
 
 function addNodeFromForm() {
@@ -298,6 +319,7 @@ function renderSpendSummary() {
 
 function openSettings() {
   const s = state.settings;
+  $('#node-diag-box').classList.add('hidden'); // a stale doctor report never greets a fresh visit
   for (const k of ['provider', 'baseUrl', 'apiKey', 'model', 'temperature', 'fontSize', 'contextLength', 'maxResponseTokens', 'keepAlive', 'searchProvider', 'searchApiKey', 'searxngUrl']) $(`#s-${k}`).value = s[k] ?? '';
   $('#s-webResearch').checked = s.webResearch !== false;
   $('#s-allowPrivateFetch').checked = !!s.allowPrivateFetch;

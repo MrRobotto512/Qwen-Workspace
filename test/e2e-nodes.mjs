@@ -160,6 +160,24 @@ try {
   ).catch(() => fail('remote-only routing: the task never ran on the enabled remote node'));
   if (counts.bChats <= bBefore) fail('remote-only routing: node B never received the request');
 
+  // Connection doctor: a live node reads healthy, a dead port reads "nothing listening" —
+  // probed from the app's own process, interpreted by diagnose.js.
+  const diag = await win.evaluate(async (urls) => {
+    const live = await api.nodesDiagnose(urls.live);
+    const dead = await api.nodesDiagnose(urls.dead);
+    const v6 = await api.nodesDiagnose(urls.v6);
+    return {
+      live: Diagnose.diagVerdict(live, 'linux'),
+      dead: Diagnose.diagVerdict(dead, 'linux'),
+      v6tcp: String(v6.find((s) => s.step === 'tcp')?.detail || '')
+    };
+  }, { live: baseB, dead: 'http://127.0.0.1:9', v6: 'http://[::1]:9' });
+  if (!/Everything works/.test(diag.live)) fail(`doctor verdict for the live node is wrong: ${diag.live}`);
+  if (!/nothing is listening/i.test(diag.dead)) fail(`doctor verdict for the dead port is wrong: ${diag.dead}`);
+  // The IPv6-literal regression: brackets must come off before net.connect, or the probe
+  // reports a phony DNS failure (ENOTFOUND "[::1]") instead of a real connect errno.
+  if (/ENOTFOUND/.test(diag.v6tcp)) fail(`IPv6 literal was handed to DNS with its brackets: ${diag.v6tcp}`);
+
   // Leave settings pristine for whatever test runs next: a saved remote-only node config
   // would silently redirect other suites' model requests to a dead port.
   await win.evaluate(async () => {

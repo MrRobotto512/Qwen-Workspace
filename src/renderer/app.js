@@ -2276,6 +2276,9 @@ function autoGrow() {
 }
 
 function bindUi() {
+  $('#node-diag-copy').onclick = () => {
+    navigator.clipboard.writeText($('#node-diag').textContent).then(() => flash('Report copied'), () => flash('Copy failed — select the text instead'));
+  };
   $('#btn-folder').onclick = (e) => showFolderMenu(e.currentTarget);
   $('#sb-folder').onclick = (e) => showFolderMenu(e.currentTarget);
   $('#btn-quick').onclick = () => openQuick('open');
