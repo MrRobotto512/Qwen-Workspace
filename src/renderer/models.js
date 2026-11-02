@@ -1,20 +1,29 @@
 'use strict';
 
-// Qwen models available through Ollama, with the download size of the default 4-bit build and
-// the approximate memory each token of context costs (KV cache, fp16). Rank orders them by how
-// well they work as a coding agent.
+// Models available through Ollama — Qwen, plus Google's Gemma 4 — with the download size of
+// the default 4-bit build and the approximate memory each token of context costs (KV cache,
+// fp16). Rank orders them by how well they work as a coding agent.
+// Only tool-capable models belong here: Agent mode needs native tool calling, which in Ollama
+// Gemma has only from Gemma 4 on (gemma3 and older answer every tools request with HTTP 400),
+// so older Gemma generations are deliberately absent.
 // nativeCtx is the context the model was trained for. Past it, the model needs YaRN (RoPE
 // scaling), which Ollama can't switch on by itself, so `yarn.repo` names a Hugging Face GGUF
 // build with the YaRN settings baked in (Unsloth's "128K" builds) that Ollama can pull directly.
 const MODEL_CATALOG = [
   { id: 'qwen3-coder:30b', name: 'Qwen3-Coder 30B', sizeGB: 19, kvKB: 96, moe: true, rank: 10, agent: 'Excellent', note: 'Best local coding agent. A mixture-of-experts model with only 3B parameters active per token, so it stays usable even when part of it runs on the CPU.', nativeCtx: 262144, yarn: { repo: 'unsloth/Qwen3-Coder-30B-A3B-Instruct-1M-GGUF', maxCtx: 1048576 } },
   { id: 'qwen2.5-coder:32b', name: 'Qwen2.5-Coder 32B', sizeGB: 20, kvKB: 256, rank: 9, agent: 'Very good', note: 'Strong coder, but every token uses all 32B parameters, so it needs a big GPU to be quick.', nativeCtx: 32768, yarn: { repo: 'unsloth/Qwen2.5-Coder-32B-Instruct-128K-GGUF', maxCtx: 131072 } },
+  // Gemma 4 kvKB values are estimates: Google doesn't publish per-token KV numbers, and
+  // Gemma's sliding-window attention keeps the cache lighter than a dense Qwen of equal size.
+  { id: 'gemma4:31b', name: 'Gemma 4 31B', sizeGB: 20, kvKB: 176, rank: 8.5, agent: 'Very good', note: "Google's strongest open model, near Qwen2.5-Coder 32B as a coding agent. Dense, so it needs a big GPU to be quick. Needs Ollama 0.20+.", nativeCtx: 262144 },
   { id: 'qwen3:32b', name: 'Qwen3 32B', sizeGB: 20, kvKB: 256, rank: 8, agent: 'Very good', note: 'General model with strong reasoning; good at planning multi-step changes.', nativeCtx: 32768, yarn: { repo: 'unsloth/Qwen3-32B-128K-GGUF', maxCtx: 131072 } },
+  { id: 'gemma4:26b', name: 'Gemma 4 26B', sizeGB: 18, kvKB: 96, moe: true, rank: 7.8, agent: 'Very good', note: 'Mixture-of-experts with about 4B parameters active per token — the Gemma counterpart to Qwen3-Coder 30B, usable even partly on the CPU. Needs Ollama 0.20+.', nativeCtx: 262144 },
   { id: 'qwen3:30b', name: 'Qwen3 30B', sizeGB: 19, kvKB: 96, moe: true, rank: 7.5, agent: 'Very good', note: 'General mixture-of-experts model; fast for its size, like Qwen3-Coder 30B.', nativeCtx: 32768, yarn: { repo: 'unsloth/Qwen3-30B-A3B-128K-GGUF', maxCtx: 131072 } },
   { id: 'qwen2.5-coder:14b', name: 'Qwen2.5-Coder 14B', sizeGB: 9, kvKB: 192, rank: 6.5, agent: 'Good', note: 'Good balance of quality and speed on 12–16 GB GPUs.', nativeCtx: 32768, yarn: { repo: 'unsloth/Qwen2.5-Coder-14B-Instruct-128K-GGUF', maxCtx: 131072 } },
   { id: 'qwen3:14b', name: 'Qwen3 14B', sizeGB: 9.3, kvKB: 160, rank: 6, agent: 'Good', note: 'General model; good tool use for its size.', nativeCtx: 32768, yarn: { repo: 'unsloth/Qwen3-14B-128K-GGUF', maxCtx: 131072 } },
   { id: 'qwen2.5-coder:7b', name: 'Qwen2.5-Coder 7B', sizeGB: 4.7, kvKB: 56, rank: 4.5, agent: 'Fair', note: 'Fine for explanations and small edits; can lose track on long agent tasks.', nativeCtx: 32768, yarn: { repo: 'unsloth/Qwen2.5-Coder-7B-Instruct-128K-GGUF', maxCtx: 131072 } },
+  { id: 'gemma4:e4b', name: 'Gemma 4 E4B', sizeGB: 9.6, kvKB: 56, rank: 4.3, agent: 'Fair', note: 'Edge-sized general model (8B, 4.5B effective). Decent for small tasks; weaker than Qwen3 14B as an agent. Needs Ollama 0.20+.', nativeCtx: 131072 },
   { id: 'qwen3:8b', name: 'Qwen3 8B', sizeGB: 5.2, kvKB: 144, rank: 4, agent: 'Fair', note: 'General model; decent tool use for small tasks.', nativeCtx: 32768, yarn: { repo: 'unsloth/Qwen3-8B-128K-GGUF', maxCtx: 131072 } },
+  { id: 'gemma4:e2b', name: 'Gemma 4 E2B', sizeGB: 7.2, kvKB: 40, rank: 2.2, agent: 'Basic', note: 'Smallest Gemma 4 (5B, 2.3B effective), for low-memory machines. Use Chat mode for anything complex. Needs Ollama 0.20+.', nativeCtx: 131072 },
   { id: 'qwen3:4b', name: 'Qwen3 4B', sizeGB: 2.5, kvKB: 144, rank: 2, agent: 'Basic', note: 'For low-memory machines. Use Chat mode for anything complex.', nativeCtx: 32768, yarn: { repo: 'unsloth/Qwen3-4B-128K-GGUF', maxCtx: 131072 } },
   { id: 'qwen2.5-coder:3b', name: 'Qwen2.5-Coder 3B', sizeGB: 1.9, kvKB: 36, rank: 1, agent: 'Weak', note: 'Autocomplete-sized; not reliable in Agent mode.', nativeCtx: 32768 },
   { id: 'qwen2.5-coder:1.5b', name: 'Qwen2.5-Coder 1.5B', sizeGB: 1, kvKB: 28, rank: 0, agent: 'Weak', note: 'Very small; quick answers only.', nativeCtx: 32768 }
@@ -118,3 +127,6 @@ function formatGB(gb) {
 function formatContext(ctx) {
   return ctx >= 1048576 ? `${+(ctx / 1048576).toFixed(1)}M` : `${Math.round(ctx / 1024)}K`;
 }
+
+const ModelsExports = { MODEL_CATALOG, memoryNeededGB, fitAt, FIT_INFO, evaluateModel, recommendModels, planLongContext, recommendLongContext, catalogEntryFor, describeSpecs, formatGB, formatContext };
+if (typeof module !== 'undefined' && module.exports) module.exports = ModelsExports;

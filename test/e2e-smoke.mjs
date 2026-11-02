@@ -44,6 +44,16 @@ try {
   if (await win.evaluate(() => document.querySelector('#settings-modal').classList.contains('hidden'))) fail('settings modal did not open');
   await win.evaluate(() => document.querySelector('#s-cancel').onclick());
 
+  // The Models window must render the catalog — Qwen and Gemma 4 rows — even with no Ollama
+  // server reachable (downloads are then disabled, but the hardware-fit advice still shows).
+  await win.evaluate(() => openModels('standard'));
+  await win.waitForSelector('#m-list .m-row', { timeout: 15_000 }).catch(() => fail('the Models window never rendered its catalog'));
+  const rows = await win.evaluate(() => [...document.querySelectorAll('#m-list .m-row')].map((r) => r.dataset.model));
+  for (const id of ['qwen3-coder:30b', 'gemma4:26b', 'gemma4:31b']) {
+    if (!rows.includes(id)) fail(`the Models window is missing ${id}; rows were: ${rows.join(', ')}`);
+  }
+  await win.evaluate(() => document.querySelector('#m-close').onclick());
+
   // A conversation must accept a message: clicking send renders the user bubble even when no
   // model server is reachable (the turn then fails with an error card, which is fine).
   await win.evaluate(async (dir) => {
@@ -72,4 +82,4 @@ try {
   fs.rmSync(ws, { recursive: true, force: true });
 }
 if (process.exitCode) process.exit(process.exitCode);
-console.log('smoke ok: boot clean, settings open, splitters present, send works');
+console.log('smoke ok: boot clean, settings open, splitters present, models catalog rendered, send works');
