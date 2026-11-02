@@ -534,11 +534,24 @@ ipcMain.handle('chat:stream', async (event, id, payload) => {
   }
 });
 
+// EACCES/EPERM on an outbound connection is the OS forbidding it, not a dead server: on
+// macOS 15+ that is the Local Network privacy permission (silently denied for apps missing
+// the usage description — fixed in our bundle, but the user may still need to allow it), on
+// Windows a firewall or endpoint policy.
+function permissionHint(code) {
+  if (!/^(EACCES|EPERM)$/.test(String(code || ''))) return code;
+  if (process.platform === 'darwin') return `${code} — macOS blocked local-network access. Allow Qwen Workspace under System Settings → Privacy & Security → Local Network (relaunch the app if it is not listed).`;
+  if (process.platform === 'win32') return `${code} — Windows blocked the connection. Check the firewall (Windows Security → Allow an app) or your security software.`;
+  return code;
+}
+
 function chatError(err, s) {
   if (err.name === 'AbortError') return { ok: true, aborted: true };
   let msg = err.message;
   const code = err.cause?.code;
-  if (code && /^(ECONN|ETIMEDOUT|EHOST|ENET|EAI_|ENOTFOUND|UND_ERR)/.test(code)) {
+  if (code && /^(EACCES|EPERM)$/.test(code)) {
+    msg = permissionHint(code);
+  } else if (code && /^(ECONN|ETIMEDOUT|EHOST|ENET|EAI_|ENOTFOUND|UND_ERR)/.test(code)) {
     msg = `Could not connect to ${s.baseUrl}. Is Ollama / LM Studio running? (${code})`;
   }
   return { ok: false, error: msg };
@@ -923,7 +936,7 @@ ipcMain.handle('nodes:check', async (_e, nodes) => {
         const json = await res.json();
         return { id: n.id, up: true, models: (json.models || []).map((m) => m.name).filter(Boolean), version: await verP };
       } catch (err) {
-        return { id: n.id, up: false, error: err.cause?.code || err.message };
+        return { id: n.id, up: false, error: permissionHint(err.cause?.code || err.message) };
       }
     })
   );
