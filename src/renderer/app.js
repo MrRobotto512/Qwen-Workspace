@@ -1,4 +1,4 @@
-/* global monaco, marked, DOMPurify, require, api, icon, iconEl, fileBadge, MODEL_CATALOG, FIT_INFO, recommendModels, recommendLongContext, catalogEntryFor, describeSpecs, formatGB, formatContext, DANGEROUS_COMMAND, commandNeedsApproval, ToolParse, Schedule, SemIndex, diffOps, diffStats, unifiedDiff, diffSegments, applyBlocks, claudeCodeFlow */
+/* global monaco, marked, DOMPurify, require, api, icon, iconEl, fileBadge, MODEL_CATALOG, FIT_INFO, recommendModels, recommendLongContext, catalogEntryFor, describeSpecs, formatGB, formatContext, DANGEROUS_COMMAND, commandNeedsApproval, describeCommand, ToolParse, Schedule, SemIndex, diffOps, diffStats, unifiedDiff, diffSegments, applyBlocks, claudeCodeFlow */
 'use strict';
 
 // `api` is the bridge exposed by preload.js (window.api).
@@ -1762,9 +1762,14 @@ function makeStepRow(c, container, call, rec) {
           );
         } else {
           const prefix = commandPrefix(opts.command);
+          // A shell command reads as one plain sentence (from Strata's ask cards); the raw line
+          // sits under Details — kept open when the command is dangerous, so it is always seen.
+          const shell = opts.question === 'Run this command?';
+          const plain = shell ? `${describeCommand(opts.command)}?` : opts.question;
+          const raw = el('div', { class: 'cmd', text: opts.command });
           bar.append(
-            el('div', { class: 'q' }, el('span', { text: opts.dangerous ? 'This command could delete or overwrite things. Run it?' : opts.question })),
-            el('div', { class: 'cmd', text: opts.command }),
+            el('div', { class: 'q' }, el('span', { text: opts.dangerous ? `${plain} This could delete or overwrite things.` : plain })),
+            shell ? el('details', { class: 'cmd-details', open: !!opts.dangerous }, el('summary', { text: 'Command' }), raw) : raw,
             el('div', { class: 'btns' },
               el('button', { class: 'ghost danger-text', onclick: () => finish(false) }, 'Reject'),
               opts.dangerous ? null : el('button', { class: 'ghost', title: `Run this, and run future "${prefix}" commands without asking`, onclick: async () => { await allowCommandPrefix(prefix); finish(true); } }, `Always allow “${prefix}”`),

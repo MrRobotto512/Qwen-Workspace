@@ -10,8 +10,11 @@ async function showModelMenu(anchor) {
   } catch {
     /* server not reachable */
   }
+  const checks = state.settings.modelChecks || {};
   const items = models.slice(0, 14).map((id) => ({
     label: id,
+    // Results of Settings → Ollama nodes → check models, for This PC.
+    detail: checks[`this-pc|${id}`] ? (checks[`this-pc|${id}`].ok ? 'tool calls OK' : 'no reliable tool calls') : undefined,
     checked: id === state.settings.model,
     onClick: async () => {
       state.settings = await api.setSettings({ model: id, modelPicked: true });

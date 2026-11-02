@@ -257,6 +257,11 @@ function renderNodesSettings() {
         title: 'Connection doctor: probe this node from inside the app (raw TCP, HTTP, a loopback control) and explain exactly what is blocking it.',
         onclick: () => diagnoseNode(n)
       }, iconEl('bug')),
+      el('button', {
+        class: 'icon-btn',
+        title: 'Check which of this node\'s models really do tool calls (one prompt and one tool call, graded on the answer)',
+        onclick: (e) => checkNodeModels(n, sub, e.currentTarget)
+      }, iconEl('check')),
       test,
       el('label', { class: 'toggle', title: 'Use this node' },
         el('input', { type: 'checkbox', checked: n.enabled, onchange: (e) => { n.enabled = e.target.checked; } })),
@@ -264,6 +269,40 @@ function renderNodesSettings() {
         ? el('button', { class: 'icon-btn', title: 'Remove', onclick: () => { settingsNodes = settingsNodes.filter((x) => x.id !== n.id); renderNodesSettings(); } }, iconEl('trash'))
         : null);
   }));
+}
+
+// Per-model tool-call check: pick one of the node's models; the result shows on the row and is
+// remembered (settings.modelChecks) so the model menu can flag models that can't call tools.
+async function checkNodeModels(n, sub, anchor) {
+  const url = n.id === Nodes.THIS_PC_ID ? ($('#s-baseUrl').value.trim() || n.baseUrl) : n.baseUrl;
+  sub.textContent = 'Listing models…';
+  const [h] = await api.nodesCheck([{ id: n.id, baseUrl: url }]).catch(() => []);
+  if (!h?.up || !h.models?.length) {
+    sub.textContent = h?.up ? 'No models on this node' : `Not reachable: ${h?.error || 'no answer'}`;
+    return;
+  }
+  sub.textContent = 'Pick a model to check';
+  const r = anchor.getBoundingClientRect();
+  showMenu(r.left - 200, r.bottom + 4, h.models.slice(0, 16).map((model) => {
+    const prev = state.settings.modelChecks?.[`${n.id}|${model}`];
+    return {
+      label: model,
+      icon: prev ? (prev.ok ? 'check' : 'alert') : 'zap',
+      detail: prev ? (prev.ok ? 'tool calls OK' : 'tool calls failed') : 'not checked',
+      onClick: () => runModelCheck(n, url, model, sub)
+    };
+  }));
+}
+
+async function runModelCheck(n, url, model, sub) {
+  sub.classList.remove('bad');
+  sub.textContent = `Checking ${model} (loads the model; can take a minute)…`;
+  const v = await api.modelProbe(url, model);
+  const line = v.error ? `${model}: check failed — ${v.error}` : `${model}: ${v.ok ? 'tool calls OK' : 'NOT reliable for agent work'} · ${v.prompt.detail} ${v.tool.detail} (${v.seconds}s)`;
+  sub.textContent = line;
+  sub.classList.toggle('bad', !v.ok);
+  const checks = { ...(state.settings.modelChecks || {}), [`${n.id}|${model}`]: { ok: !!v.ok, textOnly: !!v.tool?.textOnly, at: Date.now() } };
+  state.settings = await api.setSettings({ modelChecks: checks });
 }
 
 // The Connection doctor: probes run in the main process (the same process whose requests

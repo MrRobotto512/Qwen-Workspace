@@ -280,6 +280,7 @@ async function executeTool(c, call, row) {
         if (!skill) return { result: `Error: no skill named "${args.name}". Available skills: ${(c.skills || []).map((sk) => sk.name).join(', ') || 'none'}.` };
         const r = await api.skillsRead(skill.id, args.file || undefined);
         row.setBody(r.content);
+        (c.skillsUsed = c.skillsUsed || new Set()).add(skill.name);
         const more = !args.file && r.files.length ? `\n\nSupporting files (load one with load_skill and file): ${r.files.join(', ')}` : '';
         return { result: `<skill name="${skill.name}"${args.file ? ` file="${args.file}"` : ''}>\n${truncate(r.content)}\n</skill>${more}`, meta: args.file || `${skill.scope} skill` };
       }
@@ -715,6 +716,7 @@ async function send() {
     c.goal.checks = 0;
     renderGoalBar();
   }
+  c.skillsUsed = new Set(); // the skills-used line covers this task only
   c.container.querySelector('.chat-empty')?.remove();
   if (!c.display.length) {
     c.title = text.length > 70 ? text.slice(0, 67) + '…' : text;
@@ -1061,6 +1063,30 @@ async function pickHighPerfTarget(currentModel) {
   };
 }
 
+// After a model's first local reply, ask its node whether it fit in GPU memory. Once per model
+// and node per session: a spill is why a model "got slow", and the fix is usually a smaller
+// context window (the KV cache grows with it) or a smaller model.
+const spillChecked = new Set();
+async function checkGpuSpill(c, baseUrl, model) {
+  const key = `${baseUrl}|${model}`;
+  if (spillChecked.has(key)) return;
+  spillChecked.add(key);
+  const sp = Nodes.spillInfo(await api.ollamaPs(baseUrl).catch(() => []), model);
+  if (!sp) return;
+  let host = baseUrl;
+  try {
+    host = new URL(baseUrl).host;
+  } catch {
+    /* keep raw */
+  }
+  const text = `${model} is running partly on the CPU: only ${sp.gpuGB} of ${sp.totalGB} GB (${sp.pct}%) fits in GPU memory on ${host}, which makes it several times slower. Lower "Context window" in Settings → Model, or pick a smaller model.`;
+  const item = { t: 'notice', text };
+  c.display.push(item);
+  renderNotice(c, item);
+  DebugLog.add(c, 'notice', { text });
+  toast({ key: 'gpu-spill', icon: 'alert', timeout: 20000, text, actions: [{ label: 'Open Settings', onClick: openSettings }] });
+}
+
 async function runConversation(c) {
   const useTools = state.settings.agentMode && !!state.ws;
   const maxSteps = Math.max(10, parseInt(state.settings.maxSteps, 10) || DEFAULT_MAX_STEPS);
@@ -1332,6 +1358,9 @@ async function runConversation(c) {
       continue;
     }
     if (res.ok && !res.aborted) view.setFinal(res.content || '', res.reasoning || '');
+    if (res.ok && !res.aborted && (override?.provider || state.settings.provider) === 'ollama') {
+      checkGpuSpill(c, override?.baseUrl || state.settings.baseUrl, override?.model || state.settings.model);
+    }
     // Cloud responses report prompt/completion tokens; feed the cost meter. Local providers
     // (Ollama / LM Studio) are free and skipped.
     if (res.ok && res.usage) {
@@ -1523,6 +1552,11 @@ async function runConversation(c) {
           escalate(null);
           continue;
         }
+      }
+      // Which skills shaped this answer (an idea from Strata) — once, at the clean end.
+      if (c.skillsUsed?.size) {
+        note(`Skills used: ${[...c.skillsUsed].join(', ')}.`);
+        c.skillsUsed = new Set();
       }
       return false;
     }

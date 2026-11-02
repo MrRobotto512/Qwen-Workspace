@@ -164,6 +164,42 @@ function summarize(nodes, health) {
   return { up, total: enabled.length, detail };
 }
 
-const NodesExports = { THIS_PC_ID, REMOTE_KEEP_DEFAULT, nodeId, normalizeNodes, multiNode, sameModel, nodeHasModel, pickNode, nextNode, pickHighPerf, isConnectionError, summarize };
+// GPU spill: Ollama's /api/ps lists each loaded model with its total size and the part in GPU
+// memory (size_vram). Under ~95% in VRAM means layers run on the CPU — the usual reason a
+// model "got slow" (an idea from Strata's run preview). Null when the model isn't loaded or
+// fits; otherwise how much fits.
+function spillInfo(psModels, model) {
+  const m = (psModels || []).find((x) => sameModel(x.name || x.model, model));
+  if (!m || !(m.size > 0)) return null;
+  const vram = Number(m.size_vram) || 0;
+  if (vram >= m.size * 0.95) return null;
+  const gb = (b) => Math.round((b / 1e9) * 10) / 10;
+  return { gpuGB: gb(vram), totalGB: gb(m.size), pct: Math.round((vram / m.size) * 100) };
+}
+
+// Per-model tool-call check (Strata's `connect --check`): one "reply with exactly: pong" prompt
+// and one get_weather call, graded on the answer text and the call's arguments — not just on
+// the server answering. Says up front which model actually does tool calls on which node.
+const PROBE_PROMPT = 'Reply with exactly one word: pong';
+const PROBE_TOOL_PROMPT = 'What is the weather in Paris? Use the get_weather tool.';
+const PROBE_TOOL = { type: 'function', function: { name: 'get_weather', description: 'Weather of a city', parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] } } };
+
+function probeVerdict(promptText, toolMessage) {
+  const said = String(promptText || '').trim();
+  const prompt = /\bpong\b/i.test(said)
+    ? { ok: true, detail: `It answered "${said.slice(0, 40)}".` }
+    : { ok: false, detail: said ? `It answered "${said.slice(0, 40)}", not the word asked for.` : 'It replied with no text.' };
+  const calls = toolMessage?.tool_calls || [];
+  const argsOf = (tc) => (typeof tc.function?.arguments === 'string' ? tc.function.arguments : JSON.stringify(tc.function?.arguments || {}));
+  const hit = calls.find((tc) => tc.function?.name === 'get_weather' && /paris/i.test(argsOf(tc)));
+  let tool;
+  if (hit) tool = { ok: true, detail: `It called get_weather with ${argsOf(hit).slice(0, 60)}.` };
+  else if (calls.length) tool = { ok: false, detail: `It called ${calls[0].function?.name} with ${argsOf(calls[0]).slice(0, 60)}, not the city asked for.` };
+  else if (/<tool_call>|"name"\s*:\s*"get_weather"/.test(String(toolMessage?.content || ''))) tool = { ok: false, textOnly: true, detail: 'It wrote the call as text, not as a real tool call — QWS can usually parse that, but agent work will be less reliable.' };
+  else tool = { ok: false, detail: 'It answered in words and did not call the tool.' };
+  return { ok: prompt.ok && tool.ok, prompt, tool };
+}
+
+const NodesExports = { THIS_PC_ID, REMOTE_KEEP_DEFAULT, nodeId, normalizeNodes, multiNode, sameModel, nodeHasModel, pickNode, nextNode, pickHighPerf, spillInfo, probeVerdict, PROBE_PROMPT, PROBE_TOOL_PROMPT, PROBE_TOOL, isConnectionError, summarize };
 if (typeof module !== 'undefined' && module.exports) module.exports = NodesExports;
 if (typeof window !== 'undefined') window.Nodes = NodesExports;

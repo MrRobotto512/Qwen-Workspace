@@ -109,3 +109,21 @@ test('isReadOnlyCommand: anything that writes, runs, never ends, or is not under
   assert.strictEqual(commandNeedsApproval('ask', 'npm test', []), true);
   assert.strictEqual(commandNeedsApproval('auto', 'git push', []), true);
 });
+
+test('describeCommand states the action in one plain sentence', () => {
+  const { describeCommand: d } = require('../src/renderer/approvals.js');
+  assert.strictEqual(d('pip install PySide6 pytest'), 'Install the Python packages PySide6 and pytest');
+  assert.strictEqual(d('python -m pip install -r requirements.txt'), 'Install the Python packages listed in requirements.txt');
+  assert.strictEqual(d('npm install'), "Install this project's Node dependencies");
+  assert.strictEqual(d('npm run build'), 'Run the project\'s "build" script');
+  assert.strictEqual(d('python app/main.py'), 'Run the Python script app/main.py');
+  assert.strictEqual(d('rmdir /s /q build'), 'Delete build and everything in it');
+  assert.strictEqual(d('rmdir old'), 'Remove the empty folder old');
+  assert.strictEqual(d('git push -u origin main'), 'Push commits to the remote repository');
+  assert.strictEqual(d('winget install --id Python.Python.3.12'), 'Install Python.Python.3.12 on this PC (winget)');
+  assert.strictEqual(d('cd app && pyinstaller main.spec'), 'Build an executable with PyInstaller');
+  assert.strictEqual(d('git add -A && git commit -m "x"'), 'Stage files for a git commit, then commit the staged changes to git');
+  assert.strictEqual(d('curl -L https://example.com/x.zip -o x.zip'), 'Download from example.com');
+  assert.strictEqual(d('frobnicate --all'), 'Run frobnicate'); // unknown: names the program, never guesses
+  assert.strictEqual(d(''), 'Run a command');
+});

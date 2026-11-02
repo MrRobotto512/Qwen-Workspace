@@ -198,3 +198,27 @@ test('summarize counts enabled nodes that are up', () => {
   assert.match(s.detail, /This PC: up, 2 models/);
   assert.match(s.detail, /Shop PC: down/);
 });
+
+test('spillInfo flags a model partly in system RAM, not one that fits', () => {
+  const ps = [
+    { name: 'qwen2.5-coder:7b', size: 6_000_000_000, size_vram: 6_000_000_000 },
+    { name: 'qwen3-coder:30b', size: 20_000_000_000, size_vram: 11_000_000_000 }
+  ];
+  assert.strictEqual(N.spillInfo(ps, 'qwen2.5-coder:7b'), null);
+  assert.deepStrictEqual(N.spillInfo(ps, 'qwen3-coder:30b'), { gpuGB: 11, totalGB: 20, pct: 55 });
+  assert.strictEqual(N.spillInfo(ps, 'gemma4:26b'), null); // not loaded
+  assert.strictEqual(N.spillInfo([], 'x'), null);
+});
+
+test('probeVerdict grades the answer and the call arguments, not just a reply', () => {
+  const good = N.probeVerdict('pong', { tool_calls: [{ function: { name: 'get_weather', arguments: { city: 'Paris' } } }] });
+  assert.strictEqual(good.ok, true);
+  const wrongCity = N.probeVerdict('Pong.', { tool_calls: [{ function: { name: 'get_weather', arguments: '{"city":"Lyon"}' } }] });
+  assert.strictEqual(wrongCity.ok, false);
+  assert.ok(/not the city/.test(wrongCity.tool.detail));
+  const textOnly = N.probeVerdict('pong', { content: '<tool_call>{"name": "get_weather", "arguments": {"city": "Paris"}}</tool_call>' });
+  assert.strictEqual(textOnly.tool.textOnly, true);
+  const words = N.probeVerdict('Sure! The word is: ping', { content: 'It is sunny in Paris.' });
+  assert.strictEqual(words.prompt.ok, false);
+  assert.ok(/did not call the tool/.test(words.tool.detail));
+});
