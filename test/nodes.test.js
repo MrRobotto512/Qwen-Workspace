@@ -27,7 +27,7 @@ test('normalizeNodes keeps This PC first and mirrors settings, remotes follow', 
   assert.strictEqual(nodes[0].enabled, false); // but the enabled flag is remembered
   assert.deepStrictEqual(
     nodes[1],
-    { id: 'node-shop', name: 'Shop PC', baseUrl: 'http://192.168.1.50:11434', enabled: true, keepAlive: '5m' }
+    { id: 'node-shop', name: 'Shop PC', baseUrl: 'http://192.168.1.50:11434', enabled: true, highPerf: false, keepAlive: '5m' }
   );
 });
 
@@ -47,6 +47,64 @@ test('remote nodes default to the 5m keep-alive so they free VRAM when idle', ()
   assert.strictEqual(N.REMOTE_KEEP_DEFAULT, '5m');
   assert.strictEqual(nodes[2].keepAlive, '30m'); // an explicit value still wins
   assert.strictEqual(nodes[3].keepAlive, '5m'); // whitespace counts as unset
+});
+
+test('normalizeNodes remembers the high-performance flag, This PC included', () => {
+  const s = {
+    baseUrl: 'http://localhost:11434',
+    ollamaNodes: [
+      { id: 'this-pc', enabled: true, highPerf: true },
+      { id: 'node-shop', name: 'Shop PC', baseUrl: 'http://192.168.1.50:11434', highPerf: true },
+      { id: 'node-attic', name: 'Attic', baseUrl: 'http://192.168.1.60:11434' }
+    ]
+  };
+  const nodes = N.normalizeNodes(s);
+  assert.strictEqual(nodes[0].highPerf, true);
+  assert.strictEqual(nodes[1].highPerf, true);
+  assert.strictEqual(nodes[2].highPerf, false);
+  assert.strictEqual(N.normalizeNodes({ baseUrl: 'http://x:1' })[0].highPerf, false); // default off
+});
+
+const HP_CATALOG = [
+  { id: 'qwen3-coder:30b', rank: 10 },
+  { id: 'qwen2.5-coder:14b', rank: 6.5 },
+  { id: 'qwen2.5-coder:7b', rank: 4.5 },
+  { id: 'qwen2.5-coder:1.5b', rank: 0 }
+];
+
+test('pickHighPerf picks the strongest installed catalog model that outranks the current one', () => {
+  const nodes = [
+    { id: 'this-pc', name: 'This PC', enabled: true, highPerf: false },
+    { id: 'a', name: 'Shop PC', enabled: true, highPerf: true, baseUrl: 'http://a:1' },
+    { id: 'b', name: 'Attic', enabled: true, highPerf: true, baseUrl: 'http://b:1' }
+  ];
+  const health = {
+    'this-pc': { up: true, models: ['qwen3-coder:30b'] }, // not flagged → never picked
+    a: { up: true, models: ['qwen2.5-coder:14b', 'other:1b'] },
+    b: { up: true, models: ['qwen3-coder:30b'] }
+  };
+  const pick = N.pickHighPerf(nodes, health, 'qwen2.5-coder:7b', HP_CATALOG);
+  assert.strictEqual(pick.node.id, 'b');
+  assert.strictEqual(pick.model, 'qwen3-coder:30b');
+  // With the strongest node empty, the next-best eligible node wins.
+  const pick2 = N.pickHighPerf(nodes, { ...health, b: { up: true, models: [] } }, 'qwen2.5-coder:7b', HP_CATALOG);
+  assert.strictEqual(pick2.node.id, 'a');
+  assert.strictEqual(pick2.model, 'qwen2.5-coder:14b');
+});
+
+test('pickHighPerf returns null when nothing would be an upgrade', () => {
+  const nodes = [{ id: 'a', name: 'Shop PC', enabled: true, highPerf: true, baseUrl: 'http://a:1' }];
+  // Same model as the one already running: no upgrade.
+  assert.strictEqual(N.pickHighPerf(nodes, { a: { up: true, models: ['qwen3-coder:30b'] } }, 'qwen3-coder:30b', HP_CATALOG), null);
+  // Node down.
+  assert.strictEqual(N.pickHighPerf(nodes, { a: { up: false } }, 'qwen2.5-coder:7b', HP_CATALOG), null);
+  // Node disabled.
+  assert.strictEqual(N.pickHighPerf([{ ...nodes[0], enabled: false }], { a: { up: true, models: ['qwen3-coder:30b'] } }, 'qwen2.5-coder:7b', HP_CATALOG), null);
+  // Unknown current model: only a solidly strong pick (rank >= 6) qualifies — a small model
+  // on the node must not masquerade as the heavy tier.
+  assert.strictEqual(N.pickHighPerf(nodes, { a: { up: true, models: ['qwen2.5-coder:1.5b', 'qwen2.5-coder:7b'] } }, 'mystery-model', HP_CATALOG), null);
+  const ok = N.pickHighPerf(nodes, { a: { up: true, models: ['qwen2.5-coder:14b'] } }, 'mystery-model', HP_CATALOG);
+  assert.strictEqual(ok.model, 'qwen2.5-coder:14b');
 });
 
 test('normalizeNodes survives junk in the saved list', () => {

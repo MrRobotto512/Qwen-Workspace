@@ -203,7 +203,8 @@ function renderNodesSettings() {
     const status = !n.enabled ? 'off' : h ? (h.up ? 'ready' : 'error') : 'connecting';
     const sub = el('div', {
       class: `mcp-sub${status === 'error' ? ' bad' : ''}`,
-      text: isThis ? `${n.baseUrl} — URL and keep-alive come from the Model section` : `${n.baseUrl}${n.keepAlive ? ` · keep ${n.keepAlive}` : ''}`
+      text: (isThis ? `${n.baseUrl} — URL and keep-alive come from the Model section` : `${n.baseUrl}${n.keepAlive ? ` · keep ${n.keepAlive}` : ''}`)
+        + (n.highPerf ? ' · high performance' : '')
     });
     const test = el('button', {
       class: 'ghost',
@@ -219,6 +220,11 @@ function renderNodesSettings() {
     return el('div', { class: 'mcp-item' },
       el('span', { class: `dot ${status}` }),
       el('div', { class: 'mcp-main' }, el('div', { class: 'mcp-name', text: n.name }), sub),
+      el('button', {
+        class: `icon-btn hp-btn${n.highPerf ? ' on' : ''}`,
+        title: 'High-performance node: when Qwen gets stuck, the next step runs here on the strongest model this node has installed — before any money goes to the cloud planner.',
+        onclick: () => { n.highPerf = !n.highPerf; renderNodesSettings(); }
+      }, iconEl('zap')),
       test,
       el('label', { class: 'toggle', title: 'Use this node' },
         el('input', { type: 'checkbox', checked: n.enabled, onchange: (e) => { n.enabled = e.target.checked; } })),
@@ -379,9 +385,9 @@ async function saveSettingsFromUi() {
   const thisPc = settingsNodes.find((n) => n.id === Nodes.THIS_PC_ID);
   const remotes = settingsNodes
     .filter((n) => n.id !== Nodes.THIS_PC_ID)
-    .map((n) => ({ id: n.id, name: n.name, baseUrl: n.baseUrl, enabled: n.enabled, keepAlive: n.keepAlive }));
-  patch.ollamaNodes = remotes.length || (thisPc && !thisPc.enabled)
-    ? [{ id: Nodes.THIS_PC_ID, enabled: !thisPc || thisPc.enabled }, ...remotes]
+    .map((n) => ({ id: n.id, name: n.name, baseUrl: n.baseUrl, enabled: n.enabled, highPerf: !!n.highPerf, keepAlive: n.keepAlive }));
+  patch.ollamaNodes = remotes.length || (thisPc && (!thisPc.enabled || thisPc.highPerf))
+    ? [{ id: Nodes.THIS_PC_ID, enabled: !thisPc || thisPc.enabled, highPerf: !!thisPc?.highPerf }, ...remotes]
     : [];
   state.settings = await api.setSettings(patch);
   $('#settings-modal').classList.add('hidden');
