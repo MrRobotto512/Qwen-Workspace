@@ -177,6 +177,25 @@ function spillInfo(psModels, model) {
   return { gpuGB: gb(vram), totalGB: gb(m.size), pct: Math.round((vram / m.size) * 100) };
 }
 
+// "Fit to GPU": the largest context window (a multiple of 1024) that keeps the whole model in
+// GPU memory, from one /api/ps entry (size = weights + KV cache at `ctx`, size_vram = what the
+// GPU held) and the model file's size from /api/tags (≈ the weights). The KV cache grows
+// linearly with the context, so its per-token cost is (size − weights) / ctx. Null when it
+// already fits or the numbers can't tell; { tooSmall } when even 4K would not fit.
+const FIT_MIN_CTX = 4096;
+function fitContext(ps, ctx) {
+  const size = Number(ps?.size) || 0;
+  const vram = Number(ps?.size_vram) || 0;
+  const weights = Number(ps?.file_size) || 0;
+  const n = Number(ps?.context_length) || Number(ctx) || 0;
+  if (!size || !weights || !n || vram >= size * 0.95) return null;
+  const perToken = (size - weights) / n;
+  if (!(perToken > 0)) return null;
+  const fits = Math.floor(((vram * 0.97 - weights) / perToken) / 1024) * 1024;
+  if (fits < FIT_MIN_CTX) return { tooSmall: true };
+  return fits < n ? { ctx: fits } : null;
+}
+
 // Per-model tool-call check (Strata's `connect --check`): one "reply with exactly: pong" prompt
 // and one get_weather call, graded on the answer text and the call's arguments — not just on
 // the server answering. Says up front which model actually does tool calls on which node.
@@ -200,6 +219,6 @@ function probeVerdict(promptText, toolMessage) {
   return { ok: prompt.ok && tool.ok, prompt, tool };
 }
 
-const NodesExports = { THIS_PC_ID, REMOTE_KEEP_DEFAULT, nodeId, normalizeNodes, multiNode, sameModel, nodeHasModel, pickNode, nextNode, pickHighPerf, spillInfo, probeVerdict, PROBE_PROMPT, PROBE_TOOL_PROMPT, PROBE_TOOL, isConnectionError, summarize };
+const NodesExports = { THIS_PC_ID, REMOTE_KEEP_DEFAULT, nodeId, normalizeNodes, multiNode, sameModel, nodeHasModel, pickNode, nextNode, pickHighPerf, spillInfo, fitContext, probeVerdict, PROBE_PROMPT, PROBE_TOOL_PROMPT, PROBE_TOOL, isConnectionError, summarize };
 if (typeof module !== 'undefined' && module.exports) module.exports = NodesExports;
 if (typeof window !== 'undefined') window.Nodes = NodesExports;

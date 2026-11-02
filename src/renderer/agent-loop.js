@@ -1500,24 +1500,45 @@ async function pickHighPerfTarget(currentModel) {
 // and node per session: a spill is why a model "got slow", and the fix is usually a smaller
 // context window (the KV cache grows with it) or a smaller model.
 const spillChecked = new Set();
+const spillSeen = new Map(); // model -> spill info, for the slow hint on the status line
 async function checkGpuSpill(c, baseUrl, model) {
   const key = `${baseUrl}|${model}`;
   if (spillChecked.has(key)) return;
   spillChecked.add(key);
-  const sp = Nodes.spillInfo(await api.ollamaPs(baseUrl).catch(() => []), model);
+  const ps = await api.ollamaPs(baseUrl).catch(() => []);
+  const sp = Nodes.spillInfo(ps, model);
   if (!sp) return;
+  spillSeen.set(model, sp);
   let host = baseUrl;
   try {
     host = new URL(baseUrl).host;
   } catch {
     /* keep raw */
   }
-  const text = `${model} is running partly on the CPU: only ${sp.gpuGB} of ${sp.totalGB} GB (${sp.pct}%) fits in GPU memory on ${host}, which makes it several times slower. Lower "Context window" in Settings → Model, or pick a smaller model.`;
+  // "Fit to GPU": the largest context window that keeps this model entirely in GPU memory.
+  const fit = Nodes.fitContext(ps.find((x) => Nodes.sameModel(x.name, model)), state.settings.contextLength);
+  const advice = fit?.ctx
+    ? `Fit to GPU sets "Context window" to ${fit.ctx} so all of it fits; or pick a smaller model.`
+    : fit?.tooSmall
+      ? `Even a 4K context window would not fit it on this GPU — pick a smaller model (for example the 8B size of the same family).`
+      : 'Lower "Context window" in Settings → Model, or pick a smaller model.';
+  const text = `${model} is running partly on the CPU: only ${sp.gpuGB} of ${sp.totalGB} GB (${sp.pct}%) fits in GPU memory on ${host}, which makes it several times slower. ${advice}`;
   const item = { t: 'notice', text };
   c.display.push(item);
   renderNotice(c, item);
   DebugLog.add(c, 'notice', { text });
-  toast({ key: 'gpu-spill', icon: 'alert', timeout: 20000, text, actions: [{ label: 'Open Settings', onClick: openSettings }] });
+  const actions = fit?.ctx
+    ? [{ label: `Fit to GPU (${fit.ctx})`, onClick: () => fitToGpu(fit.ctx, model) }, { label: 'Open Settings', onClick: openSettings }]
+    : [{ label: 'Open Settings', onClick: openSettings }];
+  toast({ key: 'gpu-spill', icon: 'alert', timeout: 30000, text, actions });
+}
+
+// Takes effect on the next request: Ollama reloads the model with the new num_ctx.
+async function fitToGpu(ctx, model) {
+  state.settings = await api.setSettings({ contextLength: ctx });
+  spillSeen.delete(model);
+  for (const k of [...spillChecked]) if (k.endsWith(`|${model}`)) spillChecked.delete(k); // re-check after the reload
+  flash(`Context window set to ${ctx} — ${model} reloads to fit the GPU on its next step`);
 }
 
 async function runConversation(c) {
@@ -1535,7 +1556,9 @@ async function runConversation(c) {
   let localHeavyDead = false; // the high-perf node stopped answering; skip it this task
   let lastEscLabel = null; // what the previous escalated step ran on, to announce changes once
   let lhCache = { at: 0, pick: null }; // high-perf health-check result, reused for 30s
-  let planAgain = false; // a vague plan goes back to the planning model once (plan-first)
+  let planAgain = false; // a vague or missing plan goes back to the planning model (plan-first)
+  let planOnPlanner = false; // the last plan try goes to the planner instead of the ⚡ node
+  let planRetrying = false; // this planning turn is a rewrite request
   const retriedBusy = new Set(); // models that already got one same-model retry after a 503/429
   const modelSwap = new Map(); // overloaded model -> working sibling, for the rest of this task
   let cloudDead = false; // every cloud sibling was busy; finish on the local default model
@@ -1684,9 +1707,20 @@ async function runConversation(c) {
     // plan written by something that plans well. Skipped silently when no ⚡ node can serve,
     // and never repeated — c.planned survives for the whole conversation.
     let planTurn = false;
-    if (useTools && !override && state.settings.planFirst && ((step === 0 && !c.planned) || planAgain) && highPerfConfigured()) {
+    planRetrying = false;
+    if (useTools && !override && state.settings.planFirst && planAgain && planOnPlanner && heavyOverride()) {
+      // Last try for a usable plan: the planner (cloud) writes it.
+      planAgain = false;
+      planOnPlanner = false;
+      planTurn = true;
+      planRetrying = true;
+      override = heavyOverride();
+      note(`Asking the planner (${heavyLabel()}) to write the plan.`);
+      DebugLog.add(c, 'escalate', { reason: 'plan-first: the ⚡ node gave no usable plan; the planner writes it', interventions, takeover: false });
+    } else if (useTools && !override && state.settings.planFirst && ((step === 0 && !c.planned) || planAgain) && highPerfConfigured()) {
       const retry = planAgain;
       planAgain = false;
+      planRetrying = retry;
       c.planned = true; // whatever happens below, plan at most once per conversation
       const lh = await localHeavyOverride();
       if (lh) {
@@ -1751,10 +1785,32 @@ async function runConversation(c) {
     let thinkBuf = '';
     let nextLoopCheck = 2048;
     let loopCaught = false;
+    // Live progress: phase, tokens so far, speed and a clock, refreshed every second, so a slow
+    // local step reads as busy instead of stuck (a handoff label stays until the first token).
+    const reqMessages = requestMessages(c);
+    const stepModel = override?.model || state.settings.model;
+    const prog = { startedAt: Date.now(), firstAt: 0, tokens: 0, phase: 'prompt', promptTokens: Progress.estimateTokens(reqMessages), model: stepModel, spill: spillSeen.get(stepModel) };
+    const handoff = esc ? `Handing off to ${esc.model}` : null;
+    const paintProgress = () => {
+      const line = Progress.statusLine(prog, Date.now());
+      setActivity(c, handoff && !prog.firstAt ? `${handoff} · ${line}` : line);
+    };
+    paintProgress();
+    const progTimer = setInterval(paintProgress, 1000);
+    const sawToken = (phase) => {
+      if (!prog.firstAt) prog.firstAt = Date.now();
+      prog.tokens++;
+      prog.phase = phase;
+    };
     const off = api.onChatEvent((ev) => {
       if (ev.id !== id) return;
-      if (ev.type === 'delta') view.appendContent(ev.data);
-      else if (ev.type === 'reasoning') {
+      if (ev.type === 'delta') {
+        sawToken('writing');
+        view.appendContent(ev.data);
+      } else if (ev.type === 'tool_progress') {
+        sawToken('tool');
+      } else if (ev.type === 'reasoning') {
+        sawToken('thinking');
         view.appendReasoning(ev.data);
         thinkBuf += ev.data;
         if (!loopCaught && thinkBuf.length >= nextLoopCheck) {
@@ -1766,11 +1822,16 @@ async function runConversation(c) {
         }
       }
     });
-    const res = await api.chatStream(id, {
-      messages: requestMessages(c),
-      tools: useTools ? (planTurn ? Escalation.planningTools(toolsFor(c)) : toolsFor(c)) : undefined,
-      override: override || undefined
-    });
+    let res;
+    try {
+      res = await api.chatStream(id, {
+        messages: reqMessages,
+        tools: useTools ? (planTurn ? Escalation.planningTools(toolsFor(c)) : toolsFor(c)) : undefined,
+        override: override || undefined
+      });
+    } finally {
+      clearInterval(progTimer);
+    }
     // IPC events and the invoke reply travel on separate channels, so late deltas can
     // arrive after this resolves. The reply carries the full text; use it as the final state.
     off();
@@ -1778,7 +1839,12 @@ async function runConversation(c) {
     DebugLog.add(c, 'response', res.ok
       ? (res.aborted
         ? { ok: true, aborted: true }
-        : { ok: true, finishReason: res.finishReason, chars: (res.content || '').length, toolCalls: (res.toolCalls || []).length, promptTokens: res.usage?.promptTokens, completionTokens: res.usage?.completionTokens })
+        : {
+            ok: true, finishReason: res.finishReason, chars: (res.content || '').length, toolCalls: (res.toolCalls || []).length,
+            promptTokens: res.usage?.promptTokens, completionTokens: res.usage?.completionTokens || (prog.tokens || undefined),
+            promptMs: res.usage?.promptMs, loadMs: res.usage?.loadMs, genTokPerSec: res.usage?.genTokPerSec,
+            firstMs: prog.firstAt ? prog.firstAt - prog.startedAt : undefined, ms: Date.now() - prog.startedAt
+          })
       : { ok: false, error: String(res.error || '').slice(0, 400) });
     if (loopCaught) {
       // Not the user's Stop: the loop watch aborted a model thinking in circles. Push it to act,
@@ -2004,7 +2070,7 @@ async function runConversation(c) {
       }
       const rows = batch.map((call) => view.addStep(call));
       setActivity(c, rows.length > 1 ? `Running ${rows.length} lookups` : `${rows[0].doing} ${rows[0].target}`);
-      const outs = await Promise.all(batch.map((call, i) => runOrSkip(c, call, rows[i], seen, step)));
+      const outs = await Promise.all(batch.map((call, i) => (planTurn && !Escalation.isPlanningTool(call.function.name) ? Promise.resolve({ result: Escalation.PLAN_ONLY_REFUSAL, failed: true }) : runOrSkip(c, call, rows[i], seen, step))));
       const shots = [];
       batch.forEach((call, i) => {
         rows[i].done(outs[i]);
@@ -2028,12 +2094,24 @@ async function runConversation(c) {
     // the execution now, so it starts on step 1 instead of answering in the planner's voice.
     if (planTurn) {
       const vague = Escalation.vaguePlanSteps(c.todos);
-      if ((c.todos || []).length && vague.length * 2 > c.todos.length && !c.planRetried) {
-        c.planRetried = true;
+      const names = calls.map((tc) => tc.function?.name);
+      const wrote = names.includes('todo_write');
+      const asked = names.includes('ask_user');
+      const todos = c.todos || [];
+      // Unusable: mostly vague, or this rewrite turn produced no plan at all (it ran something
+      // else, which was refused). Two more tries — the last on the planner when one is set —
+      // before the small model takes over and works it out step by step.
+      const unusable = (todos.length && vague.length * 2 > todos.length) || (!wrote && !asked && (planRetrying || !todos.length));
+      c.planTries = (c.planTries || 0) + 1;
+      if (asked && !wrote && c.planTries < 4) {
+        planAgain = true; // the planner asked the user; it writes the plan with the answers
+      } else if (unusable && c.planTries < 3) {
         planAgain = true;
-        c.history.push({ role: 'user', content: `<system-reminder>\n${Escalation.planRetryReminder(vague)}\n</system-reminder>` });
-        note('The plan is too vague to execute — sending it back for a rewrite with exact files and commands.');
+        planOnPlanner = c.planTries === 2 && !!heavyOverride();
+        c.history.push({ role: 'user', content: `<system-reminder>\n${wrote ? Escalation.planRetryReminder(vague) : Escalation.planMissingReminder()}\n</system-reminder>` });
+        note(wrote ? 'The plan is too vague to execute — sending it back for a rewrite with exact files and commands.' : 'No plan came back — asking again for the plan only.');
       } else {
+        if (unusable) note('The plan is still vague — the everyday model takes over and works out each step as it goes.');
         c.history.push({ role: 'user', content: '<system-reminder>\nThe plan above was written by the high-performance node. You are the everyday model now: execute the todo list step by step, starting with the first item. Do not re-plan.\n</system-reminder>' });
       }
     }

@@ -101,6 +101,15 @@ function planRetryReminder(vagueSteps) {
   return `Your plan is not executable by a smaller model: step${vagueSteps.length === 1 ? '' : 's'} ${vagueSteps.join(', ')} name${vagueSteps.length === 1 ? 's' : ''} no file and no command. Rewrite the COMPLETE todo list now in one todo_write call; every step must contain an exact file path (with extension) or an exact command.`;
 }
 
-const EscalationExports = { commandRuns, commandFailStreak, planFiles, PLAN_FIRST_REMINDER, planningTools, vaguePlanSteps, planRetryReminder };
+// A planning turn may only plan. A field report's ⚡ node answered the rewrite request with
+// run_command (not even offered on that turn); the call ran, no new plan came, and the vague
+// plan went down to the small model anyway. Calls outside the planning tools are refused now.
+const isPlanningTool = (name) => PLANNING_TOOLS.has(name);
+const PLAN_ONLY_REFUSAL = 'Error: not now — this is the planning turn. Do not run or change anything yet; the everyday model executes after you. Reply with ONE todo_write call holding the complete plan.';
+function planMissingReminder() {
+  return 'You did not write a plan. Do not execute any step yourself. Reply now with ONE todo_write call holding the complete todo list (3-8 steps); every step must contain an exact file path (with extension) or an exact command.';
+}
+
+const EscalationExports = { commandRuns, commandFailStreak, planFiles, PLAN_FIRST_REMINDER, planningTools, isPlanningTool, PLAN_ONLY_REFUSAL, vaguePlanSteps, planRetryReminder, planMissingReminder };
 if (typeof module !== 'undefined' && module.exports) module.exports = EscalationExports;
 if (typeof window !== 'undefined') window.Escalation = EscalationExports;

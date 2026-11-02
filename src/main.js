@@ -377,6 +377,7 @@ ipcMain.handle('cmd:run', (_e, command, timeoutMs = 120_000) => {
 // screenshots that window only, runs the requested clicks/typing through the platform's own
 // automation, screenshots again, and closes the app. The renderer approves the launch first.
 const GuiTest = require('./renderer/guitest.js');
+const Progress = require('./renderer/progress.js');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function runQuiet(cmd, args, timeoutMs = 20_000) {
@@ -827,6 +828,7 @@ async function streamOllama(s, payload, signal, send) {
   const toolCalls = [];
   let finishReason = null;
   let promptTokens = 0;
+  let stats = {};
   const decoder = new TextDecoder();
   let buffer = '';
 
@@ -853,6 +855,7 @@ async function streamOllama(s, payload, signal, send) {
     if (j.done) {
       finishReason = j.done_reason || 'stop';
       promptTokens = j.prompt_eval_count || 0;
+      stats = Progress.ollamaStats(j);
     }
   };
 
@@ -867,7 +870,7 @@ async function streamOllama(s, payload, signal, send) {
   }
   if (buffer.trim()) handle(JSON.parse(buffer));
 
-  return { ok: true, content, reasoning, toolCalls, finishReason, usage: { promptTokens, contextLength } };
+  return { ok: true, content, reasoning, toolCalls, finishReason, usage: { ...stats, promptTokens, contextLength } };
 }
 
 // ---------- Anthropic native API ----------
@@ -1227,7 +1230,16 @@ ipcMain.handle('ollama:ps', async (_e, baseUrl) => {
   try {
     const r = await fetch(`${root}/api/ps`, { signal: AbortSignal.timeout(5000) });
     if (!r.ok) return [];
-    return ((await r.json()).models || []).map((x) => ({ name: x.name, size: x.size, size_vram: x.size_vram }));
+    const loaded = (await r.json()).models || [];
+    // File sizes (≈ the weights) let the renderer work out a context window that fits the GPU.
+    const files = new Map();
+    try {
+      const t = await fetch(`${root}/api/tags`, { signal: AbortSignal.timeout(5000) });
+      if (t.ok) for (const m of (await t.json()).models || []) files.set(m.name, m.size);
+    } catch {
+      /* sizes are optional */
+    }
+    return loaded.map((x) => ({ name: x.name, size: x.size, size_vram: x.size_vram, context_length: x.context_length, file_size: files.get(x.name) }));
   } catch {
     return [];
   }
