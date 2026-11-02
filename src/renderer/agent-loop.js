@@ -679,6 +679,14 @@ async function send() {
     return;
   }
   if (!text) return;
+  // "/checks" sets up, shows, runs or removes the project's checks gate.
+  const cm = /^\/checks(?:\s+(\w+))?\s*$/i.exec(text);
+  if (cm) {
+    input.value = '';
+    autoGrow();
+    checksCommand(c, (cm[1] || '').toLowerCase());
+    return;
+  }
   // Goal mode: "/goal <objective>" sets a standing goal and starts on it, "/goal off" clears it.
   const gc = Goal.parseGoalCommand(text);
   if (gc) {
@@ -759,11 +767,15 @@ async function send() {
   setBusy(c, true);
   let failed = false;
   try {
+    const gate = await checksBaseline(c);
     failed = await runConversation(c);
+    if (gate && !failed && !c.stopRequested) failed = await checksAfter(c, gate);
   } catch (e) {
     failed = true;
     addError(c, `Something went wrong: ${cleanError(e)}`);
   } finally {
+    c.taskBefore = null; // later writes (lessons, the next task) are not this task's
+    c.taskWrote = null;
     c.status = c.stopRequested ? 'stopped' : failed ? 'error' : 'done';
     setBusy(c, false);
     saveConv(c, true);
@@ -774,6 +786,210 @@ async function send() {
     continueIfSteered(c);
     maybeCheckGoal(c, failed);
   }
+}
+
+// ---------- Checks gate (an idea from Strata's test-gated attempts) ----------
+// The project's checks (.qwen/checks.json) run before and after each agent task. A check that
+// passed before and fails after gets the agent one fix attempt; still failing, a card offers to
+// roll back exactly the files this task changed. Checks are commands, so they only ever run
+// automatically once the user has allowed that exact file for this project — a cloned repo
+// cannot ship commands that run on its own say-so.
+function pushNotice(c, text) {
+  const item = { t: 'notice', text };
+  c.display.push(item);
+  renderNotice(c, item);
+  DebugLog.add(c, 'notice', { text });
+}
+
+async function readChecksFile() {
+  if (!state.ws || !(await api.exists(Checks.CHECKS_FILE).catch(() => false))) return null;
+  const text = await api.read(Checks.CHECKS_FILE).catch(() => null);
+  return text == null ? null : { text, ...Checks.parseChecksFile(text) };
+}
+
+const checksAllowed = (text) => (state.settings.checksApproved || {})[state.ws?.root] === text;
+
+async function allowChecks(text) {
+  state.settings = await api.setSettings({ checksApproved: { ...(state.settings.checksApproved || {}), [state.ws.root]: text } });
+}
+
+async function runChecks(c, checks, label) {
+  const runs = [];
+  for (const ck of checks) {
+    if (c.stopRequested) break;
+    setActivity(c, `${label}: ${ck.name}`);
+    const r = await api.runCommand(ck.command, ck.timeoutSec * 1000).catch((e) => ({ code: -1, output: cleanError(e) }));
+    runs.push({ name: ck.name, command: ck.command, ok: r.code === 0, output: r.output || '' });
+  }
+  setActivity(c, '');
+  return runs;
+}
+
+async function checksBaseline(c) {
+  c.taskBefore = null;
+  c.taskWrote = null;
+  if (state.settings.checksGate === false || c.mode !== 'agent' || !state.ws) return null;
+  const file = await readChecksFile();
+  if (!file) return null;
+  if (file.error) {
+    if (!c.checksWarned) pushNotice(c, `Checks gate off for this task: ${file.error}.`);
+    c.checksWarned = true;
+    return null;
+  }
+  if (!checksAllowed(file.text)) {
+    if (!c.checksAsked) checksTrustCard(c, file);
+    c.checksAsked = true;
+    return null;
+  }
+  const before = await runChecks(c, file.checks, 'Checks before the task');
+  if (c.stopRequested) return null;
+  pushNotice(c, `Checks before the task: ${Checks.statusLine(before)}.`);
+  c.taskBefore = new Map();
+  c.taskWrote = new Map();
+  return { checks: file.checks, before };
+}
+
+// Returns whether the task should count as failed.
+async function checksAfter(c, gate) {
+  if (!c.taskBefore?.size) return false; // the task changed no files: nothing to judge
+  let after = await runChecks(c, gate.checks, 'Checks after the task');
+  if (c.stopRequested) return false;
+  let cmp = Checks.compareRuns(gate.before, after);
+  if (cmp.verdict === 'worse') {
+    pushNotice(c, `Checks got worse: ${cmp.regressed.map((r) => r.name).join(', ')} passed before this task and ${cmp.regressed.length === 1 ? 'fails' : 'fail'} now — giving the agent one try to fix it.`);
+    c.history.push({ role: 'user', content: Checks.fixPrompt(cmp.regressed) });
+    saveConv(c, true);
+    const failed = await runConversation(c);
+    if (c.stopRequested) return failed;
+    after = await runChecks(c, gate.checks, 'Checks after the fix');
+    if (c.stopRequested) return failed;
+    cmp = Checks.compareRuns(gate.before, after);
+  }
+  if (cmp.verdict === 'worse') {
+    pushNotice(c, `Still failing after the fix attempt: ${Checks.statusLine(after)}.`);
+    rollbackCard(c, cmp, new Map(c.taskBefore), new Map(c.taskWrote));
+  } else if (cmp.verdict === 'better') {
+    pushNotice(c, `Checks improved: ${cmp.fixed.map((r) => r.name).join(', ')} now ${cmp.fixed.length === 1 ? 'passes' : 'pass'} — changes kept (${Checks.statusLine(after)}).`);
+  } else {
+    pushNotice(c, `Checks after the task: ${Checks.statusLine(after)} — no regressions.`);
+  }
+  return false;
+}
+
+function gateCard(c, cls, title, body, buttons) {
+  const node = el('div', { class: `msg escalate-card ${cls}` }, iconEl('alert'),
+    el('div', { class: 'grow' }, el('div', {}, el('b', { text: title })), ...body,
+      el('div', { class: 'stop-actions' }, ...buttons.map((b) => el('button', { class: b.primary ? 'primary' : b.danger ? 'ghost danger-text' : 'ghost', onclick: () => b.run(node) }, b.label)))));
+  c.container.append(node);
+  scrollChat(c, true);
+  return node;
+}
+
+function checksTrustCard(c, file) {
+  gateCard(c, 'checks-trust-card', 'This project declares checks', [
+    el('div', { class: 'hint', text: `${Checks.CHECKS_FILE} asks to run these commands before and after every agent task. Allow only if you trust them:` }),
+    el('pre', { class: 'skill-preview', text: file.checks.map((k) => `${k.name}: ${k.command}`).join('\n') })
+  ], [
+    { label: 'Not now', danger: true, run: (n) => n.remove() },
+    { label: 'Allow checks', primary: true, run: async (n) => { n.remove(); await allowChecks(file.text); flash('Checks allowed — they run from the next task'); } }
+  ]);
+}
+
+function rollbackCard(c, cmp, before, wrote) {
+  const files = [...before.keys()];
+  gateCard(c, 'rollback-card', `Checks still fail: ${cmp.regressed.map((r) => r.name).join(', ')}`, [
+    el('div', { class: 'hint', text: `Roll back this task's changes to ${files.length} file${files.length === 1 ? '' : 's'} (${files.slice(0, 6).join(', ')}${files.length > 6 ? ', …' : ''})? Files edited since the task are left alone.` }),
+    el('details', {}, el('summary', { text: 'Check output' }), el('pre', { class: 'skill-preview', text: cmp.regressed.map((r) => `$ ${r.command}\n${String(r.output).trim().slice(-1500)}`).join('\n\n') }))
+  ], [
+    { label: 'Keep changes', run: (n) => n.remove() },
+    { label: 'Roll back', primary: true, run: async (n) => {
+      if (c.busy) return flash('Wait for the current task to finish first');
+      n.remove();
+      await rollbackTask(c, cmp, before, wrote);
+    } }
+  ]);
+}
+
+async function rollbackTask(c, cmp, before, wrote) {
+  const current = new Map();
+  for (const p of before.keys()) {
+    current.set(p, (await api.exists(p).catch(() => false)) ? await api.read(p).catch(() => null) : null);
+  }
+  const plan = Checks.rollbackPlan(before, wrote, current);
+  for (const { path: p, content } of plan.restore) {
+    await api.write(p, content);
+    syncOpenTab(p, content);
+    recordChange(c, p, current.get(p), content);
+  }
+  for (const p of plan.remove) {
+    await api.remove(p, { quiet: true }).catch(() => {});
+    if (findTab(p)) closeTab(p, true);
+    recordChange(c, p, current.get(p), null);
+  }
+  state.fileIndex = null;
+  renderTree();
+  renderCenter();
+  const n = plan.restore.length + plan.remove.length;
+  pushNotice(c, `Rolled back ${n} file${n === 1 ? '' : 's'} from the task that broke ${cmp.regressed.map((r) => r.name).join(', ')}${plan.skipped.length ? `; left ${plan.skipped.join(', ')} alone (edited since)` : ''}.`);
+  c.notes.push(`Your changes from the previous task were rolled back because they broke the project's checks (${cmp.regressed.map((r) => r.name).join(', ')}).`);
+  saveConv(c, true);
+}
+
+// "/checks": show them (or detect and propose them), "/checks run", "/checks detect", "/checks off".
+async function checksCommand(c, sub) {
+  if (!state.ws) return flash('Open a project first');
+  const file = await readChecksFile();
+  if (sub === 'off') {
+    if (!file) return flash('This project has no checks');
+    if (!confirm(`Delete ${Checks.CHECKS_FILE}? Agent tasks will no longer be checked.`)) return;
+    await api.remove(Checks.CHECKS_FILE, { quiet: true });
+    return pushNotice(c, `Checks removed (${Checks.CHECKS_FILE} deleted).`);
+  }
+  if (sub === 'run') {
+    if (!file || file.error) return pushNotice(c, file?.error || 'This project has no checks yet — type /checks to set them up.');
+    if (!checksAllowed(file.text)) return checksTrustCard(c, file);
+    if (c.busy) return flash('Wait for the current task to finish first');
+    setBusy(c, true);
+    try {
+      pushNotice(c, `Checks: ${Checks.statusLine(await runChecks(c, file.checks, 'Running checks'))}.`);
+    } finally {
+      setBusy(c, false);
+    }
+    return;
+  }
+  if (file && !file.error && sub !== 'detect') {
+    if (!checksAllowed(file.text)) return checksTrustCard(c, file);
+    return pushNotice(c, `Checks for this project (${Checks.CHECKS_FILE}): ${file.checks.map((k) => `${k.name} = ${k.command}`).join('; ')}. They run before and after each agent task${state.settings.checksGate === false ? ' — but the checks gate is off in Settings → Agent' : ''}. /checks run runs them now, /checks off removes them.`);
+  }
+  const entries = (await api.list('.').catch(() => [])).map((e) => e.name);
+  let pkg = null;
+  if (entries.includes('package.json')) {
+    try {
+      pkg = JSON.parse(await api.read('package.json'));
+    } catch {
+      /* unreadable package.json: no npm scripts */
+    }
+  }
+  const pyproject = entries.includes('pyproject.toml') ? await api.read('pyproject.toml').catch(() => '') : '';
+  const found = Checks.detectChecks({ entries, pkg, pyproject });
+  if (!found.length) {
+    return pushNotice(c, `No test runner found here. Create ${Checks.CHECKS_FILE} with your own, e.g. {"checks": [{"name": "tests", "command": "python -m pytest -q"}]} — then type /checks.`);
+  }
+  const text = Checks.serializeChecks(Checks.parseChecksFile(JSON.stringify({ checks: found })).checks);
+  gateCard(c, 'checks-setup-card', 'Use these checks for this project?', [
+    el('div', { class: 'hint', text: `They run before and after each agent task; a task that breaks one gets one fix attempt, then you can roll it back. Keep them fast. Saved to ${Checks.CHECKS_FILE}.` }),
+    el('pre', { class: 'skill-preview', text: found.map((k) => `${k.name}: ${k.command}`).join('\n') })
+  ], [
+    { label: 'Cancel', danger: true, run: (n) => n.remove() },
+    { label: 'Save checks', primary: true, run: async (n) => {
+      n.remove();
+      await api.write(Checks.CHECKS_FILE, text);
+      await allowChecks(text);
+      state.fileIndex = null;
+      renderTree();
+      pushNotice(c, `Checks saved to ${Checks.CHECKS_FILE}: ${found.map((k) => k.command).join(', ')}.`);
+    } }
+  ]);
 }
 
 // ---------- QWEN.md Lessons: the project gets smarter with each task ----------

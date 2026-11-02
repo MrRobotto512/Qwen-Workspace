@@ -1,0 +1,68 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert');
+const C = require('../src/renderer/checks.js');
+
+test('parseChecksFile accepts the object or array form and cleans entries', () => {
+  const r = C.parseChecksFile(JSON.stringify({ checks: [{ name: 'tests', command: 'npm test' }, { command: 'npm run lint', timeoutSec: 5 }, { name: 'tests', command: 'dup' }, { command: '' }, { command: 'a\nb' }] }));
+  assert.equal(r.error, undefined);
+  assert.deepEqual(r.checks, [
+    { name: 'tests', command: 'npm test', timeoutSec: 300 },
+    { name: 'npm run', command: 'npm run lint', timeoutSec: 10 }
+  ]);
+  assert.equal(C.parseChecksFile('[{"command":"pytest -q"}]').checks[0].command, 'pytest -q');
+  assert.match(C.parseChecksFile('{oops').error, /not valid JSON/);
+  assert.match(C.parseChecksFile('{"x":1}').error, /needs a "checks" list/);
+  assert.match(C.parseChecksFile('{"checks":[]}').error, /no usable checks/);
+  const many = Array.from({ length: 9 }, (_, i) => ({ name: `c${i}`, command: `echo ${i}` }));
+  assert.equal(C.parseChecksFile(JSON.stringify(many)).checks.length, C.MAX_CHECKS);
+});
+
+test('serializeChecks round-trips', () => {
+  const checks = [{ name: 'tests', command: 'npm test', timeoutSec: 300 }, { name: 'slow', command: 'cargo test', timeoutSec: 900 }];
+  const text = C.serializeChecks(checks);
+  assert.doesNotMatch(text, /"timeoutSec": 300/);
+  assert.deepEqual(C.parseChecksFile(text).checks, checks);
+});
+
+test('detectChecks finds the runner for npm, Python, Rust and Go projects', () => {
+  assert.deepEqual(C.detectChecks({ entries: ['package.json'], pkg: { scripts: { test: 'node --test', lint: 'eslint .' } } }), [{ name: 'tests', command: 'npm test' }, { name: 'lint', command: 'npm run lint' }]);
+  assert.deepEqual(C.detectChecks({ entries: ['package.json'], pkg: { scripts: { test: 'echo "Error: no test specified" && exit 1' } } }), []);
+  assert.deepEqual(C.detectChecks({ entries: ['pyproject.toml', 'tests', 'calc.py'] }), [{ name: 'tests', command: 'python -m pytest -q' }]);
+  assert.deepEqual(C.detectChecks({ entries: ['pyproject.toml'], pyproject: '[tool.pytest.ini_options]\n' }), [{ name: 'tests', command: 'python -m pytest -q' }]);
+  assert.deepEqual(C.detectChecks({ entries: ['Cargo.toml', 'src'] }), [{ name: 'tests', command: 'cargo test' }]);
+  assert.deepEqual(C.detectChecks({ entries: ['go.mod'] }), [{ name: 'tests', command: 'go test ./...' }]);
+  assert.deepEqual(C.detectChecks({ entries: ['main.py'] }), []);
+});
+
+test('compareRuns: regressions win over fixes', () => {
+  const before = [{ name: 'tests', ok: true }, { name: 'lint', ok: false }];
+  assert.equal(C.compareRuns(before, [{ name: 'tests', ok: true }, { name: 'lint', ok: false }]).verdict, 'same');
+  const better = C.compareRuns(before, [{ name: 'tests', ok: true }, { name: 'lint', ok: true }]);
+  assert.equal(better.verdict, 'better');
+  assert.deepEqual(better.fixed.map((r) => r.name), ['lint']);
+  const mixed = C.compareRuns(before, [{ name: 'tests', ok: false }, { name: 'lint', ok: true }]);
+  assert.equal(mixed.verdict, 'worse');
+  assert.deepEqual(mixed.regressed.map((r) => r.name), ['tests']);
+  assert.equal(C.compareRuns(before, [{ name: 'new', ok: false }]).verdict, 'same', 'checks missing from the baseline are not judged');
+  assert.equal(C.statusLine(before), 'tests ✓, lint ✗');
+});
+
+test('fixPrompt carries the failing output and forbids weakening the tests', () => {
+  const p = C.fixPrompt([{ name: 'tests', command: 'npm test', output: 'x'.repeat(3000) + '\nAssertionError: 2 !== 3' }]);
+  assert.match(p, /^<system-reminder>/);
+  assert.match(p, /"tests" \(`npm test`\) passed before this task and fails now/);
+  assert.match(p, /AssertionError: 2 !== 3/);
+  assert.match(p, /Do not weaken, skip or delete/);
+  assert.ok(p.length < 2200);
+});
+
+test('rollbackPlan restores, removes created files, and skips anything edited since', () => {
+  const before = new Map([['a.js', 'A0'], ['new.js', null], ['b.js', 'B0'], ['gone.js', 'G0'], ['same.js', 'S0']]);
+  const wrote = new Map([['a.js', 'A1'], ['new.js', 'N1'], ['b.js', 'B1'], ['gone.js', null], ['same.js', 'S0']]);
+  const current = new Map([['a.js', 'A1'], ['new.js', 'N1'], ['b.js', 'B1-user-edit'], ['gone.js', null], ['same.js', 'S0']]);
+  const plan = C.rollbackPlan(before, wrote, current);
+  assert.deepEqual(plan.restore, [{ path: 'a.js', content: 'A0' }, { path: 'gone.js', content: 'G0' }]);
+  assert.deepEqual(plan.remove, ['new.js']);
+  assert.deepEqual(plan.skipped, ['b.js']);
+});

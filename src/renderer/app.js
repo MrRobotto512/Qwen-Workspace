@@ -470,6 +470,11 @@ function escapeRegex(s) {
 // ---------- changes made by Qwen ----------
 // Changes belong to the conversation that made them, so reverting undoes just that task.
 function recordChange(c, path, before, after) {
+  // The checks gate tracks what THIS task touched, so a rollback undoes exactly that.
+  if (c.taskBefore) {
+    if (!c.taskBefore.has(path)) c.taskBefore.set(path, before);
+    c.taskWrote.set(path, after);
+  }
   const prev = c.changes.get(path);
   const original = prev ? prev.original : before;
   if ((original !== null && original === after) || (original === null && after === null)) {

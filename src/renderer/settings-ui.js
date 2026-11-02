@@ -410,7 +410,7 @@ function openSettings() {
   $('#s-webResearch').checked = s.webResearch !== false;
   $('#s-allowPrivateFetch').checked = !!s.allowPrivateFetch;
   renderSearchFields();
-  for (const k of ['agentMode', 'planFirst', 'includeCurrentFile', 'followAgent', 'autoCheckUpdates', 'branchPerTask', 'lessonsEnabled', 'skillWriter', 'reviewPass']) $(`#s-${k}`).checked = !!s[k];
+  for (const k of ['agentMode', 'planFirst', 'includeCurrentFile', 'followAgent', 'autoCheckUpdates', 'branchPerTask', 'lessonsEnabled', 'skillWriter', 'checksGate', 'reviewPass']) $(`#s-${k}`).checked = !!s[k];
   $('#about-version').textContent = state.appInfo?.version || '';
   $('#about-kind').textContent = KIND_TEXT[state.appInfo?.kind] || '';
   renderUpdateUi();
@@ -473,7 +473,7 @@ async function saveSettingsFromUi() {
   }
   patch.allowedCommands = $('#s-allowedCommands').value.split(',').map((x) => x.trim()).filter(Boolean);
   patch.maxSteps = Math.min(1000, Math.max(10, parseInt($('#s-maxSteps').value, 10) || DEFAULT_MAX_STEPS));
-  for (const k of ['agentMode', 'planFirst', 'includeCurrentFile', 'followAgent', 'autoCheckUpdates', 'branchPerTask', 'lessonsEnabled', 'skillWriter', 'reviewPass']) patch[k] = $(`#s-${k}`).checked;
+  for (const k of ['agentMode', 'planFirst', 'includeCurrentFile', 'followAgent', 'autoCheckUpdates', 'branchPerTask', 'lessonsEnabled', 'skillWriter', 'checksGate', 'reviewPass']) patch[k] = $(`#s-${k}`).checked;
   patch.heavy = {
     enabled: $('#s-heavy-enabled').checked,
     provider: $('#s-heavy-provider').value,
