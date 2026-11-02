@@ -26,6 +26,23 @@ const fakeBin = path.join(root, 'bin');
 const ghLog = path.join(root, 'gh-calls.log');
 
 const run = (cmd, cwd) => execSync(cmd, { cwd, stdio: 'pipe' }).toString();
+// The app's own background git (status, fetch) can hold .git/index.lock for a moment while the
+// test writes; under a loaded full run that collided once. Retry lock errors only, and keep
+// git's real stderr in the failure so any other cause stays visible.
+const runGit = (cmd, cwd) => {
+  for (let i = 0; ; i++) {
+    try {
+      return run(cmd, cwd);
+    } catch (e) {
+      const err = `${e.stderr || ''}${e.stdout || ''}`;
+      if (i < 4 && /index\.lock|could not lock|unable to create .*lock/i.test(err)) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 400);
+        continue;
+      }
+      throw new Error(`${cmd.split(' && ')[0].slice(0, 80)}… failed: ${err.replace(/\s+/g, ' ').slice(0, 300)}`);
+    }
+  }
+};
 const G = 'git -c user.name=T -c user.email=t@t.t -c commit.gpgsign=false';
 
 // ---- repos ----
@@ -94,7 +111,9 @@ try {
   const branchNow = run('git rev-parse --abbrev-ref HEAD', ws).trim();
   if (branchNow !== 'qwen/fix-the-login-crash') fail(`branch per task made "${branchNow}", expected qwen/fix-the-login-crash`);
   fs.writeFileSync(path.join(ws, 'fix.js'), 'ok\n');
-  run(`${G} add -A && ${G} commit -m "fix: login crash" && git push -u origin qwen/fix-the-login-crash`, ws);
+  runGit(`${G} add -A`, ws);
+  runGit(`${G} commit -m "fix: login crash"`, ws);
+  runGit('git push -u origin qwen/fix-the-login-crash', ws);
   await win.evaluate(() => refreshGitSync(true));
 
   // --- pull request card: drafts (offline fallback), then invokes gh pr create ---

@@ -1122,6 +1122,63 @@ ipcMain.handle('conv:save', (_e, conv) => {
   updateConvIndex((index) => [...index.filter((c) => c.id !== conv.id), summary]);
   return summary;
 });
+// Search past conversations across every project (newest 400), for the search_history tool.
+const convSearch = require('./convsearch');
+function loadRecentConvs(limit = 400) {
+  return readConvIndex()
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    .slice(0, limit)
+    .map((s) => {
+      try {
+        return JSON.parse(fs.readFileSync(convFile(s.id), 'utf8'));
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+ipcMain.handle('conv:search', (_e, query, opts) => convSearch.searchConversations(loadRecentConvs(), query, { limit: 5, excludeId: opts?.excludeId || null }));
+ipcMain.handle('conv:condensed', (_e, id) => {
+  const conv = JSON.parse(fs.readFileSync(convFile(id), 'utf8'));
+  return { title: conv.title, workspace: conv.workspace, updatedAt: conv.updatedAt, text: convSearch.condensedConv(conv) };
+});
+
+// Personal memory: one Markdown file that follows the user into every project (Hermes Agent's
+// USER.md idea). Lives in the app's data folder, never in a project.
+function userMemoryFile() {
+  return path.join(app.getPath('userData'), 'USER.md');
+}
+const USER_MEMORY_MAX = 4000;
+ipcMain.handle('userMemory:get', () => {
+  try {
+    return fs.readFileSync(userMemoryFile(), 'utf8');
+  } catch {
+    return '';
+  }
+});
+ipcMain.handle('userMemory:set', (_e, text) => {
+  const body = String(text || '').slice(0, USER_MEMORY_MAX);
+  fs.mkdirSync(path.dirname(userMemoryFile()), { recursive: true });
+  fs.writeFileSync(userMemoryFile(), body);
+  return body;
+});
+ipcMain.handle('userMemory:append', (_e, fact) => {
+  const line = String(fact || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+  if (!line) throw new Error('Nothing to remember.');
+  let cur = '';
+  try {
+    cur = fs.readFileSync(userMemoryFile(), 'utf8');
+  } catch {
+    /* first entry */
+  }
+  if (cur.toLowerCase().includes(line.toLowerCase())) return cur; // already known
+  const next = `${cur.replace(/\s*$/, '')}${cur.trim() ? '\n' : ''}- ${line}\n`;
+  if (next.length > USER_MEMORY_MAX) throw new Error(`Personal memory is full (${USER_MEMORY_MAX} characters). Tidy it in Settings → Agent → Personal memory.`);
+  fs.mkdirSync(path.dirname(userMemoryFile()), { recursive: true });
+  fs.writeFileSync(userMemoryFile(), next);
+  return next;
+});
+
 ipcMain.handle('conv:delete', (_e, id) => {
   fs.rmSync(convFile(id), { force: true });
   updateConvIndex((index) => index.filter((c) => c.id !== id));

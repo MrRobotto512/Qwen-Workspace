@@ -21,7 +21,7 @@ async function loadProjectMemory() {
 function systemPrompt(c) {
   const agent = state.settings.agentMode && !!state.ws;
   const web = agent && state.settings.webResearch !== false;
-  const key = `${agent}|${web}|${mcpToolSpecs().map((t) => t.function.name).join(',')}|${c.workspace}|${c.memory?.text || ''}|${(c.skills || []).map((sk) => `${sk.name}:${sk.description}`).join(',')}`;
+  const key = `${agent}|${web}|${mcpToolSpecs().map((t) => t.function.name).join(',')}|${c.workspace}|${c.memory?.text || ''}|${state.userMemory || ''}|${(c.skills || []).map((sk) => `${sk.name}:${sk.description}`).join(',')}`;
   if (c.sysPrompt?.key === key) return c.sysPrompt.text;
   const win = state.ws?.platform === 'win32';
   const parts = [
@@ -31,6 +31,7 @@ function systemPrompt(c) {
     state.ws ? `Project folder: ${state.ws.root}` : 'No project folder is open yet.',
     `Operating system: ${win ? 'Windows (commands run in cmd.exe; use Windows syntax such as "dir", "type", "&&")' : state.ws?.platform === 'darwin' ? 'macOS (commands run in /bin/sh; use POSIX syntax; install software with Homebrew via install_app)' : state.ws?.platform || 'unknown'}`,
     `Conversation started: ${new Date(c.createdAt).toDateString()}`,
+    state.userMemory?.trim() ? `<user_memory>\nWhat the user told you about themselves and their setup (personal memory, shared by every project):\n${state.userMemory.trim()}\n</user_memory>` : null,
     c.memory ? `<project_memory file="${c.memory.name}">\n${c.memory.text}\n</project_memory>` : null,
     agent && c.skills?.length
       ? `<skills>\nTask-specific instructions. When a task matches one, call load_skill with its name before starting.\n${c.skills.map((sk) => `- ${sk.name}: ${sk.description}`).join('\n')}\n</skills>`
@@ -55,6 +56,7 @@ function systemPrompt(c) {
       "- Save what future work will need (toolchain, install steps, build commands, key links) to QWEN.md in the project root.",
       '- Long files come back a page at a time; read the next page only when you need it, instead of re-reading the whole file.',
       '- For tasks with 3 or more steps, keep a plan with todo_write and update it as you finish each step.',
+      '- When a task looks like earlier work (a recurring error, a toolchain or app type you set up before), search_history finds how it was done. When the user states a lasting fact about themselves or their setup (their machines, OS, preferred stacks), save it with remember.',
       '- When you need several independent lookups (reads, searches, listings), request them all in the same reply; they run in parallel. Edits and commands run one at a time, in the order you give them.',
       '- Install what the task needs instead of asking the user to do it by hand: when a command fails because a program is "not found" or "not recognized" (a compiler, SDK, CLI or build tool), install the missing tool with install_app (a winget id like "OpenJS.NodeJS" or "Rustlang.Rustup", or a plain name) — or install_git for Git — then retry.',
       '- A build or install that takes long is normal: pass timeout_seconds (up to 3600) to run_command instead of splitting the build or giving up when the 2-minute default cuts it off.',
@@ -314,6 +316,30 @@ async function executeTool(c, call, row) {
         const out = matches.map((t) => `${t.function.name}: ${t.function.description}\nParameters: ${JSON.stringify(t.function.parameters.properties)}`).join('\n\n');
         row.setBody(out);
         return { result: `Loaded ${matches.map((t) => t.function.name).join(', ')}. You can call ${matches.length === 1 ? 'it' : 'them'} from your next reply.\n\n${out}`, meta: `${matches.length} loaded` };
+      }
+      case 'search_history': {
+        if (args.id) {
+          const conv = await api.convCondensed(String(args.id));
+          return { result: `Conversation "${conv.title}" (${conv.workspace || 'no folder'}, ${new Date(conv.updatedAt).toDateString()}):\n\n${conv.text}`, meta: 'read' };
+        }
+        const q = String(args.query || '').trim();
+        if (!q) return { result: 'Error: pass a query to search, or the id of a result to read it.' };
+        const hits = await api.convSearch(q, { excludeId: c.id });
+        if (!hits.length) return { result: `No past conversation mentions "${q}".`, meta: '0 found' };
+        return {
+          result: `${hits.length} past conversation${hits.length === 1 ? '' : 's'} matched "${q}" (read one with search_history and its id):\n\n${hits.map((h) => `- id ${h.id} · "${h.title}" · ${h.workspace || 'no folder'} · ${new Date(h.updatedAt).toDateString()}\n${h.snippets.map((sn) => `    ${sn}`).join('\n')}`).join('\n')}`,
+          meta: `${hits.length} found`
+        };
+      }
+      case 'remember': {
+        const fact = String(args.fact || '').trim();
+        if (!fact) return { result: 'Error: empty fact.' };
+        // Personal memory lives outside the project and reaches every future conversation, so
+        // it asks in every approval mode.
+        const ok = await row.requestApproval({ kind: 'command', question: 'Save this to your personal memory (seen in every project)?', command: fact, dangerous: false });
+        if (!ok) return { result: 'The user declined to save that. Do not ask again for the same fact.', rejected: true };
+        state.userMemory = await api.userMemoryAppend(fact);
+        return { result: 'Saved to the user\'s personal memory.', meta: 'saved' };
       }
       case 'ask_user': {
         const qs = (Array.isArray(args.questions) ? args.questions : [args])

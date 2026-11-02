@@ -136,6 +136,7 @@ require(['vs/editor/editor.main'], async () => {
   checkConnection();
   initUpdates();
   initMcp();
+  api.userMemoryGet().then((text) => { state.userMemory = text; }).catch(() => {});
   api.onRemoteAsk(handleRemoteAsk); // paired devices starting/continuing/stopping sessions here
   await pickDefaultModel();
 
