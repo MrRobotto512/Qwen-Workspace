@@ -78,6 +78,29 @@ function planningTools(tools) {
   return (tools || []).filter((t) => PLANNING_TOOLS.has(t?.function?.name));
 }
 
-const EscalationExports = { commandRuns, commandFailStreak, planFiles, PLAN_FIRST_REMINDER, planningTools };
+// A plan step is concrete when it names a file (known extension), carries a `backticked`
+// token, or mentions a recognizable command — mechanical, so the app can bounce a vague plan
+// back to the planning model once instead of handing the small model mush like "Create
+// project directory and initial files" (a field report's 30B plan, written despite explicit
+// instructions; prompts alone don't make a 30B obey).
+const PLAN_COMMAND_RE = /\b(swift|swiftc|npm|npx|yarn|pnpm|pip3?|python3?|cargo|rustc|go|git|mkdir|touch|brew|winget|apt(-get)?|dotnet|node|deno|bun|make|cmake|gcc|clang|javac|gradle|mvn|curl|wget|tsc|install_app|xcode-select|electron|pyinstaller|pytest|unzip|tar)\b/i;
+
+function vaguePlanSteps(todos) {
+  const out = [];
+  (todos || []).forEach((t, i) => {
+    const text = String((t && t.content) ?? t ?? '');
+    FILE_EXT.lastIndex = 0; // shared global regex: reset between tests
+    const concrete = FILE_EXT.test(text) || /`[^`]+`/.test(text) || PLAN_COMMAND_RE.test(text);
+    if (!concrete) out.push(i + 1);
+  });
+  return out;
+}
+
+// The one corrective re-ask a vague plan gets before the handoff proceeds anyway.
+function planRetryReminder(vagueSteps) {
+  return `Your plan is not executable by a smaller model: step${vagueSteps.length === 1 ? '' : 's'} ${vagueSteps.join(', ')} name${vagueSteps.length === 1 ? 's' : ''} no file and no command. Rewrite the COMPLETE todo list now in one todo_write call; every step must contain an exact file path (with extension) or an exact command.`;
+}
+
+const EscalationExports = { commandRuns, commandFailStreak, planFiles, PLAN_FIRST_REMINDER, planningTools, vaguePlanSteps, planRetryReminder };
 if (typeof module !== 'undefined' && module.exports) module.exports = EscalationExports;
 if (typeof window !== 'undefined') window.Escalation = EscalationExports;

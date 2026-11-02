@@ -104,3 +104,30 @@ test('the plan-first reminder tells the planner to plan, record todos, and not e
     assert.ok(E.PLAN_FIRST_REMINDER.includes(must), `reminder is missing "${must}"`);
   }
 });
+
+test('vaguePlanSteps flags steps that name no file and no command', () => {
+  const E = require('../src/renderer/escalation.js');
+  // The field-report plan: toolchain step is concrete (xcode-select), the rest is mush.
+  const fieldPlan = [
+    { content: 'Verify macOS development toolchain (Xcode command line tools) is installed' },
+    { content: 'Create project directory and initial files for macOS scientific calculator app' },
+    { content: 'Implement the core calculator logic in Swift' },
+    { content: 'Design the user interface using SwiftUI' },
+    { content: 'Add functionality for scientific operations (trig, logs, etc.)' },
+    { content: 'Build and test the application' }
+  ];
+  const vague = E.vaguePlanSteps(fieldPlan);
+  assert.ok(vague.length * 2 > fieldPlan.length, `the field plan must count as vague, flagged: ${vague}`);
+  // A concrete plan passes: file names, backticked commands, known command words.
+  const good = [
+    { content: 'Run `swift package init --type executable` in the project folder' },
+    { content: 'Write Sources/main.swift with the calculator UI and logic' },
+    { content: 'Build with swift build -c release' },
+    { content: 'Open the built binary with `open .build/release/Calculator`' }
+  ];
+  assert.deepStrictEqual(E.vaguePlanSteps(good), []);
+  assert.deepStrictEqual(E.vaguePlanSteps([]), []);
+  // The reminder names the offending steps.
+  assert.ok(E.planRetryReminder([2, 3]).includes('steps 2, 3'));
+  assert.ok(E.planRetryReminder([4]).includes('step 4'));
+});
