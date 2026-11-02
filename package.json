@@ -1,6 +1,6 @@
 {
   "name": "qwen-workspace",
-  "version": "0.24.2",
+  "version": "0.26.0",
   "description": "Desktop coding workspace powered by Qwen (Ollama, LM Studio, or any OpenAI-compatible API)",
   "main": "src/main.js",
   "scripts": {
@@ -21,7 +21,9 @@
     "test:e2e:toolargs": "node test/e2e-toolargs.mjs",
     "test:e2e:remote": "node test/e2e-remote.mjs",
     "test:e2e:review": "node test/e2e-review.mjs",
-    "dist:mac": "electron-builder --mac dmg zip"
+    "dist:mac": "electron-builder --mac dmg zip",
+    "test:e2e:steer": "node test/e2e-steer.mjs",
+    "test:e2e:goal": "node test/e2e-goal.mjs"
   },
   "author": "",
   "dependencies": {

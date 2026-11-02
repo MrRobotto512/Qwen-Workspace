@@ -1198,9 +1198,13 @@ function setActivity(c, text) {
 function renderRunControls() {
   const c = state.conv;
   const asking = !!c?.pendingQuestion;
-  $('#btn-send').classList.toggle('hidden', !!c?.busy && !asking);
+  // Send stays available while Qwen works: a message sent mid-task steers it at its next step.
+  $('#btn-send').classList.remove('hidden');
+  $('#btn-send').title = c?.busy && !asking ? 'Send now — Qwen reads it at its next step' : 'Send';
   $('#btn-stop').classList.toggle('hidden', !c?.busy);
-  $('#prompt').placeholder = asking ? 'Type your answer to Qwen\'s question…' : 'Ask Qwen to build, fix or explain something…';
+  $('#prompt').placeholder = asking
+    ? 'Type your answer to Qwen\'s question…'
+    : c?.busy ? 'Steer Qwen — it reads your message at its next step…' : 'Ask Qwen to build, fix or explain something…';
   const text = c?.busy ? c.activity : '';
   $('#activity').classList.toggle('hidden', !text);
   $('#activity-text').textContent = text ? `${text}…` : '';
@@ -1226,6 +1230,23 @@ function updateCtxMeter() {
 // ---------- compaction ----------
 // When the conversation nears the context window, older turns are replaced by a summary the
 // model writes, keeping the system prompt and the most recent turns verbatim.
+// The standing goal (goal mode): what it is, how many checks it has used, and a way out.
+function renderGoalBar() {
+  const bar = $('#goal-bar');
+  const g = state.conv?.goal;
+  if (!g) {
+    bar.classList.add('hidden');
+    return;
+  }
+  bar.classList.remove('hidden');
+  bar.replaceChildren(
+    iconEl('crosshair'),
+    el('span', { class: 'goal-title', text: 'Goal' }),
+    el('span', { class: 'goal-text', text: g.text, title: g.text }),
+    el('span', { class: 'goal-checks', text: g.paused ? 'paused · budget used' : `${g.checks}/${g.max} checks` }),
+    el('button', { class: 'icon-btn', title: 'Clear the goal', onclick: () => { state.conv.goal = null; renderGoalBar(); saveConv(state.conv, true); flash('Goal cleared'); } }, iconEl('x')));
+}
+
 function renderTodoBar() {
   const bar = $('#todo-bar');
   const todos = state.conv?.todos || [];

@@ -636,3 +636,13 @@ input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; m
 
 #node-diag-box { margin-top: 8px; }
 #node-diag { font-size: 11.5px; background: var(--bg-3); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; }
+
+/* Steering: a message sent while Qwen works shows as waiting until the next step picks it up. */
+.msg.user.queued { opacity: .75; border: 1px dashed var(--accent); }
+.msg.user.queued::after { content: 'waiting for Qwen\'s next step'; display: block; font-size: 11px; color: var(--text-2); margin-top: 4px; white-space: normal; }
+
+#goal-bar { display: flex; align-items: center; gap: 8px; padding: 6px 12px; margin: 0 12px 6px; border: 1px solid var(--accent); background: var(--accent-bg); border-radius: 8px; font-size: 12.5px; }
+#goal-bar.hidden { display: none; }
+#goal-bar .goal-title { font-weight: 600; color: var(--accent); }
+#goal-bar .goal-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#goal-bar .goal-checks { color: var(--text-2); white-space: nowrap; }
