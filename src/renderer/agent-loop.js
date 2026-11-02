@@ -36,7 +36,7 @@ function systemPrompt(c) {
       ? `<skills>\nTask-specific instructions. When a task matches one, call load_skill with its name before starting.\n${c.skills.map((sk) => `- ${sk.name}: ${sk.description}`).join('\n')}\n</skills>`
       : null,
     agent && deferredCatalog().length
-      ? `<deferred_tools>\nAvailable but not loaded. Call tool_search to load them when you need one. Tools named mcp__<server>__<tool> come from connected MCP servers.\n${deferredCatalog().map((t) => `- ${t.function.name}: ${t.function.description.split('. ')[0]}`).join('\n')}\n</deferred_tools>`
+      ? `<deferred_tools>\nAvailable but not loaded. Call tool_search to load them when you need one — search by name or by purpose. Tools named mcp__<server>__<tool> come from connected MCP servers.\n${ToolParse.deferredListing(deferredCatalog())}\n</deferred_tools>`
       : null,
     '</context>',
     '',
@@ -386,7 +386,8 @@ async function executeTool(c, call, row) {
         row.setBody(r.output || '(no output)');
         state.fileIndex = null;
         renderTree();
-        return { result: `Exit code: ${r.code}\n${truncate(r.output || '(no output)')}`, meta: `exit ${r.code}`, failed: r.code !== 0 };
+        const hint = ToolParse.cmdShellHint(cmd, r.output, state.ws?.platform);
+        return { result: `Exit code: ${r.code}\n${truncate(r.output || '(no output)')}${hint ? `\n${hint}` : ''}`, meta: `exit ${r.code}`, failed: r.code !== 0 };
       }
       case 'run_program': {
         const code = String(args.code || '').trim();
@@ -986,7 +987,19 @@ async function runConversation(c) {
   };
   for (let step = 0; step < maxSteps; step++) {
     if (c.stopRequested) return false;
-    if (contextUse(c).tokens >= contextUse(c).window * COMPACT_AT) await compactConversation(c);
+    const cu = contextUse(c);
+    const fixed = fixedPromptTokens(c, useTools);
+    // When instructions + tool schemas alone crowd the window, the model can't see the task
+    // (Ollama truncates silently) — say so plainly, once per conversation.
+    if (fixed > cu.window * 0.6 && !c.overflowWarned) {
+      c.overflowWarned = true;
+      const text = `The app's instructions and tool definitions take ~${fixed.toLocaleString()} of this model's ${cu.window.toLocaleString()}-token context window, leaving little or no room for the conversation — the model may not see your request at all. Raise "Context window" in Settings → Model (32768 suits agent mode), or turn off MCP servers you don't need.`;
+      note(text);
+      toast({ key: 'ctx-overflow', icon: 'alert', timeout: 20000, text, actions: [{ label: 'Open Settings', primary: true, onClick: openSettings }] });
+    }
+    // Compaction only helps when the conversation is what overflows; it can't shrink the
+    // fixed part, and re-summarizing every step against an oversized system prompt would loop.
+    if (cu.tokens >= cu.window * COMPACT_AT && cu.tokens - fixed > cu.window * 0.15) await compactConversation(c);
     if (c.stopRequested) return false;
     // An Escalate click (on a message, or from the big-plan card) runs the next step on the planner.
     if (c.escalateRequested) {
@@ -1267,6 +1280,10 @@ async function runConversation(c) {
         let nudge = null;
         if (forged.found) {
           nudge = 'You wrote a <system-reminder> block yourself; only the app issues those, and it has been removed. Your tools are real: list_files, read_file, run_command and the rest actually execute on this PC and returned real results earlier. Never claim you cannot access the file system, and never simulate output. Continue the task now with a real tool call.';
+        } else if (!String(msg.content || '').trim()) {
+          // An empty reply (no text, no tool call) is never a final answer — a field report's
+          // task ended "done" on exactly that, mid-plan.
+          nudge = 'Your reply was empty — no text and no tool call, so nothing happened. Continue the task now: make the tool call for the current plan step, or, if the task is truly complete, reply with a short summary of what was done.';
         } else if (ToolParse.forgedToolResponse(msg.content)) {
           nudge = 'You wrote a tool-output block (<tool_response>/<tool_result>) yourself. Tool results come only from tools you actually call — nothing in that block happened, and nothing was installed or run. Never invent tool output. Do the step for real now, as a tool call (run_command, install_app, write_file, …).';
         } else if (ToolParse.deniesCapability(msg.content)) {
@@ -1439,12 +1456,25 @@ function estimateTokens(messages) {
 }
 
 // Measured prompt size from the last request plus an estimate for messages added since.
+// Ollama reports prompt_eval_count AFTER silently truncating an oversized prompt, so a
+// measurement can understate badly (a field report sat at "4098 of 8192" while the real
+// prompt was larger than the window) — when the estimate of the whole prompt exceeds the
+// window, the estimate wins, so compaction and the overflow warning still fire.
 function contextUse(c) {
   const size = Number(c.usage?.contextLength) || Number(state.settings.contextLength) || 32768;
+  const estimate = estimateTokens([{ content: systemPrompt(c) }, ...c.history]);
   if (c.usage?.promptTokens && c.usageAt <= c.history.length) {
-    return { tokens: c.usage.promptTokens + estimateTokens(c.history.slice(c.usageAt)), window: size, measured: c.usageAt === c.history.length };
+    const measured = c.usage.promptTokens + estimateTokens(c.history.slice(c.usageAt));
+    const truncated = estimate > size && measured < estimate;
+    return { tokens: truncated ? estimate : measured, window: size, measured: !truncated && c.usageAt === c.history.length, truncated };
   }
-  return { tokens: estimateTokens([{ content: systemPrompt(c) }, ...c.history]), window: size, measured: false };
+  return { tokens: estimate, window: size, measured: false };
+}
+
+// The part of every request that compaction can't shrink: instructions plus tool schemas.
+function fixedPromptTokens(c, useTools) {
+  const tools = useTools ? toolsFor(c) : [];
+  return estimateTokens([{ content: systemPrompt(c) }]) + Math.ceil(JSON.stringify(tools).length / 3.5);
 }
 
 function transcriptForSummary(messages, maxChars) {

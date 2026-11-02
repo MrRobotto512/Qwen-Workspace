@@ -21,7 +21,7 @@ function diagVerdict(steps, platform) {
   if (appBlocked) {
     const who = p === 'darwin'
       ? 'macOS is denying this app local-network access: allow Qwen Workspace under System Settings → Privacy & Security → Local Network (relaunch the app if it is not listed).'
-      : 'something on THIS computer forbids the app from making this connection — a firewall rule or security software (per-app filtering), not the network';
+      : 'something on THIS computer forbids the app from making this connection — a VPN app\'s threat protection or LAN blocking (NordVPN and similar: allow local network access or split-tunnel this app), a firewall rule, or security software. It is per-app filtering, not the network';
     return `The OS refused the connection before it left this machine (${code}) — ${who}.${controlOk ? ' Local connections still work, so only outbound/remote traffic is being filtered for this app.' : ''}`;
   }
   if (refused) {

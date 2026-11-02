@@ -242,6 +242,52 @@ function modelAlternates(model, available) {
   return pool.filter((m) => m !== failed).sort((a, b) => cls(a) - cls(b) || ver(b) - ver(a));
 }
 
-const ToolParseExports = { TOOL_TEXT_MARKER, jsonToolCallRe, textToolCallStart, readJsonObject, extractTextToolCalls, announcesAction, looksLikeInstructions, stripFakeReminders, forgedToolResponse, isBusyModelError, isDeadModelError, modelAlternates, normalizeToolArgs, deniesCapability, GEMINI_FAMILY };
+// The <deferred_tools> listing for the system prompt. Built-in deferred tools are few and get
+// a line each; MCP tools are grouped per server with a count and a handful of names, because
+// tool_search finds them by purpose anyway. A field report showed one reverse-engineering
+// server adding ~70 described entries (~30K characters) — more than an 8K context window
+// holds, so Ollama truncated every request and the model never saw the user's task.
+function deferredListing(tools, namesPerServer = 8) {
+  const lines = [];
+  const servers = new Map(); // server id -> tool short names
+  for (const t of tools || []) {
+    const name = String(t?.function?.name || '');
+    const m = /^mcp__([^_]+(?:_[^_]+)*?)__(.+)$/.exec(name);
+    if (m) {
+      if (!servers.has(m[1])) servers.set(m[1], []);
+      servers.get(m[1]).push(m[2]);
+    } else if (name) {
+      lines.push(`- ${name}: ${String(t.function.description || '').split('. ')[0]}`);
+    }
+  }
+  for (const [id, names] of servers) {
+    const shown = names.slice(0, namesPerServer).join(', ');
+    lines.push(`- mcp__${id}__* — ${names.length} tool${names.length === 1 ? '' : 's'} from the "${id}" MCP server, e.g. ${shown}${names.length > namesPerServer ? ', …' : ''}`);
+  }
+  return lines.join('\n');
+}
+
+// A hint appended to a run_command result when a POSIX-ism ran in cmd.exe. Small models write
+// bash on Windows constantly; cmd's failures are cryptic ("The syntax of the command is
+// incorrect"), and `mkdir -p` even SUCCEEDS — by creating a folder literally named "-p".
+function cmdShellHint(command, output, platform) {
+  if (platform !== 'win32') return null;
+  const cmd = String(command || '');
+  const out = String(output || '');
+  const hints = [];
+  if (/\b(mkdir|md)\s+(-p|--parents)\b/i.test(cmd)) {
+    hints.push('cmd.exe has no "-p" flag: mkdir -p creates a folder literally named "-p" (remove it with: rmdir "-p"). cmd\'s mkdir already creates missing parent folders.');
+  }
+  if (/syntax of the command is incorrect|invalid switch/i.test(out) && /\b(mkdir|md|rmdir|rd|del|copy|move|type|cd|dir)\b[^&|]*\s"?[\w.-]+\/[\w./-]/i.test(cmd)) {
+    hints.push('cmd.exe reads "/" as a switch: write paths with backslashes (mkdir src\\data).');
+  }
+  const unix = /^\s*(ls|cat|touch|rm|cp|mv|grep|which|export|pwd)\b/i.exec(cmd);
+  if (unix && /is not recognized as an internal or external command/i.test(out)) {
+    hints.push(`"${unix[1]}" is a Unix command; in cmd.exe use: ls→dir, cat→type, rm→del (folders: rmdir /s /q), cp→copy, mv→move, grep→findstr, which→where, touch→type nul > file, export→set, pwd→cd.`);
+  }
+  return hints.length ? `Hint: ${hints.join(' ')}` : null;
+}
+
+const ToolParseExports = { TOOL_TEXT_MARKER, jsonToolCallRe, textToolCallStart, readJsonObject, extractTextToolCalls, announcesAction, looksLikeInstructions, stripFakeReminders, forgedToolResponse, isBusyModelError, isDeadModelError, modelAlternates, normalizeToolArgs, deniesCapability, deferredListing, cmdShellHint, GEMINI_FAMILY };
 if (typeof module !== 'undefined' && module.exports) module.exports = ToolParseExports;
 if (typeof window !== 'undefined') window.ToolParse = ToolParseExports;

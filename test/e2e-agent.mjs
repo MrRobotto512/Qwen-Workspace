@@ -48,6 +48,10 @@ const server = http.createServer((req, res) => {
         { choices: [{ delta: { tool_calls: [{ index: 0, id: 'c1', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'smoke-made.txt', content: 'made by the agent loop\n' }) } }] }, finish_reason: null }] },
         { choices: [{ delta: {}, finish_reason: 'tool_calls' }] }
       ]);
+    } else if (!body.includes('Your reply was empty')) {
+      // An empty turn (no text, no tool call) after the tool ran: the loop must push back
+      // instead of ending the task "done" (a field report's task died exactly this way).
+      sse(res, [{ choices: [{ delta: {}, finish_reason: 'stop' }] }]);
     } else {
       sse(res, [
         { choices: [{ delta: { content: 'Done. I created smoke-made.txt.' }, finish_reason: null }] },
@@ -76,6 +80,12 @@ try {
     document.querySelector('#s-model').value = 'mock-model';
     document.querySelector('#s-agentMode').checked = true;
     document.querySelector('#s-approvalMode').value = 'auto';
+    // Pin everything that could reroute a turn: a planner/review config left behind by
+    // another suite once sent this test's nudged turn to a dead planner port.
+    document.querySelector('#s-heavy-enabled').checked = false;
+    document.querySelector('#s-reviewPass').checked = false;
+    document.querySelector('#s-planFirst').checked = false;
+    settingsNodes = settingsNodes.filter((n) => n.id === 'this-pc').map((n) => ({ ...n, enabled: true, highPerf: false }));
     settingsNodes = settingsNodes.filter((n) => n.id === 'this-pc').map((n) => ({ ...n, enabled: true })); // no stale node routing
     return document.querySelector('#s-save').onclick();
   }, base);
@@ -96,7 +106,10 @@ try {
   else if (!fs.readFileSync(madeFile, 'utf8').includes('made by the agent loop')) fail('smoke-made.txt has the wrong content');
 
   await win.waitForFunction(() => [...document.querySelectorAll('.msg.assistant .md')].some((e) => e.textContent.includes('Done. I created smoke-made.txt.')), null, { timeout: 15_000 }).catch(() => fail('the final assistant turn never rendered'));
-  if (requests < 3) fail(`expected 3 model requests (503, tool turn, final), saw ${requests}`);
+  if (requests < 4) {
+    const story = await win.evaluate(() => (state.conv?.log || []).map((e) => `${e.kind}${e.text ? `:${String(e.text).slice(0, 80)}` : ''}${e.reason ? `:${e.reason}` : ''}`).join(' | '));
+    fail(`expected 4 model requests (503, tool turn, empty turn, final after the nudge), saw ${requests}; log: ${story}`);
+  }
 
   // The debug report: one file under .qwen/debug with the whole story, secrets redacted.
   await win.evaluate(() => exportDebugReport(state.conv));
@@ -133,4 +146,4 @@ try {
   fs.rmSync(ws, { recursive: true, force: true });
 }
 if (process.exitCode) process.exit(process.exitCode);
-console.log(`agent smoke ok: ${requests} model requests (incl. one 503 retried), tool executed, file written, final answer rendered`);
+console.log(`agent smoke ok: ${requests} model requests (incl. one 503 retried, one empty turn nudged), tool executed, file written, final answer rendered`);

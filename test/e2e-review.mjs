@@ -128,6 +128,11 @@ try {
   fail(String(e).split('\n')[0]);
 } finally {
   if (errors.length) fail(`renderer errors: ${errors.join(' || ').slice(0, 500)}`);
+  // Leave settings pristine: a lingering planner + review config points later suites at
+  // this test's dead mock ports.
+  await win.evaluate(async () => {
+    state.settings = await api.setSettings({ reviewPass: false, heavy: { enabled: false } });
+  }).catch(() => {});
   const watchdog = setTimeout(() => {
     console.error('app.close() hung; forcing exit with the recorded result');
     process.exit(process.exitCode || 0);
