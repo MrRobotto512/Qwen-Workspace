@@ -638,6 +638,7 @@ input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; m
 .subagent-card .sa-status { font-size: 11.5px; color: var(--text-2); white-space: nowrap; }
 .subagent-card .sa-status.waiting { color: var(--accent); font-weight: 600; }
 .subagent-card .sa-status.error { color: var(--danger, #e5534b); }
+.step-shot { display: block; max-width: min(100%, 480px); max-height: 360px; margin-top: 6px; border: 1px solid var(--border); border-radius: 6px; }
 .escalate-card pre.skill-preview { max-height: 220px; overflow: auto; font-size: 11.5px; background: var(--bg-3); border-radius: 6px; padding: 8px; margin: 6px 0 0; white-space: pre-wrap; }
 
 .block-strip { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }

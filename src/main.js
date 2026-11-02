@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, desktopCapturer } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = require('fs/promises');
@@ -370,6 +370,162 @@ ipcMain.handle('cmd:run', (_e, command, timeoutMs = 120_000) => {
       resolve({ code, output });
     });
   });
+});
+
+// ---------- test built GUI apps ----------
+// Launches the app the agent built, finds its window by diffing the desktop's window list,
+// screenshots that window only, runs the requested clicks/typing through the platform's own
+// automation, screenshots again, and closes the app. The renderer approves the launch first.
+const GuiTest = require('./renderer/guitest.js');
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function runQuiet(cmd, args, timeoutMs = 20_000) {
+  return new Promise((resolve) => {
+    let out = '';
+    let child;
+    try {
+      child = spawn(cmd, args, { windowsHide: true });
+    } catch (e) {
+      return resolve({ code: -1, out: e.message });
+    }
+    const timer = setTimeout(() => killTree(child), timeoutMs);
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      resolve({ code: -1, out: e.code === 'ENOENT' ? `ENOENT ${cmd}` : e.message });
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code, out });
+    });
+  });
+}
+
+async function guiActions(source, actions, shot) {
+  const wid = GuiTest.windowIdFromSource(source.id);
+  if (!wid) return 'This window cannot be automated (no native window id).';
+  if (process.platform === 'linux') {
+    const geo = await runQuiet('xdotool', ['getwindowgeometry', String(wid)]);
+    if (/ENOENT/.test(geo.out)) return 'Clicking and typing on Linux needs xdotool (sudo apt install xdotool).';
+    const m = /Geometry:\s*(\d+)x(\d+)/.exec(geo.out);
+    const win = m ? { width: Number(m[1]), height: Number(m[2]) } : null;
+    for (const step of GuiTest.xdotoolSteps(actions, wid, shot, win)) {
+      if (step.sleep) {
+        await sleep(step.sleep * 1000);
+        continue;
+      }
+      const r = await runQuiet('xdotool', step);
+      if (r.code !== 0) return `xdotool ${step[0]} failed: ${r.out.trim().slice(0, 200)}`;
+      await sleep(120);
+    }
+    return null;
+  }
+  if (process.platform === 'win32') {
+    const r = await runQuiet('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', GuiTest.windowsScript(wid, actions, shot)], 60_000);
+    return r.code === 0 ? null : `PowerShell automation failed: ${r.out.trim().slice(0, 300)}`;
+  }
+  if (process.platform === 'darwin') {
+    const r = await runQuiet('osascript', ['-l', 'JavaScript', '-e', GuiTest.macScript(wid, actions, shot)], 60_000);
+    if (r.code === 0) return null;
+    return /not allowed|assistive|1002|-25211/i.test(r.out)
+      ? 'macOS blocked the clicks: allow Qwen Workspace under System Settings → Privacy & Security → Accessibility, then try again.'
+      : `osascript automation failed: ${r.out.trim().slice(0, 300)}`;
+  }
+  return `Clicking and typing is not supported on ${process.platform}.`;
+}
+
+ipcMain.handle('gui:test', async (_e, opts) => {
+  const command = String(opts?.command || '').trim();
+  if (!command) return { error: 'empty command' };
+  const parsed = GuiTest.parseActions(opts.actions);
+  if (parsed.error) return { error: parsed.error };
+  const waitSeconds = Math.min(60, Math.max(1, Number(opts.waitSeconds) || 8));
+  const list = (size) => desktopCapturer.getSources({ types: ['window'], thumbnailSize: size || { width: 0, height: 0 }, fetchWindowIcons: false });
+  let before;
+  try {
+    before = new Set((await list()).map((s) => s.id));
+  } catch (e) {
+    return { error: `Could not list windows: ${e.message}${process.platform === 'darwin' ? ' (QWS needs Screen Recording permission: System Settings → Privacy & Security)' : ''}` };
+  }
+  const own = new Set(BrowserWindow.getAllWindows().map((w) => w.getMediaSourceId()));
+  // Its own process group off Windows, so closing it takes the app down, not just the shell.
+  const posix = process.platform !== 'win32';
+  const child = spawn(command, { cwd: resolveInWorkspace('.'), shell: true, windowsHide: false, detached: posix, env: commandEnv() });
+  const stop = () => {
+    if (!posix) return killTree(child);
+    try {
+      process.kill(-child.pid, 'SIGKILL');
+    } catch {
+      /* already gone */
+    }
+  };
+  let output = '';
+  let exitCode = null;
+  const append = (d) => {
+    output += d.toString();
+    if (output.length > 40_000) output = output.slice(-20_000);
+  };
+  child.stdout.on('data', append);
+  child.stderr.on('data', append);
+  child.on('error', (err) => append(`\n[error] ${err.message}\n`));
+  child.on('close', (code) => (exitCode = code ?? -1));
+
+  const t0 = Date.now();
+  let source = null;
+  while (Date.now() - t0 < waitSeconds * 1000 && exitCode === null) {
+    await sleep(400);
+    source = GuiTest.pickWindow(await list().catch(() => []), before, own, opts.windowTitle);
+    if (source) break;
+  }
+  const windowAfterMs = source ? Date.now() - t0 : null;
+  // Chromium scales a small window's thumbnail up to fill the box; where the real size is
+  // known (xdotool on Linux), shrink it back so a 320×240 window costs a 320×240 image.
+  let natural;
+  const naturalSize = async () => {
+    if (natural !== undefined) return natural;
+    natural = null;
+    if (process.platform === 'linux') {
+      const m = /Geometry:\s*(\d+)x(\d+)/.exec((await runQuiet('xdotool', ['getwindowgeometry', String(GuiTest.windowIdFromSource(source.id))])).out);
+      if (m) natural = { width: Number(m[1]), height: Number(m[2]) };
+    }
+    return natural;
+  };
+  const capture = async () => {
+    const s = (await list({ width: GuiTest.SHOT_BOX, height: GuiTest.SHOT_BOX }).catch(() => [])).find((x) => x.id === source.id);
+    if (!s || s.thumbnail.isEmpty()) return null;
+    let img = s.thumbnail;
+    const nat = await naturalSize();
+    if (nat && nat.width < img.getSize().width) img = img.resize({ width: nat.width, height: nat.height, quality: 'best' });
+    const { width, height } = img.getSize();
+    return { png: img.toPNG().toString('base64'), width, height };
+  };
+  let shot = null;
+  let actionError = null;
+  if (source) {
+    await sleep(1200); // let the first frame paint
+    shot = await capture();
+    if (parsed.actions.length && exitCode === null) {
+      actionError = await guiActions(source, parsed.actions, shot);
+      await sleep(800);
+      shot = (await capture()) || shot;
+    }
+  }
+  const alive = exitCode === null;
+  if (alive) stop();
+  return {
+    command,
+    waitSeconds,
+    windowFound: !!source,
+    windowTitle: source?.name || opts.windowTitle || '',
+    windowAfterMs,
+    alive,
+    exitCode,
+    actions: parsed.actions,
+    actionError,
+    shot,
+    output: output.length > MAX_CMD_OUTPUT ? output.slice(-MAX_CMD_OUTPUT) : output
+  };
 });
 
 function killTree(child) {
