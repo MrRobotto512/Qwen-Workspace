@@ -135,6 +135,24 @@ function commandSummary(history, maxChars = 4000) {
   return { ran, text };
 }
 
-const LessonsExports = { SECTION_HEAD, SECTION_CAP, parseLessons, sectionBounds, sectionBullets, withLessons, replaceSection, dedupeLessons, commandSummary };
+// The two voices lessons are written in. The everyday prompt mines command history for
+// durable facts. The rescue prompt runs INSTEAD when the task needed escalations: it goes to
+// the stronger model (the ⚡ node, or the planner) and asks specifically what would have kept
+// the everyday model from getting stuck — so every rescue makes the next task smarter.
+const LESSONS_SYSTEM = 'You maintain a project\'s QWEN.md notes for an AI coding agent. From a task\'s command history, extract at most 3 durable lessons a future task in this project would need: a build or test command that worked, an error and the fix that worked, or a toolchain quirk. Only project-specific, durable facts — no task trivia, nothing the existing notes already say. Reply with only "- " bullet lines (at most 3), or exactly NONE.';
+const RESCUE_LESSONS_SYSTEM = 'You maintain a project\'s QWEN.md notes for an AI coding agent. In this task, the everyday model got stuck and needed rescuing by a stronger model. Extract at most 3 durable lessons that would have prevented those rescues: the command or approach that actually worked, the error and its real fix, or the project/OS quirk the everyday model missed. Write them as direct instructions to the everyday model ("use X", "never Y", "Z lives at path P"). Only project-specific, durable facts — no generic advice, no task trivia, nothing the existing notes already say. Reply with only "- " bullet lines (at most 3), or exactly NONE.';
+
+// A compact account of where the task went wrong, appended to the rescue-lessons request so
+// the stronger model writes about the actual failures instead of re-mining the whole history.
+function rescueDigest(reasons, failedCommands, maxChars = 1200) {
+  const parts = [];
+  for (const r of (reasons || []).slice(-6)) parts.push(`- escalated: ${String(r).slice(0, 160)}`);
+  for (const cmd of (failedCommands || []).slice(-6)) parts.push(`- command failed: ${String(cmd).slice(0, 160)}`);
+  let text = parts.join('\n');
+  if (text.length > maxChars) text = text.slice(0, maxChars);
+  return text;
+}
+
+const LessonsExports = { SECTION_HEAD, SECTION_CAP, LESSONS_SYSTEM, RESCUE_LESSONS_SYSTEM, parseLessons, sectionBounds, sectionBullets, withLessons, replaceSection, dedupeLessons, commandSummary, rescueDigest };
 if (typeof module !== 'undefined' && module.exports) module.exports = LessonsExports;
 if (typeof window !== 'undefined') window.Lessons = LessonsExports;

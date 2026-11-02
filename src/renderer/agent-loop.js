@@ -620,15 +620,33 @@ async function proposeLessons(c) {
       md = '';
     }
     const existing = Lessons.sectionBullets(md);
-    setActivity(c, 'Noting lessons from this task');
+    // A task that needed rescuing gets its lessons from the model that did the rescuing (the
+    // ⚡ node when it can serve, the planner otherwise), focused on what would have prevented
+    // the escalations — every rescue makes the next task's QWEN.md smarter.
+    const rescued = (c.rescued || 0) > 0;
+    let override = null;
+    let digest = '';
+    if (rescued) {
+      const lh = await pickHighPerfTarget(state.settings.model).catch(() => null);
+      override = lh?.override || heavyOverride() || null;
+      const reasons = (c.log || []).filter((e) => e.kind === 'escalate' && e.reason && !/^plan-first/.test(e.reason)).map((e) => e.reason);
+      const failed = Escalation.commandRuns(c.history).filter((r) => r.failed).map((r) => r.command);
+      digest = Lessons.rescueDigest(reasons, failed);
+    }
+    setActivity(c, rescued ? 'Noting lessons from this task’s rescues' : 'Noting lessons from this task');
     const res = await api.chatStream(`lessons${Date.now()}`, {
+      override: override || undefined,
       messages: [
-        { role: 'system', content: 'You maintain a project\'s QWEN.md notes for an AI coding agent. From a task\'s command history, extract at most 3 durable lessons a future task in this project would need: a build or test command that worked, an error and the fix that worked, or a toolchain quirk. Only project-specific, durable facts — no task trivia, nothing the existing notes already say. Reply with only "- " bullet lines (at most 3), or exactly NONE.' },
-        { role: 'user', content: `Existing lessons in QWEN.md:\n${existing.join('\n') || '(none)'}\n\nWhat this task ran:\n${summary.text}` }
+        { role: 'system', content: rescued && override ? Lessons.RESCUE_LESSONS_SYSTEM : Lessons.LESSONS_SYSTEM },
+        { role: 'user', content: `Existing lessons in QWEN.md:\n${existing.join('\n') || '(none)'}\n\nWhat this task ran:\n${summary.text}${digest ? `\n\nWhere the task needed rescuing:\n${digest}` : ''}` }
       ]
     });
     setActivity(c, '');
     if (!res.ok) return;
+    // A cloud teacher costs money like any other cloud call; the ⚡ node costs nothing.
+    if (override && !['ollama', 'lmstudio'].includes(override.provider) && res.usage?.promptTokens) {
+      recordSpend(c, override.model, res.usage.promptTokens || 0, res.usage.completionTokens || 0);
+    }
     const bullets = Lessons.dedupeLessons(Lessons.parseLessons(stripThink(res.content || '')), md);
     if (!bullets.length) return;
 
@@ -636,6 +654,7 @@ async function proposeLessons(c) {
     if (proposed.sectionLines > Lessons.SECTION_CAP) {
       // The section is full: propose a merge of old entries instead of endless growth.
       const merged = await api.chatStream(`lessons${Date.now()}m`, {
+        override: override || undefined,
         messages: [
           { role: 'system', content: `You compact a project's lesson notes. Merge overlapping entries, keep every distinct fact, drop nothing important. Reply with only "- " bullet lines, at most ${Lessons.SECTION_CAP - 4} of them.` },
           { role: 'user', content: `Current lessons:\n${existing.join('\n')}\n\nNew lessons to fold in:\n${bullets.join('\n')}` }
@@ -841,6 +860,7 @@ function escalateFrom(c, item) {
     c.history.push({ role: 'user', content: '<system-reminder>\nRe-run the last step with a stronger approach; the previous attempt was escalated by the user.\n</system-reminder>' });
   }
   c.display = c.display.slice(0, idx);
+  c.rescued = (c.rescued || 0) + 1; // the user had to escalate by hand — that counts as a miss
   const notice = { t: 'notice', text: `Re-running from here on ${escalationTargetLabel()}.` };
   c.display.push(notice);
   renderTranscript(c);
@@ -862,6 +882,22 @@ function suggestPlannerForPlan(c, fileCount) {
 }
 
 // Runs model turns and tool calls until Qwen stops calling tools. Returns true on failure.
+// The high-performance pick, health-checked now: the node's strongest catalog model that
+// outranks `currentModel`, as a free per-request override, or null. runConversation wraps it
+// with its per-task cache and dead-node state; escalation lessons use it directly at task end.
+async function pickHighPerfTarget(currentModel) {
+  const nodes = Nodes.normalizeNodes(state.settings).filter((n) => n.enabled && n.highPerf);
+  if (!nodes.length) return null;
+  const results = await api.nodesCheck(nodes.map((n) => ({ id: n.id, baseUrl: n.baseUrl }))).catch(() => []);
+  const health = Object.fromEntries(results.map((r) => [r.id, r]));
+  const pick = Nodes.pickHighPerf(nodes, health, currentModel, MODEL_CATALOG);
+  if (!pick) return null;
+  return {
+    override: { provider: 'ollama', baseUrl: pick.node.baseUrl, apiKey: '', model: pick.model, keepAlive: pick.node.keepAlive },
+    label: `${pick.model} on ${pick.node.name}`
+  };
+}
+
 async function runConversation(c) {
   const useTools = state.settings.agentMode && !!state.ws;
   const maxSteps = Math.max(10, parseInt(state.settings.maxSteps, 10) || DEFAULT_MAX_STEPS);
@@ -907,20 +943,11 @@ async function runConversation(c) {
   // high-perf node, as a free per-request override — or null when none beats the task's model.
   // The health check is cached for 30s so a takeover doesn't re-probe nodes every turn.
   const localHeavyOverride = async () => {
-    const nodes = Nodes.normalizeNodes(state.settings).filter((n) => n.enabled && n.highPerf);
-    if (!nodes.length || localHeavyDead) return null;
+    if (localHeavyDead) return null;
     if (Date.now() - lhCache.at > 30_000) {
-      const results = await api.nodesCheck(nodes.map((n) => ({ id: n.id, baseUrl: n.baseUrl }))).catch(() => []);
-      const health = Object.fromEntries(results.map((r) => [r.id, r]));
-      const current = conversationOverride(c)?.model || state.settings.model;
-      lhCache = { at: Date.now(), pick: Nodes.pickHighPerf(nodes, health, current, MODEL_CATALOG) };
+      lhCache = { at: Date.now(), pick: await pickHighPerfTarget(conversationOverride(c)?.model || state.settings.model) };
     }
-    const pick = lhCache.pick;
-    if (!pick) return null;
-    return {
-      override: { provider: 'ollama', baseUrl: pick.node.baseUrl, apiKey: '', model: pick.model, keepAlive: pick.node.keepAlive },
-      label: `${pick.model} on ${pick.node.name}`
-    };
+    return lhCache.pick;
   };
 
   // Record an intervention. The ladder: the first one escalates the next turn (a high-perf
@@ -932,6 +959,7 @@ async function runConversation(c) {
     DebugLog.add(c, 'escalate', { reason: reason || 'answered without acting (tutorial / announce-then-stop)', interventions, takeover: heavyTakeover || localTakeover });
     const hpOn = highPerfConfigured() && !localHeavyDead;
     if (!heavyOverride() && !hpOn) return;
+    c.rescued = (c.rescued || 0) + 1; // a stronger model had to step in — lessons will ask it why
     escalateNext = true;
     let text = null;
     if (heavyTakeover) text = null;
