@@ -1,6 +1,6 @@
 {
   "name": "qwen-workspace",
-  "version": "0.33.0",
+  "version": "0.34.0",
   "description": "Desktop coding workspace powered by Qwen (Ollama, LM Studio, or any OpenAI-compatible API)",
   "main": "src/main.js",
   "scripts": {
@@ -30,7 +30,8 @@
     "test:e2e:checks": "node test/e2e-checks.mjs",
     "test:e2e:vision": "node test/e2e-vision.mjs",
     "test:e2e:skills": "node test/e2e-skills.mjs",
-    "test:e2e:checksgate": "node test/e2e-checksgate.mjs"
+    "test:e2e:checksgate": "node test/e2e-checksgate.mjs",
+    "test:e2e:subagents": "node test/e2e-subagents.mjs"
   },
   "author": "",
   "dependencies": {

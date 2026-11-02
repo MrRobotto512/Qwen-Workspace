@@ -78,7 +78,7 @@ try {
   await win.evaluate(async () => {
     await api.userMemorySet('');
     await api.convSave({
-      id: 'cpastfixture01', title: 'Package the calculator', workspace: 'E:\\Old Project', createdAt: 1, updatedAt: Date.now() - 86400000,
+      id: 'cpastfixture01', title: 'Package the calculator', workspace: 'E:\\Old Project', createdAt: 1, updatedAt: Date.now() - 60_000, // recent: search covers the 400 newest conversations
       status: 'done', model: 'x', mode: 'agent', history: [], changes: [], notes: [], spend: {}, log: [], todos: [],
       display: [{ t: 'user', text: 'make calc.exe with pyinstaller' }, { t: 'assistant', content: 'The spec had onefile=True, which is not an EXE kwarg; removed it and the one-file build works.' }]
     });

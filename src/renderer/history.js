@@ -54,6 +54,7 @@ function serializeConv(c) {
     status: convStatus(c),
     model: c.model,
     mode: c.mode,
+    parentId: c.parentId || undefined,
     history: c.history,
     display: c.display,
     changes: [...c.changes],

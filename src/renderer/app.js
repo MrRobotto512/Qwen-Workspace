@@ -1228,6 +1228,7 @@ function setPrompt(text, sendNow) {
 function stopChat(c = state.conv) {
   if (!c?.busy) return;
   c.stopRequested = true;
+  for (const ch of c.subagents || []) stopChat(ch);
   if (c.chatId) api.chatAbort(c.chatId);
   c.pendingApproval?.finish(false);
   c.pendingQuestion?.cancel();

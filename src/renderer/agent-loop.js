@@ -21,7 +21,7 @@ async function loadProjectMemory() {
 function systemPrompt(c) {
   const agent = state.settings.agentMode && !!state.ws;
   const web = agent && state.settings.webResearch !== false;
-  const key = `${agent}|${web}|${mcpToolSpecs().map((t) => t.function.name).join(',')}|${c.workspace}|${c.memory?.text || ''}|${state.userMemory || ''}|${(c.skills || []).map((sk) => `${sk.name}:${sk.description}`).join(',')}`;
+  const key = `${agent}|${web}|${mcpToolSpecs().map((t) => t.function.name).join(',')}|${c.workspace}|${c.memory?.text || ''}|${state.userMemory || ''}|${(c.skills || []).map((sk) => `${sk.name}:${sk.description}`).join(',')}|${!!c.isSubagent}|${subagentsAvailable(c)}`;
   if (c.sysPrompt?.key === key) return c.sysPrompt.text;
   const win = state.ws?.platform === 'win32';
   const parts = [
@@ -39,6 +39,7 @@ function systemPrompt(c) {
     agent && deferredCatalog().length
       ? `<deferred_tools>\nAvailable but not loaded. Call tool_search to load them when you need one — search by name or by purpose. Tools named mcp__<server>__<tool> come from connected MCP servers.\n${ToolParse.deferredListing(deferredCatalog())}\n</deferred_tools>`
       : null,
+    c.isSubagent ? Subagents.SUBAGENT_INSTRUCTIONS : null,
     '</context>',
     '',
     '<instructions>'
@@ -58,6 +59,7 @@ function systemPrompt(c) {
       '- For tasks with 3 or more steps, keep a plan with todo_write and update it as you finish each step.',
       '- When a task looks like earlier work (a recurring error, a toolchain or app type you set up before), search_history finds how it was done. When the user states a lasting fact about themselves or their setup (their machines, OS, preferred stacks), save it with remember.',
       '- When you need several independent lookups (reads, searches, listings), request them all in the same reply; they run in parallel. Edits and commands run one at a time, in the order you give them.',
+      subagentsAvailable(c) ? '- When a task splits into independent parts (separate files, separate questions), delegate_tasks runs them at the same time on your other machines. Give each subtask its own files and all the context it needs; do dependent steps yourself.' : null,
       '- Install what the task needs instead of asking the user to do it by hand: when a command fails because a program is "not found" or "not recognized" (a compiler, SDK, CLI or build tool), install the missing tool with install_app (a winget id like "OpenJS.NodeJS" or "Rustlang.Rustup", or a plain name) — or install_git for Git — then retry.',
       '- A build or install that takes long is normal: pass timeout_seconds (up to 3600) to run_command instead of splitting the build or giving up when the 2-minute default cuts it off.',
       '- Windows "permission" errors usually are not about rights: "Filename too long" means long paths — run `git config --global core.longpaths true` (the app enables this when git is available) and retry, or clone to a short path like D:/dev. "Access is denied" during a build usually means the folder is protected (never work in Program Files or C:/Windows — use the project folder), synced by OneDrive, or a file is locked by a previous build (retry, or kill leftover MSBuild/cmake processes with taskkill). You already run with the user\'s full rights and cannot elevate a command; if something genuinely needs administrator rights, say so and ask the user to run that one step.',
@@ -293,6 +295,15 @@ async function executeTool(c, call, row) {
         const r = await api.semSearch(String(args.query || ''));
         row.setBody(r.text);
         return { result: truncate(r.text), meta: r.hits ? `${r.hits} hits` : 'no hits', failed: !!r.failed };
+      }
+      case 'delegate_tasks': {
+        if (c.isSubagent) return { result: 'Error: a subagent cannot delegate further. Do the subtask yourself.', failed: true };
+        if (!subagentsAvailable(c)) return { result: 'Error: parallel subagents need Ollama with more than one node enabled. Do the subtasks yourself, one at a time.', failed: true };
+        const parsed = Subagents.parseTasks(args);
+        if (parsed.error) return { result: `Error: ${parsed.error}`, failed: true };
+        const r = await runSubagents(c, parsed.tasks);
+        row.setBody(r.text);
+        return { result: truncate(r.text), meta: r.meta, failed: r.failed };
       }
       case 'consult_planner': {
         const override = heavyOverride();
@@ -786,6 +797,98 @@ async function send() {
     continueIfSteered(c);
     maybeCheckGoal(c, failed);
   }
+}
+
+// ---------- Parallel subagents (an idea from Hermes Agent's delegate_task) ----------
+// Each subtask becomes a child conversation pinned to its own Ollama node; they all run at once
+// and only their final summaries return to the parent. Children are ordinary conversations
+// (listed in the sidebar, approvals work as usual — the card below links to any that wait), and
+// their file changes join the parent's change list so Review/Revert and the checks gate cover them.
+async function runSubagents(parent, tasks) {
+  await refreshNodeHealth();
+  const nodes = Nodes.normalizeNodes(state.settings);
+  const assigned = Subagents.assignNodes(nodes, state.nodeHealth.byId, state.settings.model, tasks.length, Nodes.sameModel);
+  if (!assigned) return { text: 'Error: no Ollama node is answering right now, so nothing was delegated. Do the subtasks yourself, one at a time.', failed: true, meta: 'no nodes' };
+  const children = tasks.map((t, i) => {
+    const ch = createConv();
+    Object.assign(ch, { parentId: parent.id, isSubagent: true, mode: 'agent', pinNodeId: assigned[i].id, title: `↳ ${t.task.slice(0, 60)}`, workspace: parent.workspace });
+    ch.memory = parent.memory;
+    ch.skills = parent.skills;
+    ch.memoryLoaded = true;
+    state.convs.set(ch.id, ch);
+    const prompt = Subagents.childPrompt(t);
+    addUserMessage(ch, prompt, []);
+    ch.history.push({ role: 'user', content: prompt });
+    return ch;
+  });
+  parent.subagents = children;
+  renderHistory();
+  const card = subagentCard(parent, children, assigned);
+  DebugLog.add(parent, 'notice', { text: `delegated ${tasks.length} subtasks: ${children.map((ch, i) => `${ch.id}@${assigned[i].name}`).join(', ')}` });
+  let results;
+  try {
+    results = await Promise.all(children.map(async (ch, i) => {
+      setBusy(ch, true);
+      let failed = false;
+      try {
+        failed = await runConversation(ch);
+      } catch (e) {
+        failed = true;
+        addError(ch, `Something went wrong: ${cleanError(e)}`);
+      } finally {
+        ch.status = ch.stopRequested ? 'stopped' : failed ? 'error' : 'done';
+        setBusy(ch, false);
+        saveConv(ch, true);
+        card.update();
+      }
+      for (const [p, chg] of ch.changes) {
+        if (!parent.changes.has(p)) parent.changes.set(p, chg);
+        if (parent.taskBefore) {
+          if (!parent.taskBefore.has(p)) parent.taskBefore.set(p, chg.original);
+          parent.taskWrote.set(p, chg.deleted ? null : await api.read(p).catch(() => null));
+        }
+      }
+      const last = [...ch.history].reverse().find((m) => m.role === 'assistant' && String(m.content || '').trim());
+      return { task: tasks[i].task, node: assigned[i].name, status: ch.status, summary: stripThink(last?.content || ''), files: [...ch.changes.keys()] };
+    }));
+  } finally {
+    parent.subagents = null;
+    card.update(true);
+  }
+  if (parent === state.conv) renderChanges();
+  saveConv(parent);
+  const ok = results.filter((r) => r.status === 'done').length;
+  return { text: Subagents.formatResults(results), meta: `${ok}/${results.length} done`, failed: ok === 0 };
+}
+
+// A live status card in the parent: one line per subagent, with Open to watch it (or to answer
+// an approval it is waiting on).
+function subagentCard(parent, children, assigned) {
+  const rows = children.map((ch, i) => {
+    const status = el('span', { class: 'sa-status' });
+    const row = el('div', { class: 'sa-row' },
+      el('span', { class: 'sa-task', text: ch.title.replace(/^↳ /, ''), title: ch.history[0]?.content || '' }),
+      el('span', { class: 'sa-node', text: assigned[i].name }),
+      status,
+      el('button', { class: 'ghost', onclick: () => switchConv(ch) }, 'Open'));
+    return { ch, row, status };
+  });
+  const node = el('div', { class: 'msg escalate-card subagent-card' }, iconEl('server'),
+    el('div', { class: 'grow' }, el('div', {}, el('b', { text: `${children.length} subagents working in parallel` })), ...rows.map((r) => r.row)));
+  parent.container.append(node);
+  scrollChat(parent, true);
+  const TEXT = { running: 'working…', waiting: 'needs your approval', done: 'done', error: 'failed', stopped: 'stopped', idle: 'starting…' };
+  const timer = setInterval(() => update(), 700);
+  function update(final) {
+    for (const r of rows) {
+      const st = convStatus(r.ch);
+      r.status.textContent = TEXT[st] || st;
+      r.status.className = `sa-status ${st}`;
+    }
+    if (final) clearInterval(timer);
+  }
+  update();
+  return { update };
 }
 
 // ---------- Checks gate (an idea from Strata's test-gated attempts) ----------
@@ -1414,7 +1517,7 @@ async function runConversation(c) {
   let cloudDead = false; // every cloud sibling was busy; finish on the local default model
   const nodeRetried = new Set(); // Ollama nodes that already got one retry after not answering
   const deadNodes = new Set(); // Ollama nodes given up on for the rest of this task
-  let lastNodeId = null; // which node the previous step ran on, to announce changes once
+  let lastNodeId = c.pinNodeId || null; // which node the previous step ran on (a subagent starts on its assigned one)
   let capBlocked = false; // the user declined to pass the monthly budget; stay local this task
 
   const note = (text) => {
