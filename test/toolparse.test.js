@@ -64,6 +64,9 @@ test('announcesAction: announce-then-stop replies are caught', () => {
   assert.equal(announcesAction("I'll try a different approach."), true);
   assert.equal(announcesAction('We can use the system package manager for this.'), true);
   assert.equal(announcesAction("Let's open the project settings and update the path."), true);
+  // The second field-report case: a file name's dot must not break the last-sentence check.
+  assert.equal(announcesAction('Great! Now let\'s open the `Package.swift` file in the editor.'), true);
+  assert.equal(announcesAction("I'll now run calc.py to verify it works"), true);
 });
 
 test('announcesAction: real final answers are left alone', () => {
@@ -72,6 +75,9 @@ test('announcesAction: real final answers are left alone', () => {
   assert.equal(announcesAction('The build failed because dlltool.exe is missing; install MinGW-w64 and retry.'), false);
   assert.equal(announcesAction('All tests pass and the feature is complete.'), false);
   assert.equal(announcesAction(''), false);
+  // An announce phrase in an EARLIER sentence of a real summary stays unflagged: the period
+  // before " Done" is a true sentence boundary (followed by a space).
+  assert.equal(announcesAction("I said I'll now run the tests. Done — all 12 pass and the build is green."), false);
 });
 
 test('looksLikeInstructions: step-by-step how-tos are caught', () => {
