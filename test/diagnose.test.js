@@ -9,7 +9,8 @@ test('diagVerdict: per-app blocking is named, with the loopback control as evide
   const steps = [step('parse', true, '100.88.91.13:11434'), step('tcp', false, 'EACCES', 3), step('control', true, 'loopback 11434 answers', 5)];
   const v = D.diagVerdict(steps, 'win32');
   assert.ok(v.includes('EACCES'));
-  assert.ok(/firewall rule or security software/.test(v));
+  assert.ok(/VPN app.*NordVPN/.test(v), v); // the field culprit is named first
+  assert.ok(/firewall rule, or security software/.test(v), v);
   assert.ok(/only outbound\/remote traffic is being filtered/.test(v));
   // On macOS the same errno points at the Local Network permission instead.
   const mac = D.diagVerdict([step('parse', true, 'x'), step('tcp', false, 'EPERM', 2)], 'darwin');

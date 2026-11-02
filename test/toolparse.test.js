@@ -221,3 +221,32 @@ test('forgedToolResponse: invented tool output is caught, real call markers are 
   assert.equal(forgedToolResponse('All tests pass and the feature is complete.'), false);
   assert.equal(forgedToolResponse(''), false);
 });
+
+test('deferredListing: MCP tools collapse to one line per server; built-ins keep a line each', () => {
+  const { deferredListing } = require('../src/renderer/toolparse.js');
+  const fn = (name, description) => ({ type: 'function', function: { name, description } });
+  const rea = Array.from({ length: 70 }, (_, i) => fn(`mcp__rea__procedure_pseudo_code_${i}`, `[rea] Decompile one analyzed procedure number ${i} by symbol name or provider-normalized address. More.`));
+  const tools = [fn('delete_file', 'Delete a text file from the project. Extra.'), fn('run_program', 'Run a short JavaScript program. Extra.'), ...rea, fn('mcp__gh__list_issues', '[gh] List issues.')];
+  const out = deferredListing(tools);
+  assert.ok(out.includes('- delete_file: Delete a text file from the project'));
+  assert.ok(out.includes('- run_program: Run a short JavaScript program'));
+  assert.ok(out.includes('mcp__rea__* — 70 tools from the "rea" MCP server'));
+  assert.ok(out.includes('mcp__gh__* — 1 tool from the "gh" MCP server, e.g. list_issues'));
+  assert.ok(out.includes(', …'), 'a long server list is visibly capped');
+  // The field report: ~70 described entries cost ~30K characters; one line per server is tiny.
+  assert.ok(out.length < 900, `listing is ${out.length} chars`);
+  assert.strictEqual(deferredListing([]), '');
+});
+
+test('cmdShellHint: bash-isms in cmd.exe get a concrete Windows correction', () => {
+  const { cmdShellHint } = require('../src/renderer/toolparse.js');
+  // The field report: mkdir -p "succeeded" (made a folder named -p), then src/data failed.
+  assert.ok(/literally named "-p"/.test(cmdShellHint('mkdir -p src tests data', '', 'win32')));
+  const slash = cmdShellHint('mkdir -p src/data tests results', 'The syntax of the command is incorrect.', 'win32');
+  assert.ok(/backslashes/.test(slash) && /"-p"/.test(slash));
+  assert.ok(/ls→dir/.test(cmdShellHint('ls -la', "'ls' is not recognized as an internal or external command,", 'win32')));
+  // Never on macOS/Linux, and never for correct cmd syntax.
+  assert.strictEqual(cmdShellHint('mkdir -p src/data', '', 'darwin'), null);
+  assert.strictEqual(cmdShellHint('mkdir src\\data', '', 'win32'), null);
+  assert.strictEqual(cmdShellHint('dir', 'Volume in drive E', 'win32'), null);
+});

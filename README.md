@@ -91,7 +91,7 @@ On macOS the app installs software with [Homebrew](https://brew.sh) when you ask
   - A small badge on a message shows when it ran on the planner. The planner's requests go to that provider and use its quota/billing; the grunt work stays on your local model.
 - **MCP servers (external tools):**
   - Add servers in **Settings → Tools & MCP servers** (a command like `npx -y rea-agents mcp`, or an `https://` URL).
-  - Their tools join Qwen's toolset as `mcp__<server>__<tool>`. Like the other extra tools, Qwen loads them with `tool_search` only when a task needs them, so a big server doesn't crowd the tool list.
+  - Their tools join Qwen's toolset as `mcp__<server>__<tool>`. Like the other extra tools, Qwen loads them with `tool_search` only when a task needs them, so a big server doesn't crowd the tool list — the system prompt lists each server as one line (tool count plus a few example names), not every tool's description, so even a 70-tool server costs a few dozen tokens. If the app's instructions and tool definitions ever take most of the model's context window, the conversation says so and points at the fix (a bigger context window, or fewer servers) instead of letting Ollama silently truncate your request.
   - Each MCP call needs your approval (with an "Always allow" option per server). The status bar shows how many servers and tools are connected.
   - Works with any MCP server, e.g. [REA](https://github.com/morluto/rea) for reverse engineering. Node-based servers need Node.js installed.
 - **Workflows:**
