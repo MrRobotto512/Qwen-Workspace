@@ -57,6 +57,7 @@ const DEFAULT_SETTINGS = {
   searxngUrl: '',
   allowPrivateFetch: false,
   mcpServers: [], // [{ name, command, args, env, url, type, cwd, enabled }]
+  mcpProjectOff: {}, // project folder -> MCP server ids switched off there (tools hidden in that project)
   lastConversations: {}, // workspace root -> id of the conversation open when the app closed
   lastWorkspace: null,
   fontSize: 14

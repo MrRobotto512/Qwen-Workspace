@@ -253,10 +253,17 @@ const ALL_TOOLS = [...CORE_TOOLS, ...DEFERRED_TOOLS, LOAD_SKILL_TOOL, TOOL_SEARC
 
 // MCP tools are deferred too: their servers can expose many of them, so only their names go in
 // the prompt and tool_search loads the ones a task needs. state.mcp holds the live list.
+// MCP servers switched off for the open project. A big server (a reverse-engineering kit
+// with ~70 tools) costs context in every project; this keeps it to the projects that use it.
+function mcpOffHere() {
+  return new Set((state.ws && state.settings.mcpProjectOff?.[state.ws.root]) || []);
+}
+
 function mcpToolSpecs() {
   const out = [];
+  const off = mcpOffHere();
   for (const srv of state.mcp || []) {
-    if (srv.status !== 'ready') continue;
+    if (srv.status !== 'ready' || off.has(srv.id)) continue;
     for (const t of srv.tools || []) {
       out.push({ type: 'function', function: { name: t.name, description: `[${srv.id}] ${t.description || t.rawName}`, parameters: t.parameters || { type: 'object', properties: {} } } });
     }

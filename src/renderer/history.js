@@ -105,6 +105,7 @@ function saveConv(c, now) {
 }
 
 async function loadConversations() {
+  renderMcpStatus(); // the server count is per project (MCP servers can be off here)
   state.convs.clear();
   state.convList = state.ws ? await api.convList(state.ws.root) : [];
   const lastId = state.ws && state.settings.lastConversations?.[state.ws.root];

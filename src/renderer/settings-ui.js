@@ -105,7 +105,14 @@ function renderMcpSettings() {
       el('div', { class: 'mcp-main' },
         el('div', { class: 'mcp-name', text: cfg.name }),
         el('div', { class: `mcp-sub${status === 'error' || status === 'disconnected' ? ' bad' : ''}`, title: sub, text: sub })),
-      el('label', { class: 'toggle', title: 'Enable or disable this server' },
+      state.ws
+        ? el('button', {
+          class: `ghost proj-btn${projectOff(cfg.name) ? ' off' : ''}`,
+          title: projectOff(cfg.name) ? `Off in ${baseName(state.ws.root)}: its tools are hidden from Qwen in this project. Click to use it here.` : `On in ${baseName(state.ws.root)}. Click to switch it off for this project only (saves context when the project doesn't need it).`,
+          onclick: () => toggleServerHere(cfg.name)
+        }, iconEl('folder'), projectOff(cfg.name) ? 'Off here' : 'On here')
+        : null,
+      el('label', { class: 'toggle', title: 'Enable or disable this server everywhere' },
         el('input', { type: 'checkbox', checked: cfg.enabled !== false, onchange: (e) => toggleServer(cfg.name, e.target.checked) })),
       el('button', { class: 'icon-btn', title: 'Remove', onclick: () => removeServer(cfg.name) }, iconEl('trash')));
   }));
@@ -126,6 +133,26 @@ async function addServerFromForm() {
   await saveServers(configs);
   $('#mcp-new-name').value = '';
   $('#mcp-new-cmd').value = '';
+}
+
+function projectOff(name) {
+  return !!state.ws && (state.settings.mcpProjectOff?.[state.ws.root] || []).includes(sanitizeServerId(name));
+}
+
+// Per-project switch: the server stays connected (other projects use it) but its tools are
+// hidden from Qwen here. Takes effect for new conversations; the next turn of an open one.
+async function toggleServerHere(name) {
+  const id = sanitizeServerId(name);
+  const map = { ...(state.settings.mcpProjectOff || {}) };
+  const cur = new Set(map[state.ws.root] || []);
+  if (cur.has(id)) cur.delete(id);
+  else cur.add(id);
+  if (cur.size) map[state.ws.root] = [...cur];
+  else delete map[state.ws.root];
+  state.settings = await api.setSettings({ mcpProjectOff: map });
+  renderMcpSettings();
+  renderMcpStatus();
+  flash(`${name}: ${cur.has(id) ? 'off' : 'on'} in ${baseName(state.ws.root)}`);
 }
 
 async function toggleServer(name, enabled) {
