@@ -59,6 +59,11 @@ test('announcesAction: announce-then-stop replies are caught', () => {
   assert.equal(announcesAction("I'll now fetch the PCSX2 documentation."), true);
   assert.equal(announcesAction('Next, we will install the DVD ripping tool.'), true);
   assert.equal(announcesAction("Sure, let's ask the user which tool they prefer"), true);
+  // The field-report case: a failed brew run, then this reply ended the task cold.
+  assert.equal(announcesAction('It looks like Homebrew couldn’t find "xcode". Let\'s try installing it directly from the App Store instead.'), true);
+  assert.equal(announcesAction("I'll try a different approach."), true);
+  assert.equal(announcesAction('We can use the system package manager for this.'), true);
+  assert.equal(announcesAction("Let's open the project settings and update the path."), true);
 });
 
 test('announcesAction: real final answers are left alone', () => {
