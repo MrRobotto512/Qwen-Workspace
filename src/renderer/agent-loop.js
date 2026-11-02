@@ -107,7 +107,10 @@ function turnReminder(c) {
 // The messages for one model request: fixed system prompt, stored history, and the turn's
 // reminder appended to the newest message (user or tool result).
 function requestMessages(c) {
-  const msgs = [...c.history];
+  // Only the latest message with screenshots keeps them: every request re-sends the history,
+  // and re-encoding old screenshots each step is slow on a local vision model.
+  const lastImg = c.history.map((m) => !!m.images?.length).lastIndexOf(true);
+  const msgs = c.history.map((m, i) => (m.images?.length && i !== lastImg ? { role: m.role, content: `${m.content}\n[A screenshot was attached here earlier.]` } : m));
   const reminder = turnReminder(c);
   const last = msgs[msgs.length - 1];
   if (reminder && last && last.role !== 'assistant') {
@@ -733,15 +736,16 @@ async function send() {
   }
 
   const att = await buildAttachments();
+  const images = takePastedImages();
   renderChips();
-  addUserMessage(c, text, att.names);
+  addUserMessage(c, text, [...att.names, ...images.map((_, i) => `Screenshot ${i + 1}`)]);
   let content = text;
   if (c.notes.length) {
     content = `(Note: ${c.notes.join(' ')})\n\n${content}`;
     c.notes = [];
   }
   if (att.text) content += `\n\n---\nAttached context:\n${att.text}`;
-  c.history.push({ role: 'user', content });
+  c.history.push(images.length ? { role: 'user', content, images } : { role: 'user', content });
   if (state.ws) {
     state.settings.lastConversations = { ...(state.settings.lastConversations || {}), [state.ws.root]: c.id };
     api.setSettings({ lastConversations: state.settings.lastConversations });

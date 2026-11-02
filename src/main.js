@@ -441,7 +441,7 @@ ipcMain.handle('chat:stream', async (event, id, payload) => {
 
   const body = {
     model: s.model,
-    messages: payload.messages,
+    messages: toOpenAIMessages(payload.messages),
     stream: true,
     temperature: Number(s.temperature)
   };
@@ -594,6 +594,26 @@ function parseKeepAlive(v) {
   return str || -1;
 }
 
+// Pasted screenshots ride on a user message as images: [{ mime, data(base64) }]. Each wire
+// format wants them differently; these adapters are the only place that knows.
+function toOpenAIMessages(messages) {
+  return (messages || []).map((m) => {
+    if (!m.images?.length) {
+      if (!('images' in m)) return m;
+      const { images, ...rest } = m;
+      return rest;
+    }
+    const { images, ...rest } = m;
+    return {
+      ...rest,
+      content: [
+        { type: 'text', text: String(m.content ?? '') },
+        ...images.map((img) => ({ type: 'image_url', image_url: { url: `data:${img.mime};base64,${img.data}` } }))
+      ]
+    };
+  });
+}
+
 function toOllamaMessages(messages) {
   const toolNames = new Map();
   return messages.map((m) => {
@@ -613,6 +633,7 @@ function toOllamaMessages(messages) {
       });
     }
     if (m.role === 'tool' && toolNames.has(m.tool_call_id)) out.tool_name = toolNames.get(m.tool_call_id);
+    if (m.images?.length) out.images = m.images.map((img) => img.data);
     return out;
   });
 }
@@ -726,6 +747,16 @@ function toAnthropicRequest(s, payload) {
         content.push({ type: 'tool_use', id: tc.id, name: tc.function.name, input });
       }
       if (content.length) messages.push({ role: 'assistant', content });
+      continue;
+    }
+    if (m.images?.length) {
+      messages.push({
+        role: 'user',
+        content: [
+          ...m.images.map((img) => ({ type: 'image', source: { type: 'base64', media_type: img.mime, data: img.data } })),
+          { type: 'text', text: String(m.content ?? '') }
+        ]
+      });
       continue;
     }
     messages.push({ role: 'user', content: String(m.content ?? '') });
