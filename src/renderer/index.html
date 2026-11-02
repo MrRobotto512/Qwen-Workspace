@@ -228,6 +228,7 @@
 
       <div class="section-title">Agent</div>
       <label class="check"><input type="checkbox" id="s-agentMode" /> Agent mode: Qwen can use tools (needs a model with tool calling)</label>
+      <label class="check"><input type="checkbox" id="s-planFirst" /> Plan first on a high-performance node: a task's first turn runs on your ⚡ node's strongest model, which writes the step plan (todos); your everyday model then executes it. Needs a node marked ⚡ under Ollama nodes</label>
       <label class="check"><input type="checkbox" id="s-followAgent" /> Follow Qwen: open files in the editor as Qwen reads and edits them</label>
       <label class="check"><input type="checkbox" id="s-includeCurrentFile" /> Attach the open file to messages by default</label>
       <label class="check"><input type="checkbox" id="s-branchPerTask" /> Branch per task: when a task first edits a file in a git repo, work on a new qwen/&lt;task&gt; branch</label>

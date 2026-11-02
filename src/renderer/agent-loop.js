@@ -1012,6 +1012,22 @@ async function runConversation(c) {
       override = { provider: sNow.provider, baseUrl: sNow.baseUrl, apiKey: sNow.apiKey, model: modelSwap.get(sNow.model) };
     }
     escalateNext = false;
+    // Plan-first mode (opt-in): the first turn of a conversation runs on the high-performance
+    // node's strongest model, restricted to planning tools, so the everyday model executes a
+    // plan written by something that plans well. Skipped silently when no ⚡ node can serve,
+    // and never repeated — c.planned survives for the whole conversation.
+    let planTurn = false;
+    if (step === 0 && useTools && !override && state.settings.planFirst && !c.planned && highPerfConfigured()) {
+      c.planned = true; // whatever happens below, plan at most once per conversation
+      const lh = await localHeavyOverride();
+      if (lh) {
+        planTurn = true;
+        override = lh.override;
+        c.history.push({ role: 'user', content: `<system-reminder>\n${Escalation.PLAN_FIRST_REMINDER}\n</system-reminder>` });
+        note(`Planning on ${lh.label}.`);
+        DebugLog.add(c, 'escalate', { reason: 'plan-first: the high-performance node writes the plan', interventions, takeover: false });
+      }
+    }
     // Local requests route across Ollama nodes when more than one is enabled: the first
     // healthy node that has the model gets the request, with its own keep_alive.
     let node = null;
@@ -1039,7 +1055,8 @@ async function runConversation(c) {
       provider: override?.provider || state.settings.provider,
       node: node ? node.name : undefined,
       escalated: !!esc,
-      highPerf: escLocal || undefined
+      highPerf: escLocal || undefined,
+      plan: planTurn || undefined
     });
     const off = api.onChatEvent((ev) => {
       if (ev.id !== id) return;
@@ -1048,7 +1065,7 @@ async function runConversation(c) {
     });
     const res = await api.chatStream(id, {
       messages: requestMessages(c),
-      tools: useTools ? toolsFor(c) : undefined,
+      tools: useTools ? (planTurn ? Escalation.planningTools(toolsFor(c)) : toolsFor(c)) : undefined,
       override: override || undefined
     });
     // IPC events and the invoke reply travel on separate channels, so late deltas can
@@ -1188,6 +1205,12 @@ async function runConversation(c) {
     c.history.push(msg);
     saveConv(c);
     if (!calls.length) {
+      // A prose-only plan from the planning turn is not a final answer: the plan text is in
+      // history, so hand the task to the everyday model instead of ending it.
+      if (planTurn) {
+        c.history.push({ role: 'user', content: '<system-reminder>\nThe plan above is approved. You are the everyday model now: record it with todo_write, then execute it step by step with real tool calls.\n</system-reminder>' });
+        continue;
+      }
       // Small models often end a turn without acting: announcing the next step ("Let's start
       // by…:"), or answering a build request with a how-to list and no tool use at all. Push
       // back a couple of times instead of silently stopping.
@@ -1239,6 +1262,12 @@ async function runConversation(c) {
       });
       if (c === state.conv) updateCtxMeter();
       saveConv(c);
+    }
+
+    // The planning turn ends once its todo_write ran: tell the everyday model it owns the
+    // execution now, so it starts on step 1 instead of answering in the planner's voice.
+    if (planTurn) {
+      c.history.push({ role: 'user', content: '<system-reminder>\nThe plan above was written by the high-performance node. You are the everyday model now: execute the todo list step by step, starting with the first item. Do not re-plan.\n</system-reminder>' });
     }
 
     // A failure the model plows past is worse than a stall: two failing rounds in a row means
