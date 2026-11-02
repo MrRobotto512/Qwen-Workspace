@@ -1270,6 +1270,12 @@ async function runConversation(c) {
       c.history.push({ role: 'user', content: '<system-reminder>\nThe plan above was written by the high-performance node. You are the everyday model now: execute the todo list step by step, starting with the first item. Do not re-plan.\n</system-reminder>' });
     }
 
+    // An escalated model keeps the baton while its own round contains a failure: a field
+    // report showed a one-shot escalation's failed command being handed straight back to the
+    // small model, which fumbled again and burned another intervention. Never pass a fresh
+    // failure down to the weaker model; once the escalated round succeeds, the baton returns.
+    if (esc && !heavyTakeover && !localTakeover && roundFailed) escalateNext = true;
+
     // A failure the model plows past is worse than a stall: two failing rounds in a row means
     // it is advancing the plan as if the failed steps had worked.
     failStreak = roundFailed ? failStreak + 1 : 0;
