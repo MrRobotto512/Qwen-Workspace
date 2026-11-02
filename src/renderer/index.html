@@ -369,6 +369,11 @@
         <input id="mcp-new-cmd" placeholder="Command, e.g. npx -y rea-agents mcp   (or paste an https:// URL)" spellcheck="false" />
         <button id="mcp-add-btn" class="ghost"><span data-icon="plus"></span>Add server</button>
       </div>
+      <div class="mcp-add">
+        <button id="gimp-setup-btn" class="ghost" title="Downloads gimp-mcp (GPL-3.0), installs its plugin into GIMP 3, and adds it here — so Qwen can edit images in GIMP and see each result"><span data-icon="wand"></span>Set up GIMP</button>
+        <span class="hint">Image editing with GIMP 3.2+ via gimp-mcp (needs uv)</span>
+      </div>
+      <div id="gimp-setup-result" class="hint"></div>
 
       <div class="section-title">Research</div>
       <label class="check"><input type="checkbox" id="s-webResearch" /> Let Qwen search the web and read pages (web_search, fetch_url)</label>

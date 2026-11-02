@@ -38,6 +38,7 @@ contextBridge.exposeInMainWorld('api', {
 
   systemSpecs: (force) => ipcRenderer.invoke('system:specs', force),
   nodesCheck: (nodes) => ipcRenderer.invoke('nodes:check', nodes),
+  ollamaFitInfo: (baseUrl, model) => ipcRenderer.invoke('ollama:fitinfo', baseUrl, model),
   ollamaPs: (baseUrl) => ipcRenderer.invoke('ollama:ps', baseUrl),
   modelProbe: (baseUrl, model) => ipcRenderer.invoke('model:probe', baseUrl, model),
   nodesDiagnose: (baseUrl) => ipcRenderer.invoke('nodes:diagnose', baseUrl),
@@ -53,6 +54,7 @@ contextBridge.exposeInMainWorld('api', {
   },
 
   mcpList: () => ipcRenderer.invoke('mcp:list'),
+  gimpSetup: () => ipcRenderer.invoke('gimp:setup'),
   mcpReconnect: () => ipcRenderer.invoke('mcp:reconnect'),
   mcpConnectOne: (cfg) => ipcRenderer.invoke('mcp:connectOne', cfg),
   mcpDisconnect: (id) => ipcRenderer.invoke('mcp:disconnect', id),

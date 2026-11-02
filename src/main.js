@@ -62,7 +62,8 @@ const DEFAULT_SETTINGS = {
   allowPrivateFetch: false,
   mcpServers: [], // [{ name, command, args, env, url, type, cwd, enabled }]
   mcpProjectOff: {}, // project folder -> MCP server ids switched off there (tools hidden in that project)
-  modelChecks: {}, // `${nodeId}|${model}` -> { ok, textOnly, at } from the per-model tool-call check
+  modelChecks: {},
+  nodeVram: {}, // Ollama base URL -> GPU bytes it held when a model spilled (remote nodes' VRAM) // `${nodeId}|${model}` -> { ok, textOnly, at } from the per-model tool-call check
   lastConversations: {}, // workspace root -> id of the conversation open when the app closed
   lastWorkspace: null,
   fontSize: 14
@@ -1245,6 +1246,24 @@ ipcMain.handle('ollama:ps', async (_e, baseUrl) => {
   }
 });
 
+// What the fit estimate needs before a model loads: its file size (≈ weights, from /api/tags)
+// and its architecture numbers (model_info from /api/show).
+ipcMain.handle('ollama:fitinfo', async (_e, baseUrl, model) => {
+  const root = String(baseUrl || '').trim().replace(/\/+$/, '').replace(/\/v1$/, '');
+  if (!/^https?:\/\//.test(root) || !model) return null;
+  try {
+    const [tags, show] = await Promise.all([
+      fetch(`${root}/api/tags`, { signal: AbortSignal.timeout(5000) }).then((r) => (r.ok ? r.json() : null)),
+      fetch(`${root}/api/show`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }), signal: AbortSignal.timeout(5000) }).then((r) => (r.ok ? r.json() : null))
+    ]);
+    const norm = (x) => (String(x).includes(':') ? String(x) : `${x}:latest`);
+    const entry = (tags?.models || []).find((m) => norm(m.name) === norm(model));
+    return { fileSize: entry?.size || 0, modelInfo: show?.model_info || null };
+  } catch {
+    return null;
+  }
+});
+
 ipcMain.handle('ollama:tags', async () => {
   const base = await ollamaBase();
   try {
@@ -1983,6 +2002,23 @@ ipcMain.handle('web:fetch', (_e, url) => web.fetchPage(loadSettings(), url));
 
 // ---------- MCP ----------
 ipcMain.handle('mcp:list', () => mcp.describe());
+// One-click GIMP setup (gimp-mcp): downloads the pinned server + plugin, installs the plugin into
+// GIMP's newest 3.x plug-ins folder, and returns the server entry. Started from a Settings button
+// behind a confirmation, since it writes outside the project.
+ipcMain.handle('gimp:setup', async () => {
+  try {
+    return await require('./gimpsetup.js').setupGimp({
+      platform: process.platform,
+      env: process.env,
+      home: app.getPath('home'),
+      dataDir: app.getPath('userData'),
+      fetch: (url) => fetch(url, { signal: AbortSignal.timeout(60_000) }),
+      hasUv: async () => (await runQuiet('uv', ['--version'])).code === 0
+    });
+  } catch (e) {
+    return { ok: false, message: `GIMP setup failed: ${e.message}` };
+  }
+});
 ipcMain.handle('mcp:reconnect', () => mcp.connectAll(loadSettings().mcpServers));
 ipcMain.handle('mcp:connectOne', (_e, cfg) => mcp.connectOne(cfg));
 ipcMain.handle('mcp:disconnect', (_e, id) => mcp.disconnectOne(id));

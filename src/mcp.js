@@ -109,17 +109,37 @@ async function callTool(fullName, args, { timeout = 120_000 } = {}) {
   const entry = servers.get(parsed.serverId);
   if (!entry || entry.status !== 'ready') throw new Error(`MCP server "${parsed.serverId}" is not connected.`);
   const res = await entry.client.callTool({ name: parsed.tool, arguments: args || {} }, undefined, { timeout });
-  // Flatten the content blocks into text the model can read.
-  const text = (res.content || [])
+  return { ...flattenContent(res.content), isError: !!res.isError };
+}
+
+// MCP results are content blocks. Text becomes the tool result; images (an ImageContent block,
+// or an embedded resource whose blob is an image) are kept as { mime, data } so a vision model
+// can see them — servers like gimp-mcp verify every edit with a snapshot, and used to get back
+// only the words "[image: image/png]". At most MAX_IMAGES, each under MAX_IMAGE_B64.
+const MAX_IMAGES = 4;
+const MAX_IMAGE_B64 = 8 * 1024 * 1024;
+function flattenContent(content) {
+  const images = [];
+  const take = (mime, data) => {
+    if (!/^image\/(png|jpe?g|webp|gif)$/i.test(String(mime || '')) || typeof data !== 'string' || !data) return '[image: unsupported format]';
+    if (data.length > MAX_IMAGE_B64) return `[image: ${mime}, too large to pass on]`;
+    if (images.length >= MAX_IMAGES) return `[image: ${mime}, more than ${MAX_IMAGES} in one result]`;
+    images.push({ mime: String(mime).toLowerCase(), data });
+    return `[image ${images.length}: ${mime}]`;
+  };
+  const text = (content || [])
     .map((c) => {
-      if (c.type === 'text') return c.text;
-      if (c.type === 'image') return `[image: ${c.mimeType || 'image'}]`;
-      if (c.type === 'resource') return c.resource?.text || `[resource: ${c.resource?.uri || ''}]`;
+      if (c?.type === 'text') return c.text;
+      if (c?.type === 'image') return take(c.mimeType || 'image/png', c.data);
+      if (c?.type === 'resource') {
+        if (c.resource?.blob && /^image\//i.test(c.resource.mimeType || '')) return take(c.resource.mimeType, c.resource.blob);
+        return c.resource?.text || `[resource: ${c.resource?.uri || ''}]`;
+      }
       return '';
     })
     .filter(Boolean)
     .join('\n');
-  return { text: text || '(no output)', isError: !!res.isError };
+  return { text: text || (images.length ? '(an image)' : '(no output)'), images };
 }
 
 function cleanMcpError(err) {
@@ -129,4 +149,4 @@ function cleanMcpError(err) {
   return msg.slice(0, 400);
 }
 
-module.exports = { connectAll, connectOne, disconnectOne, callTool, describe, setOnChange, parseToolName, toolName, sanitizeId };
+module.exports = { connectAll, connectOne, disconnectOne, callTool, describe, setOnChange, parseToolName, toolName, sanitizeId, flattenContent, MAX_IMAGES };

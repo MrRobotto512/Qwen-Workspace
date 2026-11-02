@@ -196,6 +196,39 @@ function fitContext(ps, ctx) {
   return fits < n ? { ctx: fits } : null;
 }
 
+// Predicting the fit BEFORE loading (the way LM Studio's `lms load --estimate-only` does), from
+// Ollama's /api/show model_info: the KV cache costs, per token, K and V for every layer and
+// KV head at 2 bytes (f16). Null when the architecture fields are missing, or the model uses a
+// sliding window (most layers then cache far less, and the estimate would cry wolf).
+function kvBytesPerToken(info) {
+  if (!info || typeof info !== 'object') return null;
+  const arch = info['general.architecture'];
+  const get = (k) => info[`${arch}.${k}`];
+  if (!arch || get('attention.sliding_window')) return null;
+  const layers = Number(get('block_count'));
+  const heads = Number(get('attention.head_count'));
+  const kvRaw = get('attention.head_count_kv') ?? heads;
+  const kvHeads = Array.isArray(kvRaw) ? kvRaw.reduce((a, b) => a + Number(b), 0) / kvRaw.length : Number(kvRaw);
+  const kDim = Number(get('attention.key_length')) || (Number(get('embedding_length')) / heads);
+  const vDim = Number(get('attention.value_length')) || kDim;
+  const per = layers * kvHeads * (kDim + vDim) * 2;
+  return Number.isFinite(per) && per > 0 ? per : null;
+}
+
+// Will `weights` bytes + the KV cache at `ctx` (+ ~0.5 GB of compute buffers) fit in `vram`?
+// { fits, neededGB, vramGB } plus fitCtx (the largest that fits) or tooSmall when not.
+const FIT_OVERHEAD = 0.5e9;
+function predictFit({ weights, kvPerToken, ctx, vram }) {
+  if (!(weights > 0) || !(kvPerToken > 0) || !(ctx > 0) || !(vram > 0)) return null;
+  const gb = (b) => Math.round((b / 1e9) * 10) / 10;
+  const needed = weights + kvPerToken * ctx + FIT_OVERHEAD;
+  const room = vram * 0.95;
+  const out = { fits: needed <= room, neededGB: gb(needed), vramGB: gb(vram) };
+  if (out.fits) return out;
+  const fitCtx = Math.floor((room - FIT_OVERHEAD - weights) / kvPerToken / 1024) * 1024;
+  return fitCtx >= FIT_MIN_CTX ? { ...out, fitCtx } : { ...out, tooSmall: true };
+}
+
 // Per-model tool-call check (Strata's `connect --check`): one "reply with exactly: pong" prompt
 // and one get_weather call, graded on the answer text and the call's arguments — not just on
 // the server answering. Says up front which model actually does tool calls on which node.
@@ -219,6 +252,6 @@ function probeVerdict(promptText, toolMessage) {
   return { ok: prompt.ok && tool.ok, prompt, tool };
 }
 
-const NodesExports = { THIS_PC_ID, REMOTE_KEEP_DEFAULT, nodeId, normalizeNodes, multiNode, sameModel, nodeHasModel, pickNode, nextNode, pickHighPerf, spillInfo, fitContext, probeVerdict, PROBE_PROMPT, PROBE_TOOL_PROMPT, PROBE_TOOL, isConnectionError, summarize };
+const NodesExports = { THIS_PC_ID, REMOTE_KEEP_DEFAULT, nodeId, normalizeNodes, multiNode, sameModel, nodeHasModel, pickNode, nextNode, pickHighPerf, spillInfo, fitContext, kvBytesPerToken, predictFit, probeVerdict, PROBE_PROMPT, PROBE_TOOL_PROMPT, PROBE_TOOL, isConnectionError, summarize };
 if (typeof module !== 'undefined' && module.exports) module.exports = NodesExports;
 if (typeof window !== 'undefined') window.Nodes = NodesExports;
