@@ -256,16 +256,24 @@ function selectSettingsPage(key) {
 // Model section (URL and keep-alive), so only its enabled flag is editable here.
 let settingsNodes = null;
 
+// The everyday model as typed in the (maybe unsaved) form, for the per-node draft pick.
+const formModel = () => $('#s-model')?.value.trim() || state.settings.model;
+
 function renderNodesSettings() {
   const list = $('#nodes-list');
   list.replaceChildren(...settingsNodes.map((n) => {
     const isThis = n.id === Nodes.THIS_PC_ID;
     const h = state.nodeHealth.byId[n.id];
+    if (!isThis && h?.up && (h.kind === 'lmstudio') !== (n.kind === 'lmstudio')) n.kind = h.kind === 'lmstudio' ? 'lmstudio' : undefined; // detected on the last health check
+    const lm = n.kind === 'lmstudio';
     const status = !n.enabled ? 'off' : h ? (h.up ? 'ready' : 'error') : 'connecting';
+    const draftText = !lm ? '' : !n.draftModel ? '' : n.draftModel === 'auto'
+      ? ` · draft: auto${h?.lmModels ? ` (${Nodes.suggestDraft(Nodes.lmModelFor(formModel(), h.models, n.model) || '', h.lmModels) || 'none fits'})` : ''}`
+      : ` · draft: ${n.draftModel}`;
     const sub = el('div', {
       class: `mcp-sub${status === 'error' ? ' bad' : ''}`,
-      text: (isThis ? `${n.baseUrl} — URL and keep-alive come from the Model section` : `${n.baseUrl}${n.keepAlive ? ` · keep ${n.keepAlive}` : ''}`)
-        + (n.highPerf ? ' · high performance' : '')
+      text: (isThis ? `${n.baseUrl} — URL and keep-alive come from the Model section` : `${lm ? 'LM Studio · ' : ''}${n.baseUrl}${n.keepAlive ? ` · keep ${n.keepAlive}` : ''}`)
+        + (n.highPerf ? ' · high performance' : '') + draftText
     });
     const test = el('button', {
       class: 'ghost',
@@ -274,8 +282,15 @@ function renderNodesSettings() {
         sub.textContent = 'Checking…';
         const url = isThis ? $('#s-baseUrl').value.trim() : n.baseUrl;
         const [r] = await api.nodesCheck([{ id: n.id, baseUrl: url }]);
+        if (r?.up && !isThis) {
+          state.nodeHealth.byId[n.id] = r;
+          if ((r.kind === 'lmstudio') !== (n.kind === 'lmstudio')) {
+            n.kind = r.kind === 'lmstudio' ? 'lmstudio' : undefined;
+            return renderNodesSettings();
+          }
+        }
         sub.classList.toggle('bad', !r?.up);
-        sub.textContent = r?.up ? `Online — ${r.models.length} model${r.models.length === 1 ? '' : 's'}: ${r.models.slice(0, 6).join(', ')}${r.models.length > 6 ? '…' : ''}` : `Not reachable: ${r?.error || 'no answer'}`;
+        sub.textContent = r?.up ? `Online${r.kind === 'lmstudio' ? ' (LM Studio)' : ''} — ${r.models.length} model${r.models.length === 1 ? '' : 's'}: ${r.models.slice(0, 6).join(', ')}${r.models.length > 6 ? '…' : ''}${r.error ? ` — ${r.error}` : ''}` : `Not reachable: ${r?.error || 'no answer'}`;
       }
     });
     return el('div', { class: 'mcp-item' },
@@ -291,11 +306,17 @@ function renderNodesSettings() {
         title: 'Connection doctor: probe this node from inside the app (raw TCP, HTTP, a loopback control) and explain exactly what is blocking it.',
         onclick: () => diagnoseNode(n)
       }, iconEl('bug')),
-      el('button', {
-        class: 'icon-btn',
-        title: 'Check which of this node\'s models really do tool calls (one prompt and one tool call, graded on the answer)',
-        onclick: (e) => checkNodeModels(n, sub, e.currentTarget)
-      }, iconEl('check')),
+      lm
+        ? el('button', {
+          class: `icon-btn${n.draftModel ? ' on' : ''}`,
+          title: 'Speculative decoding: a small model of the same family drafts tokens the main model checks — often 1.5–2× faster, same output. LM Studio nodes only.',
+          onclick: (e) => pickDraftModel(n, e.currentTarget)
+        }, iconEl('sparkles'))
+        : el('button', {
+          class: 'icon-btn',
+          title: 'Check which of this node\'s models really do tool calls (one prompt and one tool call, graded on the answer)',
+          onclick: (e) => checkNodeModels(n, sub, e.currentTarget)
+        }, iconEl('check')),
       test,
       el('label', { class: 'toggle', title: 'Use this node' },
         el('input', { type: 'checkbox', checked: n.enabled, onchange: (e) => { n.enabled = e.target.checked; } })),
@@ -303,6 +324,23 @@ function renderNodesSettings() {
         ? el('button', { class: 'icon-btn', title: 'Remove', onclick: () => { settingsNodes = settingsNodes.filter((x) => x.id !== n.id); renderNodesSettings(); } }, iconEl('trash'))
         : null);
   }));
+}
+
+// LM Studio nodes: which small model drafts tokens for speculative decoding. "Auto" picks the
+// largest same-family model at most ¼ of the main model's size at request time.
+async function pickDraftModel(n, anchor) {
+  const [h] = await api.nodesCheck([{ id: n.id, baseUrl: n.baseUrl }]).catch(() => []);
+  const main = Nodes.lmModelFor(formModel(), h?.models, n.model);
+  const auto = h?.lmModels && main ? Nodes.suggestDraft(main, h.lmModels) : null;
+  const set = (v) => { n.draftModel = v || undefined; renderNodesSettings(); };
+  const r = anchor.getBoundingClientRect();
+  showMenu(r.left - 220, r.bottom + 4, [
+    { label: 'Off', icon: n.draftModel ? 'x' : 'check', detail: 'no draft model', onClick: () => set(null) },
+    { label: 'Auto', icon: n.draftModel === 'auto' ? 'check' : 'sparkles', detail: auto ? `now: ${auto}` : 'no small model of the same family on this node', onClick: () => set('auto') },
+    ...(h?.lmModels || []).filter((m) => m.key !== main).slice(0, 14).map((m) => ({
+      label: m.key, icon: n.draftModel === m.key ? 'check' : 'zap', detail: m.params || '', onClick: () => set(m.key)
+    }))
+  ]);
 }
 
 // Per-model tool-call check: pick one of the node's models; the result shows on the row and is
@@ -517,7 +555,7 @@ async function saveSettingsFromUi() {
   const thisPc = settingsNodes.find((n) => n.id === Nodes.THIS_PC_ID);
   const remotes = settingsNodes
     .filter((n) => n.id !== Nodes.THIS_PC_ID)
-    .map((n) => ({ id: n.id, name: n.name, baseUrl: n.baseUrl, enabled: n.enabled, highPerf: !!n.highPerf, keepAlive: n.keepAlive }));
+    .map((n) => ({ id: n.id, name: n.name, baseUrl: n.baseUrl, enabled: n.enabled, highPerf: !!n.highPerf, keepAlive: n.keepAlive, kind: n.kind === 'lmstudio' ? 'lmstudio' : undefined, model: n.model || undefined, draftModel: n.draftModel || undefined }));
   patch.ollamaNodes = remotes.length || (thisPc && (!thisPc.enabled || thisPc.highPerf))
     ? [{ id: Nodes.THIS_PC_ID, enabled: !thisPc || thisPc.enabled, highPerf: !!thisPc?.highPerf }, ...remotes]
     : [];

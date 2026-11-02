@@ -77,6 +77,7 @@ function timingText(ev) {
   if (ev.promptMs != null) parts.push(`prompt ${(ev.promptMs / 1000).toFixed(1)}s`);
   else if (ev.firstMs != null) parts.push(`first token ${(ev.firstMs / 1000).toFixed(1)}s`);
   if (ev.genTokPerSec) parts.push(`${ev.genTokPerSec} tok/s`);
+  if (ev.draftModel) parts.push(`draft ${ev.draftModel}${ev.draftAccepted != null ? ` kept ${ev.draftAccepted}%` : ''}`);
   if (ev.ms != null) parts.push(`total ${(ev.ms / 1000).toFixed(1)}s`);
   return parts.length ? ` · ${parts.join(' · ')}` : '';
 }

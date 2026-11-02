@@ -66,3 +66,7 @@ test('kvBytesPerToken reads Ollama model_info; predictFit says whether it fits b
   assert.deepEqual(N.predictFit({ weights: 11.5 * GB, kvPerToken: kv, ctx: 32768, vram: 12 * GB }), { fits: false, neededGB: 17.4, vramGB: 12, tooSmall: true });
   assert.equal(N.predictFit({ weights: 0, kvPerToken: kv, ctx: 1, vram: 1 }), null);
 });
+
+test('timingText shows the draft model and how much of its guessing was kept', () => {
+  assert.equal(P.timingText({ genTokPerSec: 42.5, draftModel: 'qwen/qwen3-1.7b', draftAccepted: 62, ms: 3000 }), ' · 42.5 tok/s · draft qwen/qwen3-1.7b kept 62% · total 3.0s');
+});
