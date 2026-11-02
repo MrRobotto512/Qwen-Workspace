@@ -1,4 +1,4 @@
-/* global monaco, marked, DOMPurify, require, api, icon, iconEl, fileBadge, MODEL_CATALOG, FIT_INFO, recommendModels, recommendLongContext, catalogEntryFor, describeSpecs, formatGB, formatContext, DANGEROUS_COMMAND, commandNeedsApproval, ToolParse, Schedule, SemIndex, diffOps, diffStats, unifiedDiff, diffSegments, applyBlocks */
+/* global monaco, marked, DOMPurify, require, api, icon, iconEl, fileBadge, MODEL_CATALOG, FIT_INFO, recommendModels, recommendLongContext, catalogEntryFor, describeSpecs, formatGB, formatContext, DANGEROUS_COMMAND, commandNeedsApproval, ToolParse, Schedule, SemIndex, diffOps, diffStats, unifiedDiff, diffSegments, applyBlocks, claudeCodeFlow */
 'use strict';
 
 // `api` is the bridge exposed by preload.js (window.api).
@@ -213,6 +213,7 @@ function showFolderMenu(anchor) {
     { label: 'Open Folder…', icon: 'folderOpen', detail: 'Ctrl+O', onClick: pickWorkspace },
     { label: 'Clone from GitHub…', icon: 'gitCommit', onClick: cloneFlow }
   ];
+  if (state.ws) items.push({ label: 'Open in Claude Code…', icon: 'terminal', detail: 'on an Ollama node', onClick: () => claudeCodeFlow(anchor) });
   if (recent.length) items.push('-');
   for (const p of recent) {
     items.push({
