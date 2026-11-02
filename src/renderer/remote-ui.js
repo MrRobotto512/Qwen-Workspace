@@ -34,6 +34,7 @@ async function runRemoteConversation(c) {
     saveConv(c, true);
     flushSpend();
     proposeLessons(c);
+    proposeSkill(c, failed);
     maybeReviewPass(c);
     continueIfSteered(c);
     maybeCheckGoal(c, failed);

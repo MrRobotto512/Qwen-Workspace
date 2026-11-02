@@ -143,6 +143,10 @@ require(['vs/editor/editor.main'], async () => {
   initUpdates();
   initMcp();
   api.userMemoryGet().then((text) => { state.userMemory = text; }).catch(() => {});
+  // The skills curator (at most once a day): QWS-written skills nobody used go stale, then archive.
+  api.skillsCurate?.().then((r) => {
+    if (r?.archived?.length) toast({ key: 'skills-curated', icon: 'book', timeout: 12000, text: `Archived ${r.archived.length} unused self-written skill${r.archived.length === 1 ? '' : 's'} (${r.archived.join(', ')}). Restore from Settings → Skills.`, actions: [{ label: 'Open Settings', onClick: openSettings }] });
+  }).catch(() => {});
   api.onRemoteAsk(handleRemoteAsk); // paired devices starting/continuing/stopping sessions here
   await pickDefaultModel();
 

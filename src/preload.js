@@ -80,6 +80,12 @@ contextBridge.exposeInMainWorld('api', {
   skillsList: () => ipcRenderer.invoke('skills:list'),
   skillsRead: (id, file) => ipcRenderer.invoke('skills:read', id, file),
   skillsInstall: (url) => ipcRenderer.invoke('skills:install', url),
+  skillsCreate: (draft) => ipcRenderer.invoke('skills:create', draft),
+  skillsUsed: (id) => ipcRenderer.invoke('skills:used', id),
+  skillsCurate: (opts) => ipcRenderer.invoke('skills:curate', opts),
+  skillsArchived: () => ipcRenderer.invoke('skills:archived'),
+  skillsArchive: (name) => ipcRenderer.invoke('skills:archive', name),
+  skillsRestore: (name) => ipcRenderer.invoke('skills:restore', name),
 
   programRun: (runId, code, names, timeoutMs) => ipcRenderer.invoke('program:run', runId, code, names, timeoutMs),
   programAnswer: (callId, result, failed) => ipcRenderer.invoke('program:answer', callId, result, failed),

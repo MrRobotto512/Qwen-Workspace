@@ -50,6 +50,7 @@ jobs:
       - run: xvfb-run -a npm run test:e2e:memory
       - run: xvfb-run -a npm run test:e2e:checks
       - run: xvfb-run -a npm run test:e2e:vision
+      - run: xvfb-run -a npm run test:e2e:skills
       - run: xvfb-run -a npm run test:e2e:github
       - run: xvfb-run -a npm run test:e2e:recipes
       - run: xvfb-run -a npm run test:e2e:lessons

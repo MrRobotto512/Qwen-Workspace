@@ -284,6 +284,8 @@ async function executeTool(c, call, row) {
         const r = await api.skillsRead(skill.id, args.file || undefined);
         row.setBody(r.content);
         (c.skillsUsed = c.skillsUsed || new Set()).add(skill.name);
+        c.taskUsedSkill = true;
+        api.skillsUsed?.(skill.id).catch(() => {});
         const more = !args.file && r.files.length ? `\n\nSupporting files (load one with load_skill and file): ${r.files.join(', ')}` : '';
         return { result: `<skill name="${skill.name}"${args.file ? ` file="${args.file}"` : ''}>\n${truncate(r.content)}\n</skill>${more}`, meta: args.file || `${skill.scope} skill` };
       }
@@ -720,6 +722,8 @@ async function send() {
     renderGoalBar();
   }
   c.skillsUsed = new Set(); // the skills-used line covers this task only
+  c.taskUsedSkill = false;
+  c.rescuedAtStart = c.rescued || 0;
   c.container.querySelector('.chat-empty')?.remove();
   if (!c.display.length) {
     c.title = text.length > 70 ? text.slice(0, 67) + '…' : text;
@@ -745,6 +749,7 @@ async function send() {
     c.notes = [];
   }
   if (att.text) content += `\n\n---\nAttached context:\n${att.text}`;
+  c.taskStart = c.history.length;
   c.history.push(images.length ? { role: 'user', content, images } : { role: 'user', content });
   if (state.ws) {
     state.settings.lastConversations = { ...(state.settings.lastConversations || {}), [state.ws.root]: c.id };
@@ -764,6 +769,7 @@ async function send() {
     saveConv(c, true);
     flushSpend();
     proposeLessons(c);
+    proposeSkill(c, failed);
     maybeReviewPass(c);
     continueIfSteered(c);
     maybeCheckGoal(c, failed);
@@ -876,6 +882,85 @@ function lessonsCard(c, original, modified) {
       node.remove();
       if (state.review?.onDecide === done) closeReview(true);
       resolve(v);
+    }
+    c.container.append(node);
+    scrollChat(c, true);
+  });
+}
+
+// ---------- Self-written skills (an idea from Hermes Agent) ----------
+// After a long agent task that worked — or a shorter one a stronger model had to rescue — the
+// teacher (⚡ node, else the planner, else the everyday model) turns it into a reusable SKILL.md.
+// It appears as a card; nothing is written until the user saves it (the personal skills folder
+// is outside the project, so this asks in every approval mode). One proposal per conversation,
+// none when the task already used a skill or an existing skill covers the same ground.
+async function proposeSkill(c, failed) {
+  try {
+    if (!state.ws || c.mode !== 'agent') return;
+    const digest = SkillWriter.taskDigest(c.history, c.taskStart);
+    const rescued = (c.rescued || 0) > (c.rescuedAtStart || 0);
+    if (!SkillWriter.shouldPropose({
+      enabled: state.settings.skillWriter, agent: true, failed, stopped: c.stopRequested,
+      already: c.skillProposed, usedSkill: c.taskUsedSkill, steps: digest.steps, rescued
+    })) return;
+    c.skillProposed = true;
+    const lh = await pickHighPerfTarget(state.settings.model).catch(() => null);
+    const override = lh?.override || heavyOverride() || undefined;
+    const existing = await api.skillsList().catch(() => []);
+    setActivity(c, 'Writing a reusable skill from this task');
+    const res = await api.chatStream(`skill${Date.now()}`, {
+      override,
+      messages: [
+        { role: 'system', content: SkillWriter.SKILL_WRITER_SYSTEM },
+        { role: 'user', content: `${digest.text}${existing.length ? `\n\nSkills that already exist (do not duplicate them):\n${existing.map((sk) => `- ${sk.name}: ${sk.description}`).join('\n')}` : ''}` }
+      ]
+    });
+    setActivity(c, '');
+    if (!res.ok) return;
+    if (override && !['ollama', 'lmstudio'].includes(override.provider) && res.usage?.promptTokens) {
+      recordSpend(c, override.model, res.usage.promptTokens || 0, res.usage.completionTokens || 0);
+    }
+    const draft = SkillWriter.parseSkillDraft(stripThink(res.content || ''));
+    if (!draft) return;
+    const dup = SkillWriter.similarSkill(draft, existing);
+    if (dup) {
+      DebugLog.add(c, 'notice', { text: `skill draft "${draft.name}" skipped: "${dup.name}" already covers it` });
+      return;
+    }
+    if (!(await skillCard(c, draft))) return;
+    const saved = await api.skillsCreate({ content: draft.content });
+    if (!saved?.ok) {
+      addError(c, saved?.output || 'Could not save the skill.');
+      return;
+    }
+    c.skills = await api.skillsList().catch(() => c.skills);
+    c.sysPrompt = null;
+    const item = { t: 'notice', text: `Saved skill "${saved.name}" to your personal skills — every project can load it now.` };
+    c.display.push(item);
+    renderNotice(c, item);
+    DebugLog.add(c, 'notice', { text: item.text });
+    saveConv(c, true);
+    flash(`Skill "${saved.name}" saved`);
+  } catch {
+    /* a skill proposal must never break or block a finished task */
+  }
+}
+
+function skillCard(c, draft) {
+  return new Promise((resolve) => {
+    const node = el('div', { class: 'msg escalate-card skill-card' }, iconEl('book'),
+      el('div', { class: 'grow' },
+        el('div', {}, el('b', { text: `New skill: ${draft.name}` }), ` — ${draft.description}`),
+        el('div', { class: 'hint', text: 'Written from what this task did, for next time. Saved to your personal skills folder (all projects); QWS archives it if it goes unused for 60 days.' }),
+        el('details', {}, el('summary', { text: 'Show SKILL.md' }), el('pre', { class: 'skill-preview', text: draft.content })),
+        el('div', { class: 'stop-actions' },
+          el('button', { class: 'ghost', onclick: () => openReview({ path: `skills/${draft.name}/SKILL.md`, original: '', modified: draft.content, pending: true, title: `New skill: ${draft.name}`, onDecide: done }) }, iconEl('columns'), 'Review'),
+          el('button', { class: 'ghost danger-text', onclick: () => done(false) }, 'Not now'),
+          el('button', { class: 'primary', onclick: () => done(true) }, iconEl('check'), 'Save skill'))));
+    function done(v) {
+      node.remove();
+      if (state.review?.onDecide === done) closeReview(true);
+      resolve(!!v);
     }
     c.container.append(node);
     scrollChat(c, true);
@@ -999,6 +1084,7 @@ async function rerunConversation(c) {
     saveConv(c, true);
     flushSpend();
     proposeLessons(c);
+    proposeSkill(c, failed);
     maybeReviewPass(c);
     continueIfSteered(c);
     maybeCheckGoal(c, failed);
