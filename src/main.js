@@ -911,10 +911,14 @@ ipcMain.handle('nodes:check', async (_e, nodes) => {
       const root = String(n?.baseUrl || '').trim().replace(/\/+$/, '').replace(/\/v1$/, '');
       if (!/^https?:\/\//.test(root)) return { id: n?.id, up: false, error: 'Not an http(s) URL' };
       try {
+        // The version rides along for features gated on it (Claude Code needs Ollama 0.14+);
+        // a server that answers tags but not version still counts as up.
+        const verP = fetch(`${root}/api/version`, { signal: AbortSignal.timeout(3000) })
+          .then((r) => (r.ok ? r.json() : null)).then((j) => j?.version).catch(() => undefined);
         const res = await fetch(`${root}/api/tags`, { signal: AbortSignal.timeout(3000) });
         if (!res.ok) return { id: n.id, up: false, error: `HTTP ${res.status}` };
         const json = await res.json();
-        return { id: n.id, up: true, models: (json.models || []).map((m) => m.name).filter(Boolean) };
+        return { id: n.id, up: true, models: (json.models || []).map((m) => m.name).filter(Boolean), version: await verP };
       } catch (err) {
         return { id: n.id, up: false, error: err.cause?.code || err.message };
       }
