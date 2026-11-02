@@ -178,6 +178,28 @@ const CORE_TOOLS = [
         required: []
       }
     }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'search_history',
+      description: 'Search your past conversations in every project — how something was built, fixed or decided before. Use it when a task looks like earlier work ("like last time", a recurring error, a toolchain set up before). Pass query to search; pass the id of a result to read that conversation.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Words to search for, e.g. "pyinstaller spec onefile".' },
+          id: { type: 'string', description: 'A conversation id from a search result, to read it.' }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'remember',
+      description: 'Save one lasting fact about the user or their setup to their personal memory, which every future conversation in every project sees: their machines and OS, preferred languages and stacks, how they like to work. Not for project details (those go in QWEN.md). The user approves each fact.',
+      parameters: { type: 'object', properties: { fact: { type: 'string', description: 'One short sentence, e.g. "Builds Windows apps with Python + PySide6".' } }, required: ['fact'] }
+    }
   }
 ];
 
@@ -313,7 +335,7 @@ function toolsFor(c) {
 
 // Tools that only read can run together; anything that changes files or runs commands is a
 // barrier that runs alone, in the order Qwen asked.
-const READ_ONLY_TOOLS = new Set(['list_files', 'read_file', 'search_code', 'semantic_search', 'load_skill', 'tool_search', 'web_search', 'fetch_url', 'consult_planner']);
+const READ_ONLY_TOOLS = new Set(['list_files', 'read_file', 'search_code', 'semantic_search', 'load_skill', 'tool_search', 'web_search', 'fetch_url', 'consult_planner', 'search_history']);
 const WEB_PAGE_CHARS = 12_000;
 const READ_PAGE = 400;
 
@@ -362,7 +384,9 @@ const TOOL_INFO = {
   move_file: { icon: 'external', verb: 'Move', doing: 'Moving' },
   load_skill: { icon: 'book', verb: 'Skill', doing: 'Loading skill' },
   consult_planner: { icon: 'sparkles', verb: 'Consult', doing: 'Asking the planner about' },
-  tool_search: { icon: 'search', verb: 'Find tools', doing: 'Looking up tools for' }
+  tool_search: { icon: 'search', verb: 'Find tools', doing: 'Looking up tools for' },
+  search_history: { icon: 'history', verb: 'Past chats', doing: 'Searching past conversations for' },
+  remember: { icon: 'star', verb: 'Remember', doing: 'Saving to personal memory' }
 };
 
 // Context is assembled in layers, from least to most likely to change, so Ollama can reuse its
@@ -433,6 +457,10 @@ function describeCall(name, args) {
       }
       return { target: host, title: args.url };
     }
+    case 'search_history':
+      return { target: args.id ? `conversation ${args.id}` : String(args.query || '') };
+    case 'remember':
+      return { target: String(args.fact || '') };
     case 'ask_user': {
       const qs = Array.isArray(args.questions) ? args.questions : [args];
       return { target: qs.length > 1 ? `${qs.length} questions` : String(qs[0]?.question || '') };

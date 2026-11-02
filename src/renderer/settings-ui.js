@@ -346,6 +346,7 @@ function renderSpendSummary() {
 
 function openSettings() {
   const s = state.settings;
+  api.userMemoryGet().then((text) => { state.userMemory = text; $('#s-userMemory').value = text; }).catch(() => {});
   $('#node-diag-box').classList.add('hidden'); // a stale doctor report never greets a fresh visit
   for (const k of ['provider', 'baseUrl', 'apiKey', 'model', 'temperature', 'fontSize', 'contextLength', 'maxResponseTokens', 'keepAlive', 'searchProvider', 'searchApiKey', 'searxngUrl']) $(`#s-${k}`).value = s[k] ?? '';
   $('#s-webResearch').checked = s.webResearch !== false;
@@ -402,6 +403,10 @@ async function saveSettingsFromUi() {
   patch.fontSize = parseInt($('#s-fontSize').value, 10) || 14;
   patch.contextLength = Math.max(2048, parseInt($('#s-contextLength').value, 10) || 32768);
   patch.maxResponseTokens = Math.max(0, parseInt($('#s-maxResponseTokens').value, 10) || 0);
+  // Personal memory lives in its own file, not in settings.json.
+  if ($('#s-userMemory').value !== (state.userMemory || '')) {
+    state.userMemory = await api.userMemorySet($('#s-userMemory').value);
+  }
   patch.keepAlive = ($('#s-keepAlive').value.trim() || '-1');
   // A bare number is seconds to Ollama: "5" unloads the model five seconds after each reply,
   // which looks like the app being slow (a field report had every turn cold-loading the model).

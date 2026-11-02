@@ -109,6 +109,11 @@ contextBridge.exposeInMainWorld('api', {
 
   convList: (workspace) => ipcRenderer.invoke('conv:list', workspace),
   convLoad: (id) => ipcRenderer.invoke('conv:load', id),
+  convSearch: (query, opts) => ipcRenderer.invoke('conv:search', query, opts),
+  convCondensed: (id) => ipcRenderer.invoke('conv:condensed', id),
+  userMemoryGet: () => ipcRenderer.invoke('userMemory:get'),
+  userMemorySet: (text) => ipcRenderer.invoke('userMemory:set', text),
+  userMemoryAppend: (fact) => ipcRenderer.invoke('userMemory:append', fact),
   convSave: (conv) => ipcRenderer.invoke('conv:save', conv),
   convDelete: (id) => ipcRenderer.invoke('conv:delete', id),
 
