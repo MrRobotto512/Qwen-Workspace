@@ -2071,8 +2071,11 @@ function renderMcpStatus() {
   }
   el2.classList.remove('hidden');
   el2.classList.toggle('bad', errored.length > 0);
-  const tools = ready.reduce((n, s) => n + s.tools.length, 0);
-  el2.lastChild.textContent = errored.length ? `MCP: ${errored.length} failed` : `MCP: ${ready.length} server${ready.length === 1 ? '' : 's'} · ${tools} tools`;
+  const off = mcpOffHere();
+  const here = ready.filter((s) => !off.has(s.id));
+  const tools = here.reduce((n, s) => n + s.tools.length, 0);
+  const offNote = ready.length > here.length ? ` · ${ready.length - here.length} off here` : '';
+  el2.lastChild.textContent = errored.length ? `MCP: ${errored.length} failed` : `MCP: ${here.length} server${here.length === 1 ? '' : 's'} · ${tools} tools${offNote}`;
   el2.title = state.mcp.map((s) => `${s.id}: ${s.status}${s.error ? ` — ${s.error}` : ` (${s.tools.length} tools)`}`).join('\n');
 }
 

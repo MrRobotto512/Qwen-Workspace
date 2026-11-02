@@ -54,7 +54,8 @@ test('dangerous patterns ask in every mode', () => {
 });
 
 test('approval modes for an allowed, safe command', () => {
-  assert.equal(commandNeedsApproval('ask', 'git status', allowed), true);     // Ask: always
+  assert.equal(commandNeedsApproval('ask', 'git status', allowed), false);    // Ask: read-only commands skip the card
+  assert.equal(commandNeedsApproval('ask', 'git commit', allowed), true);     // Ask: everything else asks
   assert.equal(commandNeedsApproval('edits', 'git status', allowed), false);  // allow-listed
   assert.equal(commandNeedsApproval('edits', 'git commit', allowed), true);   // not allow-listed
   assert.equal(commandNeedsApproval('auto', 'git commit', allowed), false);   // Full auto, not dangerous
@@ -80,4 +81,31 @@ test('alternatives ending in whitespace still match (del /s was silently missed)
   // and names that merely contain those words stay safe
   assert.equal(DANGEROUS_COMMAND.test('python format_check.py'), false);
   assert.equal(DANGEROUS_COMMAND.test('node model_test.js'), false);
+});
+
+test('isReadOnlyCommand: look-only commands with look-only options pass (Strata gate port)', () => {
+  const { isReadOnlyCommand: ro } = require('../src/renderer/approvals.js');
+  for (const cmd of [
+    'git status', 'git status -sb', 'git log --oneline -5', 'git diff --stat HEAD~1', 'git branch', 'git branch -a',
+    'git show HEAD', 'git config --get user.name', 'ls -la', 'ls src', 'cat package.json', 'cat a.txt | grep foo',
+    'head -n 20 app.py', 'tail -n 50 build.log', 'wc -l src/main.js', 'rg -n "TODO" src', 'grep -rn needle .',
+    'pwd', 'which node', 'node --version', 'python --version', 'uname -a', 'date -u',
+    // cmd.exe, as Windows models write it
+    'dir', 'dir /s /b', 'dir "C:\\Users\\Robot\\Q&A"', 'type README.md', 'where python', 'findstr /s /i needle *.py', 'tree /f', 'ver'
+  ]) assert.strictEqual(ro(cmd), true, cmd);
+});
+
+test('isReadOnlyCommand: anything that writes, runs, never ends, or is not understood asks', () => {
+  const { isReadOnlyCommand: ro, commandNeedsApproval } = require('../src/renderer/approvals.js');
+  for (const cmd of [
+    'sort -o out.txt in.txt', 'rg --pre cat x', 'tail -f log.txt', 'date -s 2020-01-01', 'date 1026120026',
+    'git branch newbranch', 'git tag v1', 'git config user.name bob', 'git grep -O vim x', 'git push', 'git commit -m x',
+    'uniq in.txt out.txt', 'hostname evil', 'type a.txt > b.txt', 'echo hi > f.txt', 'cat a && rm b', 'ls; rm x',
+    'ls $(rm x)', 'dir %USERPROFILE%', 'python app.py', 'npm install', 'ls --unknown-flag', 'cat "unterminated',
+    'grep -e "$(rm x)" .', 'bash -c ls', 'cmd /c dir', 'powershell ls', 'find . -delete', ''
+  ]) assert.strictEqual(ro(cmd), false, cmd);
+  // In Ask mode a read-only command runs without a card; dangerous ones still always ask.
+  assert.strictEqual(commandNeedsApproval('ask', 'git status', []), false);
+  assert.strictEqual(commandNeedsApproval('ask', 'npm test', []), true);
+  assert.strictEqual(commandNeedsApproval('auto', 'git push', []), true);
 });

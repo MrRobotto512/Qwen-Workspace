@@ -150,6 +150,9 @@ async function executeTool(c, call, row) {
   const follow = state.settings.followAgent && c === state.conv;
   // MCP tools run on their server. They are not read-only, so they are barriers (run alone)
   // and go through command approval, since a server tool can run or change things.
+  if (name.startsWith('mcp__') && mcpOffHere().has(name.split('__')[1])) {
+    return { result: `Error: the "${name.split('__')[1]}" MCP server is switched off for this project (Settings → Tools & MCP servers). Do the task without it.`, failed: true };
+  }
   if (name.startsWith('mcp__')) {
     const label = mcpServerOf(name);
     if (needsApproval('command', name)) {
