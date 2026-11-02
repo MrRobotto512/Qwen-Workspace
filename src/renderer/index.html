@@ -216,7 +216,7 @@
       <div class="hint">The context window is how much of the conversation Qwen can see. 32768 suits agent mode; lower it if Ollama runs out of GPU memory. To go past 32K, use a long-context (YaRN) build from Models for this PC.</div>
 
       <div class="section-title">Ollama nodes</div>
-      <div class="hint">Run requests on more than one PC. Each node is an Ollama server reachable by URL (e.g. a second PC on your network); requests go to the first node that is online and has the model, and a task moves to the next node if one stops answering. "This PC" is the connection from the Model section. No node is used unless it is enabled here.</div>
+      <div class="hint">Run requests on more than one PC. Each node is an Ollama server reachable by URL (e.g. a second PC on your network); requests go to the first node that is online and has the model, and a task moves to the next node if one stops answering. "This PC" is the connection from the Model section. No node is used unless it is enabled here. The ⚡ toggle marks a node as high-performance: when Qwen gets stuck, the stuck step runs there on the strongest model that node has installed, and the cloud planner is only used if that doesn't rescue the task.</div>
       <div id="nodes-list"></div>
       <div class="mcp-add">
         <input id="node-new-name" placeholder="Name (e.g. Shop PC)" spellcheck="false" />

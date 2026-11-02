@@ -358,7 +358,7 @@ async function executeTool(c, call, row) {
         // Escalation suggestion (optional, off by default): a plan touching many files is
         // usually planner work. Asked once per conversation, never switched silently.
         const escCfgPlan = state.settings.escalation || {};
-        if (escCfgPlan.bigPlan && heavyOverride() && !c.bigPlanAsked) {
+        if (escCfgPlan.bigPlan && (heavyOverride() || highPerfConfigured()) && !c.bigPlanAsked) {
           const planned = Escalation.planFiles(todos);
           if (planned.length > Math.max(1, parseInt(escCfgPlan.bigPlanN, 10) || 5)) {
             c.bigPlanAsked = true;
@@ -821,10 +821,10 @@ async function rerunConversation(c) {
 // turn and run it again on the planner. File changes already made are not undone — the
 // planner sees the files as they are now.
 function escalateFrom(c, item) {
-  if (!heavyOverride()) {
+  if (!heavyOverride() && !highPerfConfigured()) {
     toast({
       icon: 'sparkles',
-      text: 'Set up a planner model first (Settings → Planner), then Escalate re-runs a step on it.',
+      text: 'Set up a planner model (Settings → Planner) or mark an Ollama node as high-performance first — then Escalate re-runs a step on it.',
       actions: [{ label: 'Open Settings', primary: true, onClick: openSettings }]
     });
     return;
@@ -841,7 +841,7 @@ function escalateFrom(c, item) {
     c.history.push({ role: 'user', content: '<system-reminder>\nRe-run the last step with a stronger approach; the previous attempt was escalated by the user.\n</system-reminder>' });
   }
   c.display = c.display.slice(0, idx);
-  const notice = { t: 'notice', text: `Re-running from here on ${heavyLabel()}.` };
+  const notice = { t: 'notice', text: `Re-running from here on ${escalationTargetLabel()}.` };
   c.display.push(notice);
   renderTranscript(c);
   c.escalateRequested = true;
@@ -853,9 +853,9 @@ function escalateFrom(c, item) {
 function suggestPlannerForPlan(c, fileCount) {
   const node = el('div', { class: 'msg escalate-card' }, iconEl('sparkles'),
     el('div', {},
-      el('div', { text: `This plan touches ${fileCount} files — that is usually planner work. Run it on ${heavyLabel()}?` }),
+      el('div', { text: `This plan touches ${fileCount} files — that is usually planner work. Run it on ${escalationTargetLabel()}?` }),
       el('div', { class: 'stop-actions' },
-        el('button', { class: 'primary', onclick: () => { node.remove(); c.escalateRequested = true; } }, 'Run on the planner'),
+        el('button', { class: 'primary', onclick: () => { node.remove(); c.escalateRequested = true; } }, 'Escalate'),
         el('button', { class: 'ghost', onclick: () => node.remove() }, 'Keep local'))));
   c.container.append(node);
   scrollChat(c, true);
@@ -873,6 +873,10 @@ async function runConversation(c) {
   let failStreak = 0; // consecutive rounds containing a failed call
   let interventions = 0; // how often the app has had to push back this task
   let heavyTakeover = false; // after repeated pushbacks, the heavy model drives the rest
+  let localTakeover = false; // one rung below: a high-performance node drives the rest
+  let localHeavyDead = false; // the high-perf node stopped answering; skip it this task
+  let lastEscLabel = null; // what the previous escalated step ran on, to announce changes once
+  let lhCache = { at: 0, pick: null }; // high-perf health-check result, reused for 30s
   const retriedBusy = new Set(); // models that already got one same-model retry after a 503/429
   const modelSwap = new Map(); // overloaded model -> working sibling, for the rest of this task
   let cloudDead = false; // every cloud sibling was busy; finish on the local default model
@@ -898,19 +902,52 @@ async function runConversation(c) {
     }
   };
 
-  // Record an intervention. With a heavy model configured, it takes the next turn — and after
-  // the second intervention it takes over the whole task, since the light model keeps fumbling.
+  // The high-performance tier: the strongest catalog model installed on an enabled, healthy
+  // high-perf node, as a free per-request override — or null when none beats the task's model.
+  // The health check is cached for 30s so a takeover doesn't re-probe nodes every turn.
+  const localHeavyOverride = async () => {
+    const nodes = Nodes.normalizeNodes(state.settings).filter((n) => n.enabled && n.highPerf);
+    if (!nodes.length || localHeavyDead) return null;
+    if (Date.now() - lhCache.at > 30_000) {
+      const results = await api.nodesCheck(nodes.map((n) => ({ id: n.id, baseUrl: n.baseUrl }))).catch(() => []);
+      const health = Object.fromEntries(results.map((r) => [r.id, r]));
+      const current = conversationOverride(c)?.model || state.settings.model;
+      lhCache = { at: Date.now(), pick: Nodes.pickHighPerf(nodes, health, current, MODEL_CATALOG) };
+    }
+    const pick = lhCache.pick;
+    if (!pick) return null;
+    return {
+      override: { provider: 'ollama', baseUrl: pick.node.baseUrl, apiKey: '', model: pick.model, keepAlive: pick.node.keepAlive },
+      label: `${pick.model} on ${pick.node.name}`
+    };
+  };
+
+  // Record an intervention. The ladder: the first one escalates the next turn (a high-perf
+  // node when one is configured, the planner otherwise); the second hands the task to the
+  // high-perf node for good; the third — or the second without a high-perf node — hands it
+  // to the planner, since whatever ran below keeps fumbling.
   const escalate = (reason) => {
     interventions++;
-    DebugLog.add(c, 'escalate', { reason: reason || 'answered without acting (tutorial / announce-then-stop)', interventions, takeover: heavyTakeover });
-    if (!heavyOverride()) return;
+    DebugLog.add(c, 'escalate', { reason: reason || 'answered without acting (tutorial / announce-then-stop)', interventions, takeover: heavyTakeover || localTakeover });
+    const hpOn = highPerfConfigured() && !localHeavyDead;
+    if (!heavyOverride() && !hpOn) return;
     escalateNext = true;
     let text = null;
-    if (!heavyTakeover && interventions >= 2) {
+    if (heavyTakeover) text = null;
+    else if (interventions >= 3 && localTakeover && heavyOverride()) {
+      localTakeover = false;
       heavyTakeover = true;
-      text = `Qwen keeps getting stuck — ${heavyLabel()} is driving the rest of this task.`;
-    } else if (reason && !heavyTakeover) {
-      text = `${reason} — handing off to ${heavyLabel()}.`;
+      text = `Still stuck — ${heavyLabel()} is driving the rest of this task.`;
+    } else if (interventions >= 2 && !localTakeover) {
+      if (hpOn) {
+        localTakeover = true;
+        text = 'Qwen keeps getting stuck — the high-performance node is driving the rest of this task.';
+      } else if (heavyOverride()) {
+        heavyTakeover = true;
+        text = `Qwen keeps getting stuck — ${heavyLabel()} is driving the rest of this task.`;
+      }
+    } else if (reason && !localTakeover) {
+      text = `${reason} — ${hpOn ? 'escalating the next step' : `handing off to ${heavyLabel()}`}.`;
     }
     if (text) {
       const item = { t: 'notice', text };
@@ -925,12 +962,36 @@ async function runConversation(c) {
     // An Escalate click (on a message, or from the big-plan card) runs the next step on the planner.
     if (c.escalateRequested) {
       c.escalateRequested = false;
-      if (heavyOverride()) escalateNext = true;
+      if (heavyOverride() || highPerfConfigured()) escalateNext = true;
     }
-    let esc = !cloudDead && !capBlocked && (heavyTakeover || escalateNext) ? heavyOverride() : null;
+    // The escalation ladder: one-shots and a local takeover prefer the high-performance node
+    // (free); the planner is the rung above — for its own takeover, or when no high-perf node
+    // can serve. The budget cap and cloud-dead state only ever gate the planner rung.
+    let esc = null;
+    let escLocal = false;
+    let escLabel = null;
+    if (heavyTakeover || localTakeover || escalateNext) {
+      if (!heavyTakeover) {
+        const lh = await localHeavyOverride();
+        if (lh) {
+          esc = lh.override;
+          escLocal = true;
+          escLabel = lh.label;
+        } else if (localTakeover) {
+          // The node vanished or lost its strong model mid-takeover; the planner inherits.
+          localTakeover = false;
+          if (heavyOverride()) heavyTakeover = true;
+        }
+      }
+      if (!esc && !cloudDead && !capBlocked && (heavyTakeover || escalateNext)) {
+        esc = heavyOverride();
+        escLabel = esc ? heavyLabel() : null;
+      }
+    }
     // Optional monthly budget: once the month's priced cloud spend reaches the cap,
-    // escalations ask before spending more instead of running silently.
-    if (esc && !c.capApproved && Costs.capReached(state.settings.spend, state.settings.prices, state.settings.monthlyCapUSD)) {
+    // escalations ask before spending more instead of running silently. The high-perf node
+    // costs nothing, so only the planner rung asks.
+    if (esc && !escLocal && !c.capApproved && Costs.capReached(state.settings.spend, state.settings.prices, state.settings.monthlyCapUSD)) {
       if (await askBudgetCard(c)) c.capApproved = true;
       else {
         capBlocked = true;
@@ -939,6 +1000,10 @@ async function runConversation(c) {
         note(`Monthly cloud budget reached — staying on ${state.settings.model} for this task.`);
       }
     }
+    // Say where an escalated step actually runs — once per target, since with a high-perf
+    // node in play the trigger notices can't know the health-checked pick in advance.
+    if (esc && escLocal && escLabel !== lastEscLabel) note(`Running this step on ${escLabel}.`);
+    if (esc) lastEscLabel = escLabel;
     let override = esc || (cloudDead ? null : conversationOverride(c));
     // A model that went "busy" earlier in this task stays swapped for its working sibling.
     if (override && modelSwap.has(override.model)) override = { ...override, model: modelSwap.get(override.model) };
@@ -973,7 +1038,8 @@ async function runConversation(c) {
       model: override?.model || state.settings.model,
       provider: override?.provider || state.settings.provider,
       node: node ? node.name : undefined,
-      escalated: !!esc
+      escalated: !!esc,
+      highPerf: escLocal || undefined
     });
     const off = api.onChatEvent((ev) => {
       if (ev.id !== id) return;
@@ -1022,6 +1088,21 @@ async function runConversation(c) {
     }
 
     if (!res.ok) {
+      // The high-performance node stopped answering mid-escalation: drop it for this task
+      // and let the next rung inherit (the planner when configured, the default otherwise).
+      if (escLocal && Nodes.isConnectionError(res.error)) {
+        dropEmptyTurn();
+        localHeavyDead = true;
+        lhCache = { at: 0, pick: null };
+        if (localTakeover) {
+          localTakeover = false;
+          if (heavyOverride()) heavyTakeover = true;
+        } else escalateNext = true;
+        note(heavyOverride() && !capBlocked && !cloudDead
+          ? `The high-performance node stopped answering — escalations go to ${heavyLabel()} for the rest of this task.`
+          : 'The high-performance node stopped answering — continuing on the default model.');
+        continue;
+      }
       // A node that stopped answering mid-task (shop PC switched off, Wi-Fi drop) gets one
       // retry, then the task moves to the next healthy node that has the model and says so.
       if (node && Nodes.isConnectionError(res.error)) {
@@ -1172,13 +1253,13 @@ async function runConversation(c) {
     // row is the clearest sign the local model is out of its depth — the next step runs on
     // the planner. Tracked per count so one streak escalates once, not every round.
     const escCfg = state.settings.escalation || {};
-    if (escCfg.failStreak && heavyOverride()) {
+    if (escCfg.failStreak && (heavyOverride() || highPerfConfigured())) {
       const st = Escalation.commandFailStreak(c.history);
       const n = Math.max(2, parseInt(escCfg.failStreakN, 10) || 2);
       if (st.count >= n && st.count > (c.failEscalatedAt || 0)) {
         c.failEscalatedAt = st.count;
         escalateNext = true;
-        note(`"${st.command.slice(0, 80)}" failed ${st.count} times in a row — running the next step on ${heavyLabel()}.`);
+        note(`"${st.command.slice(0, 80)}" failed ${st.count} times in a row — running the next step on ${escalationTargetLabel()}.`);
       }
     }
 

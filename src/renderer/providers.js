@@ -26,6 +26,20 @@ function heavyLabel() {
   return state.settings.heavy?.model || 'heavy model';
 }
 
+// Whether any enabled node is marked high-performance: the free escalation tier that takes
+// stuck steps before the cloud planner does. Health and model choice are checked at
+// escalation time; this only says the tier is configured.
+function highPerfConfigured() {
+  return Nodes.normalizeNodes(state.settings).some((n) => n.enabled && n.highPerf);
+}
+
+// What an escalation would run on, for button labels and cards written before the actual
+// health-checked pick happens: with a high-perf node configured the target is decided per
+// step, so the wording stays generic.
+function escalationTargetLabel() {
+  return highPerfConfigured() ? 'a stronger model' : heavyLabel();
+}
+
 // The model the user picked for this conversation, resolved to a per-request override at send
 // time — stored as a reference ('heavy', or an installed Ollama model), never as credentials.
 function conversationOverride(c) {

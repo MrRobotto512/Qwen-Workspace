@@ -46,6 +46,7 @@ function normalizeNodes(s) {
     name: 'This PC',
     baseUrl: cleanUrl(s.baseUrl) || 'http://localhost:11434',
     enabled: savedThis ? savedThis.enabled !== false : true,
+    highPerf: savedThis?.highPerf === true,
     keepAlive: s.keepAlive
   };
   const remotes = saved
@@ -55,6 +56,7 @@ function normalizeNodes(s) {
       name: nodeName(n),
       baseUrl: cleanUrl(n.baseUrl),
       enabled: n.enabled !== false,
+      highPerf: n.highPerf === true,
       keepAlive: typeof n.keepAlive === 'string' && n.keepAlive.trim() ? n.keepAlive.trim() : REMOTE_KEEP_DEFAULT
     }));
   return [thisPc, ...remotes];
@@ -110,6 +112,33 @@ function nextNode(nodes, health, model, exclude) {
   return enabled.find((n) => nodeHasModel(health[n.id], model)) || enabled[0];
 }
 
+// When the current model has no catalog entry, a high-perf pick must still be a solidly
+// strong model — anything rated below "Good" (rank 6) would not be an upgrade worth a handoff.
+const HIGH_PERF_FLOOR = 5.9;
+
+// The strongest catalog model installed on an enabled, healthy high-performance node that
+// outranks the model currently running the task. This is the free escalation tier: when Qwen
+// gets stuck, the next step runs here before any money goes to the cloud planner. `catalog`
+// is MODEL_CATALOG (passed in so this stays pure for tests).
+function pickHighPerf(nodes, health, currentModel, catalog) {
+  const cat = catalog || [];
+  const entryFor = (id) => cat.find((m) => sameModel(m.id, id));
+  const curRank = entryFor(currentModel)?.rank;
+  const floor = typeof curRank === 'number' ? curRank : HIGH_PERF_FLOOR;
+  let best = null;
+  for (const n of nodes) {
+    if (!n.enabled || !n.highPerf) continue;
+    const h = health?.[n.id];
+    if (!h || h.up !== true) continue;
+    for (const m of h.models || []) {
+      const e = entryFor(m);
+      if (!e || e.rank <= floor) continue;
+      if (!best || e.rank > best.rank) best = { node: n, model: e.id, rank: e.rank };
+    }
+  }
+  return best;
+}
+
 // A request that never reached a server, as opposed to a server that answered with an
 // error (HTTP 404/429/503 stay with the model-failover logic in toolparse.js).
 const CONN_ERROR = /could not connect to|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN|ENOTFOUND|UND_ERR_CONNECT|UND_ERR_SOCKET|HeadersTimeout|BodyTimeout|socket hang up|fetch failed|terminated/i;
@@ -135,6 +164,6 @@ function summarize(nodes, health) {
   return { up, total: enabled.length, detail };
 }
 
-const NodesExports = { THIS_PC_ID, REMOTE_KEEP_DEFAULT, nodeId, normalizeNodes, multiNode, sameModel, nodeHasModel, pickNode, nextNode, isConnectionError, summarize };
+const NodesExports = { THIS_PC_ID, REMOTE_KEEP_DEFAULT, nodeId, normalizeNodes, multiNode, sameModel, nodeHasModel, pickNode, nextNode, pickHighPerf, isConnectionError, summarize };
 if (typeof module !== 'undefined' && module.exports) module.exports = NodesExports;
 if (typeof window !== 'undefined') window.Nodes = NodesExports;
