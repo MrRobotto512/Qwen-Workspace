@@ -58,6 +58,7 @@ const DEFAULT_SETTINGS = {
   allowPrivateFetch: false,
   mcpServers: [], // [{ name, command, args, env, url, type, cwd, enabled }]
   mcpProjectOff: {}, // project folder -> MCP server ids switched off there (tools hidden in that project)
+  modelChecks: {}, // `${nodeId}|${model}` -> { ok, textOnly, at } from the per-model tool-call check
   lastConversations: {}, // workspace root -> id of the conversation open when the app closed
   lastWorkspace: null,
   fontSize: 14
@@ -1001,6 +1002,44 @@ ipcMain.handle('nodes:diagnose', async (_e, baseUrl) => {
   const proxies = ['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy'].filter((k) => process.env[k]);
   steps.push({ step: 'env', ok: true, detail: proxies.length ? `proxy variables set: ${proxies.join(', ')}` : 'no proxy environment variables' });
   return steps;
+});
+
+// Per-model tool-call check against an Ollama node (see probeVerdict in renderer/nodes.js).
+const NodeRules = require('./renderer/nodes.js');
+ipcMain.handle('model:probe', async (_e, baseUrl, model) => {
+  const root = String(baseUrl || '').trim().replace(/\/+$/, '').replace(/\/v1$/, '');
+  if (!/^https?:\/\//.test(root) || !model) return { ok: false, error: 'Not an http(s) node URL or no model.' };
+  const chat = async (messages, tools) => {
+    const r = await fetch(`${root}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, messages, tools, stream: false, keep_alive: '5m', options: { num_ctx: 4096, temperature: 0 } }),
+      signal: AbortSignal.timeout(240_000)
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 160)}`);
+    return (await r.json()).message || {};
+  };
+  const t0 = Date.now();
+  try {
+    const a = await chat([{ role: 'user', content: NodeRules.PROBE_PROMPT }]);
+    const b = await chat([{ role: 'user', content: NodeRules.PROBE_TOOL_PROMPT }], [NodeRules.PROBE_TOOL]);
+    return { ...NodeRules.probeVerdict(a.content, b), seconds: Math.round((Date.now() - t0) / 1000) };
+  } catch (err) {
+    return { ok: false, error: err.cause?.code || err.message };
+  }
+});
+
+// What a node has loaded right now, with how much of each model sits in GPU memory.
+ipcMain.handle('ollama:ps', async (_e, baseUrl) => {
+  const root = String(baseUrl || '').trim().replace(/\/+$/, '').replace(/\/v1$/, '');
+  if (!/^https?:\/\//.test(root)) return [];
+  try {
+    const r = await fetch(`${root}/api/ps`, { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) return [];
+    return ((await r.json()).models || []).map((x) => ({ name: x.name, size: x.size, size_vram: x.size_vram }));
+  } catch {
+    return [];
+  }
 });
 
 ipcMain.handle('ollama:tags', async () => {

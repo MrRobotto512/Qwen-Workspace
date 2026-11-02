@@ -37,6 +37,8 @@ contextBridge.exposeInMainWorld('api', {
 
   systemSpecs: (force) => ipcRenderer.invoke('system:specs', force),
   nodesCheck: (nodes) => ipcRenderer.invoke('nodes:check', nodes),
+  ollamaPs: (baseUrl) => ipcRenderer.invoke('ollama:ps', baseUrl),
+  modelProbe: (baseUrl, model) => ipcRenderer.invoke('model:probe', baseUrl, model),
   nodesDiagnose: (baseUrl) => ipcRenderer.invoke('nodes:diagnose', baseUrl),
   ollamaTags: () => ipcRenderer.invoke('ollama:tags'),
   ollamaPull: (model) => ipcRenderer.invoke('ollama:pull', model),

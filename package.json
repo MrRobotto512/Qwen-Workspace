@@ -1,6 +1,6 @@
 {
   "name": "qwen-workspace",
-  "version": "0.29.0",
+  "version": "0.30.0",
   "description": "Desktop coding workspace powered by Qwen (Ollama, LM Studio, or any OpenAI-compatible API)",
   "main": "src/main.js",
   "scripts": {
@@ -26,7 +26,8 @@
     "test:e2e:goal": "node test/e2e-goal.mjs",
     "test:e2e:hardening": "node test/e2e-hardening.mjs",
     "test:e2e:projecttools": "node test/e2e-projecttools.mjs",
-    "test:e2e:memory": "node test/e2e-memory.mjs"
+    "test:e2e:memory": "node test/e2e-memory.mjs",
+    "test:e2e:checks": "node test/e2e-checks.mjs"
   },
   "author": "",
   "dependencies": {

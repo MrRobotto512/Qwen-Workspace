@@ -213,6 +213,84 @@ function commandNeedsApproval(mode, command, allowed) {
   return mode === 'ask' || !isCommandAllowed(command, allowed);
 }
 
+
+// A command as one plain sentence for its approval card (an idea from Strata's agent ask
+// cards): "Install the Python packages PySide6 and pytest" reads faster than the raw line, which
+// stays under Details. Chained commands become "…, then …". Unknown commands fall back to
+// naming the program, never guessing an action.
+const DESCRIBE_RULES = [
+  [/^(?:npm|pnpm|yarn)\s+(?:install|i|ci)\s*$/i, () => "Install this project's Node dependencies"],
+  [/^(?:npm|pnpm)\s+(?:install|i|add)\s+(.+)$|^yarn\s+add\s+(.+)$/i, (m) => `Install the Node package${plural(m[1] || m[2])} ${list(m[1] || m[2])}`],
+  [/^(?:npm|pnpm|yarn)\s+(?:run\s+)?test\b/i, () => "Run the project's tests"],
+  [/^(?:npm|pnpm|yarn)\s+run\s+([\w:.-]+)/i, (m) => `Run the project's "${m[1]}" script`],
+  [/^(?:npm|pnpm|yarn)\s+start\b/i, () => 'Start the app'],
+  [/^(?:py(?:thon3?)?\s+-m\s+)?pip3?\s+install\s+(?:-r\s+(\S+))?(.*)$/i, (m) => (m[1] ? `Install the Python packages listed in ${m[1]}` : `Install the Python package${plural(m[2])} ${list(m[2])}`)],
+  [/^(?:py(?:thon3?)?\s+-m\s+)?pytest\b/i, () => 'Run the Python tests'],
+  [/^py(?:thon3?)?\s+-m\s+(?:venv|virtualenv)\s+(\S+)/i, (m) => `Create a Python virtual environment in ${m[1]}`],
+  [/^py(?:thon3?)?\s+(?!-)(\S+\.py)\b/i, (m) => `Run the Python script ${m[1]}`],
+  [/^node\s+(?!-)(\S+\.(?:m?js|cjs))\b/i, (m) => `Run ${m[1]} with Node`],
+  [/^pyinstaller\b/i, () => 'Build an executable with PyInstaller'],
+  [/^(?:cargo|go|dotnet|swift)\s+build\b|^make\b|^cmake\s+--build\b|^msbuild\b/i, () => 'Build the project'],
+  [/^(?:cargo|go|dotnet|swift)\s+test\b/i, () => "Run the project's tests"],
+  [/^(?:cargo|go|dotnet|swift)\s+run\b/i, () => 'Build and run the app'],
+  [/^git\s+add\b/i, () => 'Stage files for a git commit'],
+  [/^git\s+commit\b/i, () => 'Commit the staged changes to git'],
+  [/^git\s+push\b/i, () => 'Push commits to the remote repository'],
+  [/^git\s+pull\b/i, () => 'Pull new commits from the remote repository'],
+  [/^git\s+(?:checkout\s+-b|switch\s+-c)\s+(\S+)/i, (m) => `Create and switch to the git branch ${m[1]}`],
+  [/^git\s+(?:checkout|switch)\s+(\S+)/i, (m) => `Switch to the git branch ${m[1]}`],
+  [/^git\s+clone\s+(\S+)/i, (m) => `Clone the repository ${m[1]}`],
+  [/^git\s+init\b/i, () => 'Start a git repository in this folder'],
+  [/^git\s+reset\s+--hard\b/i, () => 'Throw away all uncommitted git changes'],
+  [/^(?:rm\s+-[a-z]*[rf][a-z]*|rmdir\s+\/s(?:\s+\/q)?|rd\s+\/s(?:\s+\/q)?)\s+(.+)$/i, (m) => `Delete ${list(m[1])} and everything in it`],
+  [/^(?:rmdir|rd)\s+(.+)$/i, (m) => `Remove the empty folder ${list(m[1])}`],
+  [/^(?:rm|del|erase)\s+(?:\/[a-z]\s+)*(.+)$/i, (m) => `Delete ${list(m[1])}`],
+  [/^(?:mkdir|md)\s+(?:-p\s+)?(.+)$/i, (m) => `Create the folder${plural(m[1])} ${list(m[1])}`],
+  [/^(?:cp|copy|xcopy|robocopy)\s+(\S+)\s+(\S+)/i, (m) => `Copy ${m[1]} to ${m[2]}`],
+  [/^(?:mv|move|ren|rename)\s+(\S+)\s+(\S+)/i, (m) => `Move ${m[1]} to ${m[2]}`],
+  [/^winget\s+install\s+(?:--id\s+)?(\S+)/i, (m) => `Install ${m[1]} on this PC (winget)`],
+  [/^brew\s+install\s+(?:--cask\s+)?(\S+)/i, (m) => `Install ${m[1]} on this Mac (Homebrew)`],
+  [/^(?:curl|wget|invoke-webrequest|iwr)\b.*?(https?:\/\/[^\s"']+)/i, (m) => `Download from ${hostOf(m[1])}`],
+  [/^(?:open|start|xdg-open)\s+(?:""\s+)?(.+)$/i, (m) => `Open ${m[1].replace(/^["']|["']$/g, '')}`],
+  [/^docker\s+(\w+)/i, (m) => `Run docker ${m[1]}`],
+  [/^ollama\s+(pull|run|rm)\s+(\S+)/i, (m) => `${m[1] === 'pull' ? 'Download' : m[1] === 'rm' ? 'Remove' : 'Run'} the model ${m[2]}`]
+];
+
+function plural(args) {
+  return String(args || '').trim().split(/\s+/).filter((a) => a && !a.startsWith('-')).length > 1 ? 's' : '';
+}
+function list(args) {
+  const items = String(args || '').trim().split(/\s+/).filter((a) => a && !a.startsWith('-')).map((a) => a.replace(/^["']|["']$/g, ''));
+  if (items.length <= 1) return items[0] || '';
+  if (items.length > 4) return `${items.slice(0, 3).join(', ')} and ${items.length - 3} more`;
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+function hostOf(url) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+function describeCommand(command) {
+  const segs = String(command || '').split(/\s*(?:&&|\|\||;)\s*/).map((s) => s.trim()).filter(Boolean);
+  const said = segs.slice(0, 3).map((seg) => {
+    const s = seg.replace(/^cd\s+("[^"]+"|\S+)$/i, '');
+    if (!s) return null; // a bare cd says nothing about the action
+    for (const [re, fn] of DESCRIBE_RULES) {
+      const m = re.exec(s);
+      if (m) return fn(m);
+    }
+    const prog = s.split(/\s+/)[0].replace(/^.*[\\/]/, '');
+    return `Run ${prog}`;
+  }).filter(Boolean);
+  if (!said.length) return 'Run a command';
+  let out = said.map((x, i) => (i ? x.charAt(0).toLowerCase() + x.slice(1) : x)).join(', then ');
+  if (segs.length > 3) out += `, and ${segs.length - 3} more step${segs.length - 3 === 1 ? '' : 's'}`;
+  return out;
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { DANGEROUS_COMMAND, SHELL_SPLIT, SHELL_META, commandSegments, isCommandAllowed, commandNeedsApproval, isReadOnlyCommand };
+  module.exports = { DANGEROUS_COMMAND, SHELL_SPLIT, SHELL_META, commandSegments, isCommandAllowed, commandNeedsApproval, isReadOnlyCommand, describeCommand };
 }
