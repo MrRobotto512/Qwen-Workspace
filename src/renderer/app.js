@@ -1198,9 +1198,13 @@ function setActivity(c, text) {
 function renderRunControls() {
   const c = state.conv;
   const asking = !!c?.pendingQuestion;
-  $('#btn-send').classList.toggle('hidden', !!c?.busy && !asking);
+  // Send stays available while Qwen works: a message sent mid-task steers it at its next step.
+  $('#btn-send').classList.remove('hidden');
+  $('#btn-send').title = c?.busy && !asking ? 'Send now — Qwen reads it at its next step' : 'Send';
   $('#btn-stop').classList.toggle('hidden', !c?.busy);
-  $('#prompt').placeholder = asking ? 'Type your answer to Qwen\'s question…' : 'Ask Qwen to build, fix or explain something…';
+  $('#prompt').placeholder = asking
+    ? 'Type your answer to Qwen\'s question…'
+    : c?.busy ? 'Steer Qwen — it reads your message at its next step…' : 'Ask Qwen to build, fix or explain something…';
   const text = c?.busy ? c.activity : '';
   $('#activity').classList.toggle('hidden', !text);
   $('#activity-text').textContent = text ? `${text}…` : '';

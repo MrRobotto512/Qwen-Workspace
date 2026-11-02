@@ -544,6 +544,42 @@ async function applyAgentEdit(c, row, p, before, after, title) {
   return { result: `${verb} ${p} (${after.split('\n').length} lines, +${stats.added} −${stats.removed}).${note}`, metaHtml: statsHtml(stats) };
 }
 
+// A message sent while a task runs. It shows in the transcript at once (marked as waiting)
+// and enters the history at the start of the next step — never mid-request.
+function queueSteer(c, text) {
+  c.steerQueue = c.steerQueue || [];
+  c.steerQueue.push(text);
+  addUserMessage(c, text, []);
+  c.display[c.display.length - 1].queued = true;
+  c.container.lastElementChild?.classList.add('queued');
+  DebugLog.add(c, 'notice', { text: `steer queued: ${text.slice(0, 120)}` });
+  flash('Qwen will read this at its next step');
+}
+
+// Moves queued steering messages into the history; true if any were taken.
+function drainSteer(c) {
+  if (!c.steerQueue?.length) return false;
+  for (const text of c.steerQueue.splice(0)) {
+    c.history.push({ role: 'user', content: `${text}\n\n<system-reminder>\nThe user sent this while you were working. It takes priority over the current plan: adjust course now (update the todo list if the plan changes), then continue.\n</system-reminder>` });
+  }
+  for (const d of c.display) if (d.queued) delete d.queued;
+  for (const n of c.container.querySelectorAll('.msg.user.queued')) n.classList.remove('queued');
+  return true;
+}
+
+// A message can land in the gap between the loop's last check and the task ending; it must
+// not sit forever marked "waiting". After a Stop, queued messages join the history (so the
+// next send carries them) but restart nothing.
+function continueIfSteered(c) {
+  if (!c.steerQueue?.length || c.busy) return;
+  if (c.stopRequested) {
+    drainSteer(c);
+    saveConv(c, true);
+    return;
+  }
+  setTimeout(() => rerunConversation(c), 0);
+}
+
 async function send() {
   const c = state.conv;
   const input = $('#prompt');
@@ -554,7 +590,15 @@ async function send() {
     c.pendingQuestion.answer(text);
     return;
   }
-  if (!text || c.busy) return;
+  if (!text) return;
+  if (c.busy) {
+    // Steering: a message typed while Qwen works used to be dropped silently. It now queues
+    // and reaches the model at its next step (runConversation drains c.steerQueue).
+    input.value = '';
+    autoGrow();
+    queueSteer(c, text);
+    return;
+  }
   input.value = '';
   autoGrow();
   c.container.querySelector('.chat-empty')?.remove();
@@ -601,6 +645,7 @@ async function send() {
     flushSpend();
     proposeLessons(c);
     maybeReviewPass(c);
+    continueIfSteered(c);
   }
 }
 
@@ -834,6 +879,7 @@ async function rerunConversation(c) {
     flushSpend();
     proposeLessons(c);
     maybeReviewPass(c);
+    continueIfSteered(c);
   }
 }
 
@@ -987,6 +1033,10 @@ async function runConversation(c) {
   };
   for (let step = 0; step < maxSteps; step++) {
     if (c.stopRequested) return false;
+    if (drainSteer(c)) {
+      stall = 0; // the user just changed direction; earlier no-progress rounds don't count
+      note('Your message reached Qwen.');
+    }
     const cu = contextUse(c);
     const fixed = fixedPromptTokens(c, useTools);
     // When instructions + tool schemas alone crowd the window, the model can't see the task
@@ -1273,6 +1323,8 @@ async function runConversation(c) {
         c.history.push({ role: 'user', content: '<system-reminder>\nThe plan above is approved. You are the everyday model now: record it with todo_write, then execute it step by step with real tool calls.\n</system-reminder>' });
         continue;
       }
+      // A message the user sent during this turn is waiting: the task isn't over.
+      if (c.steerQueue?.length) continue;
       // Small models often end a turn without acting: announcing the next step ("Let's start
       // by…:"), or answering a build request with a how-to list and no tool use at all. Push
       // back a couple of times instead of silently stopping.

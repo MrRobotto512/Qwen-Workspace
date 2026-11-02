@@ -636,3 +636,7 @@ input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; m
 
 #node-diag-box { margin-top: 8px; }
 #node-diag { font-size: 11.5px; background: var(--bg-3); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; }
+
+/* Steering: a message sent while Qwen works shows as waiting until the next step picks it up. */
+.msg.user.queued { opacity: .75; border: 1px dashed var(--accent); }
+.msg.user.queued::after { content: 'waiting for Qwen\'s next step'; display: block; font-size: 11px; color: var(--text-2); margin-top: 4px; white-space: normal; }

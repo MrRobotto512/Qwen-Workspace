@@ -35,6 +35,7 @@ async function runRemoteConversation(c) {
     flushSpend();
     proposeLessons(c);
     maybeReviewPass(c);
+    continueIfSteered(c);
   }
 }
 
@@ -70,7 +71,11 @@ async function remoteContinueConversation({ id, text }) {
     c.pendingQuestion.answer(text);
     return { ok: true, id };
   }
-  if (c.busy) return { ok: false, code: 409, error: 'That task is still running — stop it first, or wait for it to finish.' };
+  if (c.busy) {
+    // Steering from another device works like steering on the host: queued for the next step.
+    queueSteer(c, text);
+    return { ok: true, id, note: 'Queued — Qwen reads it at its next step.' };
+  }
   if (!c.memoryLoaded && state.ws) {
     [c.memory, c.skills] = await Promise.all([loadProjectMemory(), api.skillsList().catch(() => [])]);
     c.memoryLoaded = true;
