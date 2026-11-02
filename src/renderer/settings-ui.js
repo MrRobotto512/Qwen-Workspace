@@ -45,16 +45,35 @@ async function buildSemIndex() {
 async function renderSkillsSettings() {
   const list = $('#skills-list');
   if (!list) return;
-  const skills = await api.skillsList().catch(() => []);
-  if (!skills.length) {
+  const [skills, archived] = await Promise.all([api.skillsList().catch(() => []), api.skillsArchived().catch(() => [])]);
+  if (!skills.length && !archived.length) {
     list.replaceChildren(el('div', { class: 'empty-note', text: 'No skills yet. Install one above, or create .qwen/skills/<name>/SKILL.md in your project.' }));
     return;
   }
-  list.replaceChildren(...skills.map((sk) => el('div', { class: 'skill-row', title: sk.description },
+  const dirOf = (sk) => String(sk.id).split(':')[1];
+  const rows = skills.map((sk) => el('div', { class: 'skill-row', title: sk.description },
     iconEl('book'),
     el('span', { class: 'sk-name', text: sk.name }),
     el('span', { class: 'sk-scope', text: SKILL_SCOPE_TEXT[sk.scope] || sk.scope }),
-    el('span', { class: 'sk-desc', text: sk.description }))));
+    sk.createdBy === 'qws'
+      ? el('span', { class: `sk-badge${sk.state === 'stale' ? ' stale' : ''}`, title: sk.lastUsed ? `Last used ${new Date(sk.lastUsed).toLocaleDateString()}` : 'Not used yet', text: `written by QWS · used ${sk.uses || 0}×${sk.state === 'stale' ? ' · stale' : ''}` })
+      : null,
+    el('span', { class: 'sk-desc', text: sk.description }),
+    sk.createdBy === 'qws'
+      ? el('button', { class: 'ghost small', title: 'Move out of the skills list (restorable)', onclick: async () => { await api.skillsArchive(dirOf(sk)); renderSkillsSettings(); } }, 'Archive')
+      : null));
+  if (archived.length) {
+    rows.push(el('div', { class: 'sk-archived-head', text: `Archived (${archived.length}) — not offered to the agent` }));
+    for (const a of archived) {
+      rows.push(el('div', { class: 'skill-row archived' },
+        iconEl('book'),
+        el('span', { class: 'sk-name', text: a.name }),
+        el('span', { class: 'sk-badge', text: `written by QWS · used ${a.uses || 0}×` }),
+        el('span', { class: 'sk-desc' }),
+        el('button', { class: 'ghost small', onclick: async () => { await api.skillsRestore(a.name); renderSkillsSettings(); } }, 'Restore')));
+    }
+  }
+  list.replaceChildren(...rows);
 }
 
 async function installSkillFromUrl() {
@@ -391,7 +410,7 @@ function openSettings() {
   $('#s-webResearch').checked = s.webResearch !== false;
   $('#s-allowPrivateFetch').checked = !!s.allowPrivateFetch;
   renderSearchFields();
-  for (const k of ['agentMode', 'planFirst', 'includeCurrentFile', 'followAgent', 'autoCheckUpdates', 'branchPerTask', 'lessonsEnabled', 'reviewPass']) $(`#s-${k}`).checked = !!s[k];
+  for (const k of ['agentMode', 'planFirst', 'includeCurrentFile', 'followAgent', 'autoCheckUpdates', 'branchPerTask', 'lessonsEnabled', 'skillWriter', 'reviewPass']) $(`#s-${k}`).checked = !!s[k];
   $('#about-version').textContent = state.appInfo?.version || '';
   $('#about-kind').textContent = KIND_TEXT[state.appInfo?.kind] || '';
   renderUpdateUi();
@@ -454,7 +473,7 @@ async function saveSettingsFromUi() {
   }
   patch.allowedCommands = $('#s-allowedCommands').value.split(',').map((x) => x.trim()).filter(Boolean);
   patch.maxSteps = Math.min(1000, Math.max(10, parseInt($('#s-maxSteps').value, 10) || DEFAULT_MAX_STEPS));
-  for (const k of ['agentMode', 'planFirst', 'includeCurrentFile', 'followAgent', 'autoCheckUpdates', 'branchPerTask', 'lessonsEnabled', 'reviewPass']) patch[k] = $(`#s-${k}`).checked;
+  for (const k of ['agentMode', 'planFirst', 'includeCurrentFile', 'followAgent', 'autoCheckUpdates', 'branchPerTask', 'lessonsEnabled', 'skillWriter', 'reviewPass']) patch[k] = $(`#s-${k}`).checked;
   patch.heavy = {
     enabled: $('#s-heavy-enabled').checked,
     provider: $('#s-heavy-provider').value,

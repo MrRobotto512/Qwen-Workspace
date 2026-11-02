@@ -238,6 +238,7 @@
       <label class="check"><input type="checkbox" id="s-includeCurrentFile" /> Attach the open file to messages by default</label>
       <label class="check"><input type="checkbox" id="s-branchPerTask" /> Branch per task: when a task first edits a file in a git repo, work on a new qwen/&lt;task&gt; branch</label>
       <label class="check"><input type="checkbox" id="s-lessonsEnabled" /> Lessons: after a task that ran commands, propose up to 3 durable notes for QWEN.md (you approve the diff)</label>
+      <label class="check"><input type="checkbox" id="s-skillWriter" /> Self-written skills: after a long task that worked, propose a reusable skill for your personal skills folder (you approve it; unused ones are archived after 60 days)</label>
       <label>Personal memory (every project sees this)
         <textarea id="s-userMemory" rows="5" spellcheck="false" placeholder="- I use Windows 11 at work and a Mac at home&#10;- I build desktop apps with Python + PySide6&#10;- My home GPU node is Alien (RTX 4070)"></textarea>
         <span class="hint">Facts about you and your setup, sent with every conversation in every project. Qwen adds to it with the remember tool (you approve each fact). Up to 4,000 characters; project details belong in QWEN.md instead.</span>
@@ -467,6 +468,7 @@
   <script src="claudecode.js"></script>
   <script src="diagnose.js"></script>
   <script src="goal.js"></script>
+  <script src="skillwriter.js"></script>
   <script src="escalation.js"></script>
   <script src="costs.js"></script>
   <script src="providers.js"></script>

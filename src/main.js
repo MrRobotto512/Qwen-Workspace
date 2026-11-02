@@ -44,6 +44,7 @@ const DEFAULT_SETTINGS = {
   remoteAccess: { enabled: false, port: 8931, token: '' }, // let paired devices view and drive this app's conversations
   devices: [], // paired peers: [{ id, name, url, token }]
   lessonsEnabled: true,
+  skillWriter: true, // after a long task that worked, propose a reusable skill (approval card)
   reviewPass: false, // planner reviews each task's diff and hands fixes back (2 rounds max) // after a task that ran commands, propose lessons for QWEN.md (always behind the diff card)
   planFirst: false, // a conversation's first turn runs on the ⚡ node's strongest model, restricted to planning (todo_write)
   prices: {}, // $/1M tokens per model, user-entered: { 'gemini-2.5-pro': { in: 1.25, out: 10 } }
@@ -1352,15 +1353,17 @@ ipcMain.handle('skills:list', async () => {
   for (const [scope, root] of skillRoots().reverse()) {
     let dirs = [];
     try {
-      dirs = (await fsp.readdir(root, { withFileTypes: true })).filter((d) => d.isDirectory());
+      dirs = (await fsp.readdir(root, { withFileTypes: true })).filter((d) => d.isDirectory() && !d.name.startsWith('.'));
     } catch {
       continue;
     }
+    const idx = scope === 'user' ? (await readSkillIndex()).skills : {};
     for (const d of dirs) {
       try {
         const text = await fsp.readFile(path.join(root, d.name, 'SKILL.md'), 'utf8');
         const { name, description } = parseSkill(text, d.name);
-        byName.set(name.toLowerCase(), { id: `${scope}:${d.name}`, name, description, scope });
+        const e = idx[d.name];
+        byName.set(name.toLowerCase(), { id: `${scope}:${d.name}`, name, description, scope, ...(e ? { createdBy: e.createdBy, uses: e.uses || 0, lastUsed: e.lastUsed || null, state: e.state || 'active' } : {}) });
       } catch {
         /* no SKILL.md */
       }
@@ -1381,6 +1384,112 @@ ipcMain.handle('skills:read', async (_e, id, file) => {
   if (st.size > 200 * 1024) throw new Error('Skill file is too large');
   const text = await fsp.readFile(target, 'utf8');
   return { content: file ? text : parseSkill(text, dirName).body, files: await listSkillFiles(base) };
+});
+
+// Skills QWS wrote itself (self-written skills) are tracked in a sidecar index next to them:
+// who wrote it, how often it was loaded, when last, and its curator state. Installed and
+// hand-written skills never appear in the index, so the curator never touches them.
+const SkillWriter = require('./renderer/skillwriter.js');
+const userSkillsDir = () => path.join(app.getPath('userData'), 'skills');
+const skillIndexPath = () => path.join(userSkillsDir(), '.qws-index.json');
+async function readSkillIndex() {
+  try {
+    const j = JSON.parse(await fsp.readFile(skillIndexPath(), 'utf8'));
+    return { skills: j.skills && typeof j.skills === 'object' ? j.skills : {}, lastCurated: Number(j.lastCurated) || 0 };
+  } catch {
+    return { skills: {}, lastCurated: 0 };
+  }
+}
+async function writeSkillIndex(idx) {
+  await fsp.mkdir(userSkillsDir(), { recursive: true });
+  await fsp.writeFile(skillIndexPath(), JSON.stringify(idx, null, 2));
+}
+const safeSkillDir = (n) => /^[a-z0-9][a-z0-9-]{1,63}$/.test(String(n || ''));
+
+// Saves an approved self-written skill into the personal skills folder (all projects).
+ipcMain.handle('skills:create', async (_e, draft) => {
+  const parsed = SkillWriter.parseSkillDraft(String(draft?.content || ''));
+  if (!parsed) return { ok: false, output: 'That skill draft is not valid.' };
+  let taken = [];
+  try {
+    taken = await fsp.readdir(userSkillsDir());
+  } catch {
+    /* first skill */
+  }
+  const idx = await readSkillIndex();
+  const name = SkillWriter.uniqueName(parsed.name, [...taken, ...Object.keys(idx.skills)]);
+  const content = name === parsed.name ? parsed.content : parsed.content.replace(/^name: .*$/m, `name: ${name}`);
+  await fsp.mkdir(path.join(userSkillsDir(), name), { recursive: true });
+  await fsp.writeFile(path.join(userSkillsDir(), name, 'SKILL.md'), content);
+  idx.skills[name] = { createdBy: 'qws', createdAt: Date.now(), uses: 0, lastUsed: null, state: 'active' };
+  await writeSkillIndex(idx);
+  return { ok: true, name, id: `user:${name}` };
+});
+
+// A personal skill was loaded: count it and revive it if the curator had marked it stale.
+ipcMain.handle('skills:used', async (_e, id) => {
+  const [scope, dirName] = String(id || '').split(':');
+  if (scope !== 'user') return false;
+  const idx = await readSkillIndex();
+  if (!idx.skills[dirName]) return false;
+  idx.skills[dirName] = SkillWriter.recordUse(idx.skills[dirName], Date.now());
+  await writeSkillIndex(idx);
+  return true;
+});
+
+async function archiveSkill(idx, name) {
+  const from = path.join(userSkillsDir(), name);
+  const to = path.join(userSkillsDir(), '.archive', name);
+  await fsp.mkdir(path.dirname(to), { recursive: true });
+  await fsp.rm(to, { recursive: true, force: true });
+  await fsp.rename(from, to);
+  idx.skills[name] = { ...idx.skills[name], state: 'archived', archivedAt: Date.now() };
+}
+
+// The curator, run at startup at most once a day: QWS-written skills unused for 30 days turn
+// stale, for 60 days move to skills/.archive (out of the prompt, restorable from Settings).
+ipcMain.handle('skills:curate', async (_e, opts) => {
+  const idx = await readSkillIndex();
+  const now = Number(opts?.now) || Date.now();
+  if (!opts?.force && now - idx.lastCurated < 86400000) return { stale: [], archived: [] };
+  const plan = SkillWriter.curatorPlan(idx.skills, now);
+  for (const n of plan.stale) idx.skills[n] = { ...idx.skills[n], state: 'stale' };
+  const archived = [];
+  for (const n of plan.archive) {
+    if (!safeSkillDir(n)) continue;
+    try {
+      await archiveSkill(idx, n);
+      archived.push(n);
+    } catch {
+      /* folder gone or locked — try again next time */
+    }
+  }
+  idx.lastCurated = now;
+  await writeSkillIndex(idx);
+  return { stale: plan.stale, archived };
+});
+
+ipcMain.handle('skills:archived', async () => {
+  const idx = await readSkillIndex();
+  return Object.entries(idx.skills).filter(([, e]) => e.state === 'archived').map(([name, e]) => ({ name, ...e }));
+});
+
+ipcMain.handle('skills:archive', async (_e, name) => {
+  const idx = await readSkillIndex();
+  if (!safeSkillDir(name) || !idx.skills[name] || idx.skills[name].state === 'archived') return false;
+  await archiveSkill(idx, name);
+  await writeSkillIndex(idx);
+  return true;
+});
+
+ipcMain.handle('skills:restore', async (_e, name) => {
+  const idx = await readSkillIndex();
+  if (!safeSkillDir(name) || idx.skills[name]?.state !== 'archived') return false;
+  await fsp.rename(path.join(userSkillsDir(), '.archive', name), path.join(userSkillsDir(), name));
+  // Restored counts as a fresh start, so the curator does not archive it again tomorrow.
+  idx.skills[name] = { ...idx.skills[name], state: 'active', lastUsed: Date.now(), archivedAt: undefined };
+  await writeSkillIndex(idx);
+  return true;
 });
 
 // Installs a skill folder from a GitHub link (a repo, or a folder inside one via /tree/…) into

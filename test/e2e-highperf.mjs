@@ -126,6 +126,7 @@ try {
     document.querySelector('#s-esc-failstreak-n').value = '2';
     // Lessons stay ON: a rescued task must send its lessons request to the ⚡ node too.
     if (document.querySelector('#s-lessonsEnabled')) document.querySelector('#s-lessonsEnabled').checked = true;
+    document.querySelector('#s-skillWriter').checked = false; // this test counts ⚡-node chats; skill proposals have their own e2e
     settingsNodes = settingsNodes.filter((n) => n.id === 'this-pc').map((n) => ({ ...n, enabled: true, highPerf: false }));
     document.querySelector('#node-new-name').value = 'Big PC';
     document.querySelector('#node-new-url').value = hp;
@@ -186,7 +187,7 @@ try {
   if (errors.length) fail(`renderer errors: ${errors.join(' || ').slice(0, 500)}`);
   // Leave settings pristine for whatever suite runs next.
   await win.evaluate(async () => {
-    state.settings = await api.setSettings({ ollamaNodes: [], heavy: { enabled: false }, escalation: {} });
+    state.settings = await api.setSettings({ ollamaNodes: [], heavy: { enabled: false }, escalation: {}, skillWriter: true });
     syncNodeRouting();
   }).catch(() => {});
   // Teardown watchdog: every assertion has already run by this point, so a hung
