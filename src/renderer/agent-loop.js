@@ -580,6 +580,59 @@ function continueIfSteered(c) {
   setTimeout(() => rerunConversation(c), 0);
 }
 
+// Goal mode's judge: after a task ends cleanly with a goal set, a stronger model (the ⚡ node,
+// else the planner, else the everyday model) compares the last reply with the evidence. Not
+// met → the task continues with the judge's feedback, up to the goal's check budget.
+async function maybeCheckGoal(c, failed) {
+  const g = c.goal;
+  if (!g || g.paused || failed || c.stopRequested || c.busy || c.steerQueue?.length || c.mode !== 'agent') return;
+  const lastReply = [...c.history].reverse().find((m) => m.role === 'assistant' && String(m.content || '').trim())?.content || '';
+  const files = [...c.changes.keys()];
+  const evidence = `${Lessons.commandSummary(c.history).text || '(no commands ran)'}${files.length ? `\n\nFiles changed: ${files.join(', ')}` : '\n\nNo files changed.'}`;
+  const lh = await pickHighPerfTarget(state.settings.model).catch(() => null);
+  const override = lh?.override || heavyOverride() || undefined;
+  const judgeName = lh?.label || (override ? heavyLabel() : state.settings.model);
+  g.checks++;
+  renderGoalBar();
+  setActivity(c, 'Checking the goal');
+  const res = await api.chatStream(`goal${Date.now()}`, { override, messages: Goal.judgeMessages(g.text, lastReply, evidence) });
+  setActivity(c, '');
+  if (override && !['ollama', 'lmstudio'].includes(override.provider) && res.usage?.promptTokens) {
+    recordSpend(c, override.model, res.usage.promptTokens || 0, res.usage.completionTokens || 0);
+  }
+  const say = (text) => {
+    const item = { t: 'notice', text };
+    c.display.push(item);
+    renderNotice(c, item);
+    DebugLog.add(c, 'notice', { text });
+  };
+  if (!res.ok) {
+    say(`Couldn't check the goal (${String(res.error || 'no answer').slice(0, 120)}) — the goal stays set; send a message to keep going.`);
+    saveConv(c, true);
+    return;
+  }
+  const v = Goal.parseVerdict(stripThink(res.content || ''));
+  DebugLog.add(c, 'escalate', { reason: `goal check ${g.checks}/${g.max} by ${judgeName}: ${v.done ? 'DONE' : 'CONTINUE'} ${v.reason}`.slice(0, 300), interventions: 0, takeover: false });
+  if (v.done) {
+    say(`Goal achieved (checked by ${judgeName}): ${v.reason || 'the evidence meets the goal.'}`);
+    c.goal = null;
+    renderGoalBar();
+    saveConv(c, true);
+    return;
+  }
+  if (g.checks >= g.max) {
+    g.paused = true;
+    renderGoalBar();
+    say(`The goal is still open after ${g.max} checks${v.reason ? ` — last verdict: ${v.reason}` : ''}. Send a message to keep going, or clear the goal.`);
+    saveConv(c, true);
+    return;
+  }
+  say(`Goal not met yet (check ${g.checks}/${g.max} by ${judgeName})${v.reason ? `: ${v.reason}` : ''} — continuing.`);
+  c.history.push({ role: 'user', content: Goal.continuePrompt(g.text, v.reason, g.checks, g.max) });
+  saveConv(c, true);
+  rerunConversation(c);
+}
+
 async function send() {
   const c = state.conv;
   const input = $('#prompt');
@@ -591,6 +644,32 @@ async function send() {
     return;
   }
   if (!text) return;
+  // Goal mode: "/goal <objective>" sets a standing goal and starts on it, "/goal off" clears it.
+  const gc = Goal.parseGoalCommand(text);
+  if (gc) {
+    input.value = '';
+    autoGrow();
+    if (gc.clear) {
+      c.goal = null;
+      renderGoalBar();
+      saveConv(c, true);
+      flash('Goal cleared');
+      return;
+    }
+    if (gc.show) {
+      flash(c.goal ? `Goal: ${c.goal.text}` : 'No goal set — type /goal followed by what "done" means');
+      return;
+    }
+    c.goal = { text: gc.set, checks: 0, max: Goal.GOAL_MAX_TURNS, paused: false };
+    renderGoalBar();
+    DebugLog.add(c, 'notice', { text: `goal set: ${gc.set.slice(0, 160)}` });
+    if (c.busy) {
+      flash('Goal set — it is checked when the current task finishes');
+      return;
+    }
+    input.value = gc.set; // the goal itself is the first instruction
+    return send();
+  }
   if (c.busy) {
     // Steering: a message typed while Qwen works used to be dropped silently. It now queues
     // and reaches the model at its next step (runConversation drains c.steerQueue).
@@ -601,6 +680,12 @@ async function send() {
   }
   input.value = '';
   autoGrow();
+  // A message after the goal's budget ran out means "keep going": it gets a fresh budget.
+  if (c.goal?.paused) {
+    c.goal.paused = false;
+    c.goal.checks = 0;
+    renderGoalBar();
+  }
   c.container.querySelector('.chat-empty')?.remove();
   if (!c.display.length) {
     c.title = text.length > 70 ? text.slice(0, 67) + '…' : text;
@@ -646,6 +731,7 @@ async function send() {
     proposeLessons(c);
     maybeReviewPass(c);
     continueIfSteered(c);
+    maybeCheckGoal(c, failed);
   }
 }
 
@@ -880,6 +966,7 @@ async function rerunConversation(c) {
     proposeLessons(c);
     maybeReviewPass(c);
     continueIfSteered(c);
+    maybeCheckGoal(c, failed);
   }
 }
 

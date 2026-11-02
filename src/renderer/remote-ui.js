@@ -36,6 +36,7 @@ async function runRemoteConversation(c) {
     proposeLessons(c);
     maybeReviewPass(c);
     continueIfSteered(c);
+    maybeCheckGoal(c, failed);
   }
 }
 

@@ -63,6 +63,7 @@ function serializeConv(c) {
     spend: c.spend || {},
     log: c.log || [],
     todos: c.todos,
+    goal: c.goal || null,
     compactions: c.compactions,
     activeTools: c.activeTools,
     modelChoice: c.modelChoice || null
@@ -155,6 +156,7 @@ function switchConv(c) {
   renderConvModel();
   updateCtxMeter();
   renderTodoBar();
+  renderGoalBar();
   renderChanges();
   renderTree();
   renderCenter();
