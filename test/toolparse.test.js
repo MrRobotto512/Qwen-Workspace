@@ -197,3 +197,15 @@ test('deniesCapability ignores legitimate failure reports and advice', () => {
   assert.ok(!TP.deniesCapability('Done. I created the file and ran the build.'));
   assert.ok(!TP.deniesCapability(''));
 });
+
+test('forgedToolResponse: invented tool output is caught, real call markers are not', () => {
+  const { forgedToolResponse } = require('../src/renderer/toolparse.js');
+  // The field-report reply: an announce followed by a hand-written result block.
+  assert.equal(forgedToolResponse("It seems Xcode is not installed on your system. Let's install Xcode first.\n\n<tool_response>\nInstall Xcode from the Mac App Store or download it from the developer website.\n</tool_response>"), true);
+  assert.equal(forgedToolResponse('<tool_result>{"ok":true}</tool_result>'), true);
+  assert.equal(forgedToolResponse('<tool_output>done</tool_output>'), true);
+  // A <tool_call> block is a real call attempt — the text-call extractor owns it.
+  assert.equal(forgedToolResponse('<tool_call>{"name":"run_command","arguments":{"command":"ls"}}</tool_call>'), false);
+  assert.equal(forgedToolResponse('All tests pass and the feature is complete.'), false);
+  assert.equal(forgedToolResponse(''), false);
+});

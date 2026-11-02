@@ -1218,6 +1218,8 @@ async function runConversation(c) {
         let nudge = null;
         if (forged.found) {
           nudge = 'You wrote a <system-reminder> block yourself; only the app issues those, and it has been removed. Your tools are real: list_files, read_file, run_command and the rest actually execute on this PC and returned real results earlier. Never claim you cannot access the file system, and never simulate output. Continue the task now with a real tool call.';
+        } else if (ToolParse.forgedToolResponse(msg.content)) {
+          nudge = 'You wrote a tool-output block (<tool_response>/<tool_result>) yourself. Tool results come only from tools you actually call — nothing in that block happened, and nothing was installed or run. Never invent tool output. Do the step for real now, as a tool call (run_command, install_app, write_file, …).';
         } else if (ToolParse.deniesCapability(msg.content)) {
           nudge = 'You claimed you cannot access the file system, run commands, or reach the network. That is false: your tools (list_files, read_file, write_file, run_command, web_search and the rest) execute for real on this PC. Do what was asked now with a real tool call — for example, check whether a server or port answers with run_command (curl, ping, or Test-NetConnection on Windows). Never answer with that claim again.';
         } else if (textToolCallStart(msg.content) >= 0) {

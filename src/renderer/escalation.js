@@ -63,10 +63,12 @@ function planFiles(todos) {
 // and commands by name, simplest stack, recorded as todos — and must not start executing.
 const PLAN_FIRST_REMINDER = [
   'You are the planning model for this task, running on a high-performance node. Write a concrete plan that a smaller model will execute mechanically:',
-  '- Prefer the simplest stack that satisfies the request, and avoid installing anything that is not strictly needed.',
-  '- Name the exact files to create or change and the exact commands to run.',
+  '- Make every decision NOW and bake it into the plan. A step may never say "choose", "decide" or "pick an approach" — the small model cannot make that call. If one crucial decision genuinely needs the user, ask with ask_user in this turn instead of planning.',
+  '- Every step must name the exact file to create or change, or the exact command to run. A step with neither is not a step.',
+  '- Command-line stacks only: the plan builds and runs everything with commands the small model can execute. Never plan around a GUI IDE (Xcode, Visual Studio, Android Studio) or an app store — if a toolchain is needed, the plan installs it with a command or install_app.',
+  '- Prefer the simplest stack that satisfies the request, and avoid installing anything that is not strictly needed. Assume only standard OS tooling is present; make the first step verify the chosen toolchain with a version command.',
   '- Record the plan as one todo_write call with 3-8 steps. The todo list is the deliverable of this turn.',
-  'If one crucial decision blocks planning, ask with ask_user instead. Do not execute any step yourself — the everyday model takes over after this turn.'
+  'Do not execute any step yourself — the everyday model takes over after this turn.'
 ].join('\n');
 
 // The planning turn only gets planning tools: the plan (todo_write) and, when a decision is
