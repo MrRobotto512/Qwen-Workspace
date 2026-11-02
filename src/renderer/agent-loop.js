@@ -798,7 +798,7 @@ async function send() {
   }
 
   const att = await buildAttachments();
-  const images = takePastedImages();
+  const images = await takePastedImages();
   renderChips();
   addUserMessage(c, text, [...att.names, ...images.map((_, i) => `Screenshot ${i + 1}`)]);
   let content = text;

@@ -1034,7 +1034,16 @@ function renderChips() {
 }
 
 // Pasted or dropped image files become screenshot chips, sent with the next message.
-async function addImageFiles(files) {
+// Reads still in flight: a screenshot pasted just before pressing Enter must go with THAT
+// message, not ride along with the next one (FileReader is asynchronous).
+const imageReads = new Set();
+function addImageFiles(files) {
+  const job = readImageFiles(files);
+  imageReads.add(job);
+  return job.finally(() => imageReads.delete(job));
+}
+
+async function readImageFiles(files) {
   for (const f of files) {
     if (!/^image\/(png|jpe?g|gif|webp)$/.test(f.type)) continue;
     if (pastedImages.length >= MAX_IMAGES) {
@@ -1060,7 +1069,8 @@ async function addImageFiles(files) {
   }
 }
 
-function takePastedImages() {
+async function takePastedImages() {
+  if (imageReads.size) await Promise.allSettled([...imageReads]);
   const out = pastedImages.splice(0).map(({ mime, data }) => ({ mime, data }));
   renderChips();
   return out;
