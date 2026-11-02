@@ -139,6 +139,15 @@ function stripFakeReminders(text) {
   return { text: cleaned, found: cleaned !== t.trim() };
 }
 
+// Did the model write a tool-output block itself ("<tool_response>Install Xcode from the App
+// Store</tool_response>")? Inventing results is worse than announcing: the task looks done
+// while nothing ran. A field report ended exactly that way, past every other catcher, because
+// the forged block sat after the announce sentence. Only forged OUTPUT counts — a <tool_call>
+// block is a real call attempt and stays with the text-call extractor.
+function forgedToolResponse(text) {
+  return /<\/?tool_(response|result|output|results)>/i.test(String(text || ''));
+}
+
 // Does a model error mean "busy right now, try again / try a sibling"? (As opposed to a wrong
 // key, a missing model, or a network that is down.)
 function isBusyModelError(text) {
@@ -219,6 +228,6 @@ function modelAlternates(model, available) {
   return pool.filter((m) => m !== failed).sort((a, b) => cls(a) - cls(b) || ver(b) - ver(a));
 }
 
-const ToolParseExports = { TOOL_TEXT_MARKER, jsonToolCallRe, textToolCallStart, readJsonObject, extractTextToolCalls, announcesAction, looksLikeInstructions, stripFakeReminders, isBusyModelError, isDeadModelError, modelAlternates, normalizeToolArgs, deniesCapability, GEMINI_FAMILY };
+const ToolParseExports = { TOOL_TEXT_MARKER, jsonToolCallRe, textToolCallStart, readJsonObject, extractTextToolCalls, announcesAction, looksLikeInstructions, stripFakeReminders, forgedToolResponse, isBusyModelError, isDeadModelError, modelAlternates, normalizeToolArgs, deniesCapability, GEMINI_FAMILY };
 if (typeof module !== 'undefined' && module.exports) module.exports = ToolParseExports;
 if (typeof window !== 'undefined') window.ToolParse = ToolParseExports;
