@@ -67,3 +67,21 @@ test('commandSummary pairs commands with outcomes and flags failures', () => {
   assert.match(s.text, /--target app\n {2}-> ok/);
   assert.strictEqual(L.commandSummary([]).ran, 0);
 });
+
+test('rescue lessons: prompts and digest target what went wrong', () => {
+  const L = require('../src/renderer/lessons.js');
+  for (const must of ['needed rescuing', 'prevented those rescues', 'direct instructions', 'NONE']) {
+    assert.ok(L.RESCUE_LESSONS_SYSTEM.includes(must), `rescue prompt is missing "${must}"`);
+  }
+  assert.ok(L.LESSONS_SYSTEM.includes('command history'));
+  const digest = L.rescueDigest(
+    ['answered without acting (tutorial / announce-then-stop)', 'Steps keep failing'],
+    ['brew install xcode', 'swift run']
+  );
+  assert.ok(digest.includes('- escalated: answered without acting'));
+  assert.ok(digest.includes('- command failed: brew install xcode'));
+  assert.ok(L.rescueDigest([], []) === '');
+  // Caps hold: long inputs get truncated, many entries get trimmed to the most recent.
+  const long = L.rescueDigest(Array(20).fill('r'.repeat(300)), Array(20).fill('c'.repeat(300)));
+  assert.ok(long.length <= 1200);
+});

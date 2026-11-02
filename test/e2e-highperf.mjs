@@ -67,8 +67,11 @@ const hpNode = http.createServer((req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
       if (hpChats === 1) {
         res.write(JSON.stringify({ message: { role: 'assistant', content: '', tool_calls: [{ function: { name: 'run_command', arguments: { command: 'exit 3' } } }] } }) + '\n');
-      } else {
+      } else if (hpChats === 2) {
         res.write(JSON.stringify({ message: { role: 'assistant', content: 'Big node finished the job.' } }) + '\n');
+      } else {
+        // The rescue-lessons request at task end; NONE keeps the e2e free of the approval card.
+        res.write(JSON.stringify({ message: { role: 'assistant', content: 'NONE' } }) + '\n');
       }
       res.write(JSON.stringify({ done: true, done_reason: 'stop', prompt_eval_count: 80 }) + '\n');
       return res.end();
@@ -121,7 +124,8 @@ try {
     document.querySelector('#s-heavy-model').value = 'planner-mock';
     document.querySelector('#s-esc-failstreak').checked = true;
     document.querySelector('#s-esc-failstreak-n').value = '2';
-    if (document.querySelector('#s-lessonsEnabled')) document.querySelector('#s-lessonsEnabled').checked = false;
+    // Lessons stay ON: a rescued task must send its lessons request to the ⚡ node too.
+    if (document.querySelector('#s-lessonsEnabled')) document.querySelector('#s-lessonsEnabled').checked = true;
     settingsNodes = settingsNodes.filter((n) => n.id === 'this-pc').map((n) => ({ ...n, enabled: true, highPerf: false }));
     document.querySelector('#node-new-name').value = 'Big PC';
     document.querySelector('#node-new-url').value = hp;
@@ -159,9 +163,16 @@ try {
     fail(`the step note naming the node is missing; notices were: ${JSON.stringify(notes)}`);
   }
   if (localRequests !== 2) fail(`expected exactly 2 local model requests before escalation, saw ${localRequests}`);
-  // Two node chats: the failing command turn, then the follow-up the baton rule keeps on the
-  // node instead of bouncing the fresh failure back to the small model.
-  if (hpChats !== 2) fail(`expected exactly 2 chats on the high-perf node (fail + follow-up), saw ${hpChats}`);
+  // Three node chats: the failing command turn, the follow-up the baton rule keeps on the
+  // node, and the rescue-lessons request at task end (the node is the teacher, for free).
+  const lessonsDeadline = Date.now() + 20_000;
+  while (hpChats < 3 && Date.now() < lessonsDeadline) await new Promise((r) => setTimeout(r, 300));
+  if (hpChats !== 3) fail(`expected 3 chats on the high-perf node (fail + follow-up + rescue lessons), saw ${hpChats}`);
+  if (hpChats === 3) {
+    if (!hpBodies[2].includes('needed rescuing')) fail('the rescue-lessons prompt never reached the node');
+    if (!hpBodies[2].includes('command failed: exit 7')) fail('the rescue digest is missing the failed command');
+    if (JSON.parse(hpBodies[2]).model !== 'qwen3-coder:30b') fail('the lessons request should run on the node’s strongest model');
+  }
   if (plannerRequests !== 0) fail(`the planner was called ${plannerRequests} time(s) — the whole point is that it should not be`);
   const hpReq = JSON.parse(hpBodies[0] || '{}');
   if (hpReq.model !== 'qwen3-coder:30b') fail(`the escalated step asked the node for "${hpReq.model}", not its strongest model`);
@@ -193,4 +204,4 @@ try {
   fs.rmSync(ws, { recursive: true, force: true });
 }
 if (process.exitCode) process.exit(process.exitCode);
-console.log(`highperf smoke ok: ${localRequests} failing local turns, escalated to the node (${hpChats} chats incl. the baton follow-up, qwen3-coder:30b), planner untouched (${plannerRequests} requests)`);
+console.log(`highperf smoke ok: ${localRequests} failing local turns, escalated to the node (${hpChats} chats incl. baton follow-up + rescue lessons, qwen3-coder:30b), planner untouched (${plannerRequests} requests)`);
