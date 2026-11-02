@@ -87,3 +87,20 @@ test('planFiles handles empty and junk input', () => {
   assert.deepStrictEqual(E.planFiles(null), []);
   assert.deepStrictEqual(E.planFiles([{ content: 'no files here', status: 'pending' }, null, 42]), []);
 });
+
+test('planningTools keeps only the planning tools for the plan-first turn', () => {
+  const E = require('../src/renderer/escalation.js');
+  const tool = (name) => ({ type: 'function', function: { name } });
+  const all = ['read_file', 'write_file', 'run_command', 'todo_write', 'ask_user', 'web_search'].map(tool);
+  const kept = E.planningTools(all).map((t) => t.function.name);
+  assert.deepStrictEqual(kept, ['todo_write', 'ask_user']);
+  assert.deepStrictEqual(E.planningTools([]), []);
+  assert.deepStrictEqual(E.planningTools(null), []);
+});
+
+test('the plan-first reminder tells the planner to plan, record todos, and not execute', () => {
+  const E = require('../src/renderer/escalation.js');
+  for (const must of ['planning model', 'todo_write', 'Do not execute', 'simplest stack']) {
+    assert.ok(E.PLAN_FIRST_REMINDER.includes(must), `reminder is missing "${must}"`);
+  }
+});
