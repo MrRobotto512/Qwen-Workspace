@@ -28,7 +28,7 @@ On macOS the app installs software with [Homebrew](https://brew.sh) when you ask
   - Start a **new conversation** (`Ctrl+N`) while another task keeps running in the background. A badge and the "needs you" pill show when a background task is waiting for approval.
 - **Models for this PC:**
   - Detects your GPU, VRAM, RAM and CPU.
-  - Rates each Qwen model as fast (fits in GPU memory), usable (partly on CPU), slow, or too large, and picks a context window that fits.
+  - Rates each catalog model — Qwen, plus Google's Gemma 4 (e2b, e4b, 26B MoE, 31B; tool-capable, needs Ollama 0.20+) — as fast (fits in GPU memory), usable (partly on CPU), slow, or too large, and picks a context window that fits. Older Gemma generations can't use tools in Ollama, so Agent mode doesn't work with them and the catalog leaves them out.
   - Marks the best choice as **Recommended**.
   - Downloads models through Ollama inside the app, with progress.
 
@@ -232,7 +232,7 @@ src/
     index.html       Layout and script order
     styles.css       Dark theme
     icons.js         Line icons and file-type badges
-    models.js        Qwen model catalog and hardware fit estimates
+    models.js        Model catalog (Qwen + Gemma 4) and hardware fit estimates
     nodes.js         Ollama nodes: settings migration, health-based routing, failover picks
     github.js        GitHub flow helpers: branch slugs, ahead/behind parsing, versions, notes
     lessons.js       QWEN.md Lessons: bullet parsing, section math, dedupe, command summary

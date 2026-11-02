@@ -1355,7 +1355,7 @@ function addError(c, text, usedTools) {
   DebugLog.add(c, 'error', { text: String(text || '').slice(0, 500) });
   let hint = '';
   if (usedTools && /tool|function/i.test(text)) {
-    hint = '\n\nThis model may not support tool calling. Switch to "Chat" below the message box, or pick a tool-capable model such as qwen2.5-coder, qwen3 or qwen3-coder.';
+    hint = '\n\nThis model may not support tool calling (in Ollama, Gemma has it only from gemma4 on). Switch to "Chat" below the message box, or pick a tool-capable model such as qwen3-coder, qwen2.5-coder or gemma4.';
   } else if (/connect|ECONNREFUSED|fetch failed/i.test(text)) {
     hint = `\n\nCheck Settings: is the base URL right and is the server running? For Ollama run "ollama serve" and "ollama pull ${state.settings.model}".`;
   } else if (/402|more credits|requires more|insufficient|quota|billing/i.test(text)) {

@@ -103,12 +103,15 @@ try {
   const dbgDir = path.join(ws, '.qwen', 'debug');
   const dbgDeadline = Date.now() + 10_000;
   let report = '';
-  while (Date.now() < dbgDeadline && !report) {
+  // The file appears before its bytes finish landing, so wait for the report's fixed closing
+  // line — reading as soon as the file exists catches it half-written under load.
+  while (Date.now() < dbgDeadline && !report.includes('To diagnose:')) {
     const files = fs.existsSync(dbgDir) ? fs.readdirSync(dbgDir) : [];
-    if (files.length) report = fs.readFileSync(path.join(dbgDir, files[0]), 'utf8');
-    else await new Promise((r) => setTimeout(r, 250));
+    report = files.length ? fs.readFileSync(path.join(dbgDir, files[0]), 'utf8') : '';
+    if (!report.includes('To diagnose:')) await new Promise((r) => setTimeout(r, 250));
   }
   if (!report) fail('exportDebugReport never wrote a file under .qwen/debug');
+  else if (!report.includes('To diagnose:')) fail('the debug report never finished writing (no closing line after 10s)');
   if (report.includes('sk-e2e-secret-key')) fail('the API key leaked into the debug report');
   for (const must of ['# Debug report', 'mock-model', 'tool write_file', 'overloaded', 'Full message history', 'system (assembled at request time)']) {
     if (!report.includes(must)) fail(`debug report is missing "${must}"`);
