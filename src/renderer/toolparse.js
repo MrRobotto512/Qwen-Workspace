@@ -107,7 +107,11 @@ function announcesAction(text) {
   // "try/open/download/update/switch/use" joined the verb lists after a field report: a 7B
   // ended a task with "Let's try installing it directly from the App Store instead." and the
   // old list (start/run/install/…) let that through as a final answer.
-  return /\b(let'?s (start|begin|proceed|now|first|ask|verify|fetch|run|install|check|create|search|try|open|download|update|switch|use)|i('|’)?ll (now |first |start )?(ask|fetch|run|install|search|check|create|write|verify|begin|try|open|download|update|switch|use)|next,? (i|we) (will|need to)|(i|we) (will|need to|can) (now |first )?(ask|fetch|run|install|search|check|create|write|verify|try|open|download|update|switch|use))\b[^.]*[.!]?\s*$/i.test(tail);
+  // The announce phrase must sit in the LAST sentence — but a period only ends a sentence
+  // when a space or the end of text follows it, or any announced file name defeats the check
+  // (a later field report ended with "Now let's open the `Package.swift` file in the editor."
+  // and the dot in Package.swift broke the match).
+  return /\b(let'?s (start|begin|proceed|now|first|ask|verify|fetch|run|install|check|create|search|try|open|download|update|switch|use)|i('|’)?ll (now |first |start )?(ask|fetch|run|install|search|check|create|write|verify|begin|try|open|download|update|switch|use)|next,? (i|we) (will|need to)|(i|we) (will|need to|can) (now |first )?(ask|fetch|run|install|search|check|create|write|verify|try|open|download|update|switch|use))\b(?:[^.!?]|\.(?!\s|$))*[.!?]?\s*$/i.test(tail);
 }
 
 // Is a reply a step-by-step instruction list for the user ("Step 1: …", numbered how-to)?
