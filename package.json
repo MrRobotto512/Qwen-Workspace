@@ -74,12 +74,16 @@
         "repo": "Qwen-Workspace"
       }
     ],
+    "afterPack": "build/after-pack.js",
     "mac": {
       "target": [
         "dmg",
         "zip"
       ],
-      "category": "public.app-category.developer-tools"
+      "category": "public.app-category.developer-tools",
+      "extendInfo": {
+        "NSLocalNetworkUsageDescription": "Qwen Workspace connects to Ollama servers on your other computers (the nodes you add in Settings) and serves remote sessions to your paired devices."
+      }
     }
   },
   "repository": {
