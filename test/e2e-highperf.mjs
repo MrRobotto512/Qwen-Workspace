@@ -45,6 +45,8 @@ const local = http.createServer((req, res) => {
 
 // The high-performance node: a native-Ollama server whose tags list a top catalog model.
 // The escalated step must land here, with that model and the node's 5m default keep_alive.
+// Its first turn runs a failing command — the baton rule says the node, not the small model,
+// must get the follow-up turn that deals with that failure.
 let hpChats = 0;
 const hpBodies = [];
 const hpNode = http.createServer((req, res) => {
@@ -63,7 +65,11 @@ const hpNode = http.createServer((req, res) => {
       hpChats++;
       hpBodies.push(body);
       res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
-      res.write(JSON.stringify({ message: { role: 'assistant', content: 'Big node finished the job.' } }) + '\n');
+      if (hpChats === 1) {
+        res.write(JSON.stringify({ message: { role: 'assistant', content: '', tool_calls: [{ function: { name: 'run_command', arguments: { command: 'exit 3' } } }] } }) + '\n');
+      } else {
+        res.write(JSON.stringify({ message: { role: 'assistant', content: 'Big node finished the job.' } }) + '\n');
+      }
       res.write(JSON.stringify({ done: true, done_reason: 'stop', prompt_eval_count: 80 }) + '\n');
       return res.end();
     });
@@ -153,7 +159,9 @@ try {
     fail(`the step note naming the node is missing; notices were: ${JSON.stringify(notes)}`);
   }
   if (localRequests !== 2) fail(`expected exactly 2 local model requests before escalation, saw ${localRequests}`);
-  if (hpChats !== 1) fail(`expected exactly 1 chat on the high-perf node, saw ${hpChats}`);
+  // Two node chats: the failing command turn, then the follow-up the baton rule keeps on the
+  // node instead of bouncing the fresh failure back to the small model.
+  if (hpChats !== 2) fail(`expected exactly 2 chats on the high-perf node (fail + follow-up), saw ${hpChats}`);
   if (plannerRequests !== 0) fail(`the planner was called ${plannerRequests} time(s) — the whole point is that it should not be`);
   const hpReq = JSON.parse(hpBodies[0] || '{}');
   if (hpReq.model !== 'qwen3-coder:30b') fail(`the escalated step asked the node for "${hpReq.model}", not its strongest model`);
@@ -185,4 +193,4 @@ try {
   fs.rmSync(ws, { recursive: true, force: true });
 }
 if (process.exitCode) process.exit(process.exitCode);
-console.log(`highperf smoke ok: ${localRequests} failing local turns, escalated to the node (${hpChats} chat, qwen3-coder:30b), planner untouched (${plannerRequests} requests)`);
+console.log(`highperf smoke ok: ${localRequests} failing local turns, escalated to the node (${hpChats} chats incl. the baton follow-up, qwen3-coder:30b), planner untouched (${plannerRequests} requests)`);

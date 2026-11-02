@@ -354,6 +354,11 @@ async function saveSettingsFromUi() {
   patch.contextLength = Math.max(2048, parseInt($('#s-contextLength').value, 10) || 32768);
   patch.maxResponseTokens = Math.max(0, parseInt($('#s-maxResponseTokens').value, 10) || 0);
   patch.keepAlive = ($('#s-keepAlive').value.trim() || '-1');
+  // A bare number is seconds to Ollama: "5" unloads the model five seconds after each reply,
+  // which looks like the app being slow (a field report had every turn cold-loading the model).
+  if (/^\d+$/.test(patch.keepAlive) && Number(patch.keepAlive) > 0 && Number(patch.keepAlive) < 300) {
+    toast({ key: 'keepalive', icon: 'info', timeout: 15000, text: [el('b', { text: `Keep-alive ${patch.keepAlive} means ${patch.keepAlive} seconds to Ollama` }), ` — the model will reload on nearly every reply. Use ${patch.keepAlive}m for minutes, or -1 to keep it loaded.`] });
+  }
   patch.allowedCommands = $('#s-allowedCommands').value.split(',').map((x) => x.trim()).filter(Boolean);
   patch.maxSteps = Math.min(1000, Math.max(10, parseInt($('#s-maxSteps').value, 10) || DEFAULT_MAX_STEPS));
   for (const k of ['agentMode', 'planFirst', 'includeCurrentFile', 'followAgent', 'autoCheckUpdates', 'branchPerTask', 'lessonsEnabled', 'reviewPass']) patch[k] = $(`#s-${k}`).checked;
