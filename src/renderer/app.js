@@ -69,6 +69,12 @@ let editor;
 let reviewEditor;
 let reviewSideBySide = true;
 const extraAttachments = new Set();
+// Screenshots pasted or dropped into the message box: { mime, data(base64), url(data:) }.
+const pastedImages = [];
+const MAX_IMAGES = 4;
+const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
+// Model names that see images — a hint only; the model itself has the final word.
+const VISION_MODEL = /(?:^|[-_.:/])(?:vl|vision)\b|llava|gemma3|gemma4|minicpm-v|moondream|bakllava|qwen2\.5vl|qwen3-vl|mistral-small3|claude|gpt-4o|gpt-4\.1|gpt-5|gemini|pixtral|llama4/i;
 
 // ===================================================================
 // Boot
@@ -1008,7 +1014,47 @@ function renderChips() {
         el('button', { title: 'Remove', onclick: () => { extraAttachments.delete(p); renderChips(); } }, iconEl('x')))
     );
   }
+  pastedImages.forEach((img, i) => {
+    chips.push(
+      el('span', { class: 'chip image-chip', title: `Screenshot ${i + 1} — sent with your next message` },
+        el('img', { src: img.url, alt: `Screenshot ${i + 1}` }), el('span', { class: 'label', text: `Screenshot ${i + 1}` }),
+        el('button', { title: 'Remove', onclick: () => { pastedImages.splice(i, 1); renderChips(); } }, iconEl('x')))
+    );
+  });
   box.replaceChildren(...chips);
+}
+
+// Pasted or dropped image files become screenshot chips, sent with the next message.
+async function addImageFiles(files) {
+  for (const f of files) {
+    if (!/^image\/(png|jpe?g|gif|webp)$/.test(f.type)) continue;
+    if (pastedImages.length >= MAX_IMAGES) {
+      flash(`Up to ${MAX_IMAGES} screenshots per message`);
+      break;
+    }
+    if (f.size > MAX_IMAGE_BYTES) {
+      flash('That image is over 6 MB — crop it or save a smaller copy');
+      continue;
+    }
+    const url = await new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+      r.readAsDataURL(f);
+    });
+    pastedImages.push({ mime: f.type, data: String(url).split(',')[1], url });
+  }
+  renderChips();
+  const model = convModelLabel(state.conv);
+  if (pastedImages.length && !VISION_MODEL.test(model)) {
+    warnOnce(`vision:${model}`, () => toast({ key: 'vision', icon: 'info', timeout: 15000, text: [el('b', { text: `${model} may not see images.` }), ' Screenshots need a vision model (gemma4, qwen2.5vl, llava…). Pick one from the model menu for this chat, or the image may be ignored.'] }));
+  }
+}
+
+function takePastedImages() {
+  const out = pastedImages.splice(0).map(({ mime, data }) => ({ mime, data }));
+  renderChips();
+  return out;
 }
 
 function addFileToChat(path) {
@@ -2306,6 +2352,21 @@ function autoGrow() {
 }
 
 function bindUi() {
+  $('#prompt').addEventListener('paste', (e) => {
+    const files = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
+    if (!files.length) return; // plain text pastes as usual
+    e.preventDefault();
+    addImageFiles(files);
+  });
+  $('#composer').addEventListener('dragover', (e) => {
+    if ([...(e.dataTransfer?.items || [])].some((it) => it.type.startsWith('image/'))) e.preventDefault();
+  });
+  $('#composer').addEventListener('drop', (e) => {
+    const files = [...(e.dataTransfer?.files || [])].filter((f) => f.type.startsWith('image/'));
+    if (!files.length) return;
+    e.preventDefault();
+    addImageFiles(files);
+  });
   $('#node-diag-copy').onclick = () => {
     navigator.clipboard.writeText($('#node-diag').textContent).then(() => flash('Report copied'), () => flash('Copy failed — select the text instead'));
   };
