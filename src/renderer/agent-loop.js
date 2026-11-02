@@ -877,6 +877,7 @@ async function runConversation(c) {
   let localHeavyDead = false; // the high-perf node stopped answering; skip it this task
   let lastEscLabel = null; // what the previous escalated step ran on, to announce changes once
   let lhCache = { at: 0, pick: null }; // high-perf health-check result, reused for 30s
+  let planAgain = false; // a vague plan goes back to the planning model once (plan-first)
   const retriedBusy = new Set(); // models that already got one same-model retry after a 503/429
   const modelSwap = new Map(); // overloaded model -> working sibling, for the rest of this task
   let cloudDead = false; // every cloud sibling was busy; finish on the local default model
@@ -1017,29 +1018,49 @@ async function runConversation(c) {
     // plan written by something that plans well. Skipped silently when no ⚡ node can serve,
     // and never repeated — c.planned survives for the whole conversation.
     let planTurn = false;
-    if (step === 0 && useTools && !override && state.settings.planFirst && !c.planned && highPerfConfigured()) {
+    if (useTools && !override && state.settings.planFirst && ((step === 0 && !c.planned) || planAgain) && highPerfConfigured()) {
+      const retry = planAgain;
+      planAgain = false;
       c.planned = true; // whatever happens below, plan at most once per conversation
       const lh = await localHeavyOverride();
       if (lh) {
         planTurn = true;
         override = lh.override;
-        c.history.push({ role: 'user', content: `<system-reminder>\n${Escalation.PLAN_FIRST_REMINDER}\n</system-reminder>` });
-        note(`Planning on ${lh.label}.`);
-        DebugLog.add(c, 'escalate', { reason: 'plan-first: the high-performance node writes the plan', interventions, takeover: false });
+        if (!retry) {
+          c.history.push({ role: 'user', content: `<system-reminder>\n${Escalation.PLAN_FIRST_REMINDER}\n</system-reminder>` });
+          note(`Planning on ${lh.label}.`);
+        }
+        DebugLog.add(c, 'escalate', { reason: retry ? 'plan-first: vague plan sent back for a rewrite' : 'plan-first: the high-performance node writes the plan', interventions, takeover: false });
       }
     }
     // Local requests route across Ollama nodes when more than one is enabled: the first
-    // healthy node that has the model gets the request, with its own keep_alive.
+    // healthy node that has the model gets the request, with its own keep_alive. A task STAYS
+    // on the node it started on unless that node is known-down or already failed this task —
+    // a busy Ollama (cold-loading a model, mid-generation) misses a short health check,
+    // and re-picking every step made tasks ping-pong between nodes, cold-loading the model on
+    // both sides (two field reports show the hop and the 50s turns it causes).
     let node = null;
     if (!override && state.settings.provider === 'ollama' && Nodes.multiNode(state.settings)) {
       await refreshNodeHealth();
-      node = Nodes.pickNode(Nodes.normalizeNodes(state.settings), state.nodeHealth.byId, state.settings.model, deadNodes);
+      const nodes = Nodes.normalizeNodes(state.settings);
+      if (lastNodeId && !deadNodes.has(lastNodeId)) {
+        const prev = nodes.find((n) => n.id === lastNodeId && n.enabled);
+        if (prev && state.nodeHealth.byId[lastNodeId]?.up !== false) node = prev;
+      }
+      node = node || Nodes.pickNode(nodes, state.nodeHealth.byId, state.settings.model, deadNodes);
       if (node) {
         // normalizeNodes guarantees a keepAlive on every remote (the user's value or the
         // 5m default), so the node — not the global setting — decides how long its model stays.
         if (node.id !== Nodes.THIS_PC_ID) override = { baseUrl: node.baseUrl, keepAlive: node.keepAlive };
         if (lastNodeId && node.id !== lastNodeId) note(`Running on the ${node.name} node.`);
-        else if (!lastNodeId && node.id !== Nodes.THIS_PC_ID) note(`This PC's node doesn't have ${state.settings.model} ready — running on ${node.name}.`);
+        else if (!lastNodeId && node.id !== Nodes.THIS_PC_ID) {
+          const thisH = state.nodeHealth.byId[Nodes.THIS_PC_ID];
+          const thisOn = nodes.find((n) => n.id === Nodes.THIS_PC_ID)?.enabled;
+          // Say why the task is not on This PC — "doesn't have the model" when that is true,
+          // not when This PC merely missed a health check.
+          if (thisOn && thisH?.up === false) note(`This PC's Ollama didn't answer the health check — running on ${node.name}.`);
+          else if (thisOn) note(`This PC's node doesn't have ${state.settings.model} ready — running on ${node.name}.`);
+        }
         lastNodeId = node.id;
       }
     }
@@ -1266,10 +1287,20 @@ async function runConversation(c) {
       saveConv(c);
     }
 
-    // The planning turn ends once its todo_write ran: tell the everyday model it owns the
-    // execution now, so it starts on step 1 instead of answering in the planner's voice.
+    // The planning turn ends once its todo_write ran — but a plan whose steps mostly name no
+    // file and no command is mush the small model cannot execute, so it goes back to the
+    // planning model exactly once for a rewrite. Otherwise, tell the everyday model it owns
+    // the execution now, so it starts on step 1 instead of answering in the planner's voice.
     if (planTurn) {
-      c.history.push({ role: 'user', content: '<system-reminder>\nThe plan above was written by the high-performance node. You are the everyday model now: execute the todo list step by step, starting with the first item. Do not re-plan.\n</system-reminder>' });
+      const vague = Escalation.vaguePlanSteps(c.todos);
+      if ((c.todos || []).length && vague.length * 2 > c.todos.length && !c.planRetried) {
+        c.planRetried = true;
+        planAgain = true;
+        c.history.push({ role: 'user', content: `<system-reminder>\n${Escalation.planRetryReminder(vague)}\n</system-reminder>` });
+        note('The plan is too vague to execute — sending it back for a rewrite with exact files and commands.');
+      } else {
+        c.history.push({ role: 'user', content: '<system-reminder>\nThe plan above was written by the high-performance node. You are the everyday model now: execute the todo list step by step, starting with the first item. Do not re-plan.\n</system-reminder>' });
+      }
     }
 
     // An escalated model keeps the baton while its own round contains a failure: a field

@@ -67,6 +67,18 @@ test('announcesAction: announce-then-stop replies are caught', () => {
   // The second field-report case: a file name's dot must not break the last-sentence check.
   assert.equal(announcesAction('Great! Now let\'s open the `Package.swift` file in the editor.'), true);
   assert.equal(announcesAction("I'll now run calc.py to verify it works"), true);
+  // The third field-report case: ANY verb after an intent opener counts, and a fenced code
+  // block right before the final sentence must not hide it.
+  assert.equal(announcesAction('Here is the plan to create the project directory and initial files:\n\n```sh\nmkdir Calculator\ncd Calculator\n```\n\nLet\'s execute these steps one by one.'), true);
+  assert.equal(announcesAction("We'll implement the parser next."), true);
+  assert.equal(announcesAction('Then I will set up the project structure.'), true);
+});
+
+test('announcesAction: closing formulas and summaries are not announcements', () => {
+  const { announcesAction } = require('../src/renderer/toolparse.js');
+  assert.equal(announcesAction('The calculator is built and open. Let me know if you want more functions.'), false);
+  assert.equal(announcesAction("Everything is set up. I'll wait for your confirmation before pushing."), false);
+  assert.equal(announcesAction("The build passes. I'll leave the rest to you."), false);
 });
 
 test('announcesAction: real final answers are left alone', () => {

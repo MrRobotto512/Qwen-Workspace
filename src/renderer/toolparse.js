@@ -98,20 +98,34 @@ function extractTextToolCalls(content, names) {
 }
 
 // Does a reply end by announcing an action it never took ("Let's start by…:", "I'll now ask…")?
-// Kept narrow on purpose: a real final answer summarizes what was done, it doesn't announce the
-// very next step. Used to push back on announce-then-stop replies instead of ending the task.
+// This went through three rounds of verb whitelists before field reports proved the shape
+// wrong ("Let's try…", "let's open `Package.swift`", "Let's execute these steps one by one."
+// each slipped past). The durable rule: in agent mode, a FINAL SENTENCE that opens with an
+// intent phrase (let's / I'll / we will / next, I …) is an announcement, whatever the verb —
+// a genuine final answer summarizes, asks, or reports, it doesn't open with intent. Closing
+// formulas ("let me know", "I'll wait") are excluded. Used to push back on announce-then-stop
+// replies instead of ending the task.
+
+// The last sentence of a reply, for the announce check: fenced code blocks are not prose and
+// get stripped first (a reply that ends plan + ```sh block``` + "Let's execute…" must yield
+// the announce sentence, not the block); a period only ends a sentence when whitespace
+// follows (so `Package.swift` doesn't split), and a colon before a list counts as a boundary.
+function lastSentence(text) {
+  const prose = String(text || '').replace(/```[\s\S]*?(```|$)/g, ' ').trim();
+  const parts = prose.split(/(?<=[.!?:])\s+/);
+  return (parts[parts.length - 1] || '').trim();
+}
+
+const ANNOUNCE_CLOSERS = /\b(let (me|us) know|i('|’)?ll (wait|be (here|around|happy)|leave (it|that|this|the rest))|let'?s (see|hope|say))\b/i;
+const ANNOUNCE_OPENER = /^(?:["'*_`]|(?:sure|great|okay|ok|good|alright|perfect|now|first|next|then|finally|so)[,.!]?\s+)*(?:let'?s\b|let us\b|i(?:'|’)?ll\b|i will\b|we(?:'|’)?ll\b|we will\b|we can\b|we need to\b|next,? (?:i|we)\b)/i;
+
 function announcesAction(text) {
-  const tail = String(text || '').trim().slice(-220);
-  if (!tail) return false;
-  if (/[:：]\s*$/.test(tail)) return true;
-  // "try/open/download/update/switch/use" joined the verb lists after a field report: a 7B
-  // ended a task with "Let's try installing it directly from the App Store instead." and the
-  // old list (start/run/install/…) let that through as a final answer.
-  // The announce phrase must sit in the LAST sentence — but a period only ends a sentence
-  // when a space or the end of text follows it, or any announced file name defeats the check
-  // (a later field report ended with "Now let's open the `Package.swift` file in the editor."
-  // and the dot in Package.swift broke the match).
-  return /\b(let'?s (start|begin|proceed|now|first|ask|verify|fetch|run|install|check|create|search|try|open|download|update|switch|use)|i('|’)?ll (now |first |start )?(ask|fetch|run|install|search|check|create|write|verify|begin|try|open|download|update|switch|use)|next,? (i|we) (will|need to)|(i|we) (will|need to|can) (now |first )?(ask|fetch|run|install|search|check|create|write|verify|try|open|download|update|switch|use))\b(?:[^.!?]|\.(?!\s|$))*[.!?]?\s*$/i.test(tail);
+  const t = String(text || '').trim();
+  if (!t) return false;
+  if (/[:：]\s*$/.test(t)) return true; // ends mid-announcement ("Let's begin by…:")
+  const last = lastSentence(t.slice(-600));
+  if (!last || ANNOUNCE_CLOSERS.test(last)) return false;
+  return ANNOUNCE_OPENER.test(last);
 }
 
 // Is a reply a step-by-step instruction list for the user ("Step 1: …", numbered how-to)?

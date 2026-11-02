@@ -50,7 +50,8 @@ const local = http.createServer((req, res) => {
   });
 });
 
-// The ⚡ node: answers the one planning turn with a todo_write plan.
+// The ⚡ node: the first planning turn returns a vague plan (no files, no commands) — the app
+// must bounce it back once — and the rewrite returns a concrete one the small model can run.
 let hpChats = 0;
 const hpBodies = [];
 const hpNode = http.createServer((req, res) => {
@@ -68,8 +69,11 @@ const hpNode = http.createServer((req, res) => {
     req.on('end', () => {
       hpChats++;
       hpBodies.push(body);
+      const todos = hpChats === 1
+        ? [{ content: 'Set up the project structure', status: 'in_progress' }, { content: 'Implement the calculator logic', status: 'pending' }, { content: 'Test the application', status: 'pending' }]
+        : [{ content: 'Create calc.py with the four operations', status: 'in_progress' }, { content: 'Run python calc.py to verify', status: 'pending' }];
       res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
-      res.write(JSON.stringify({ message: { role: 'assistant', content: 'Plan: a plain Python script, no frameworks.', tool_calls: [{ function: { name: 'todo_write', arguments: { todos: [{ content: 'Create calc.py with the four operations', status: 'in_progress' }, { content: 'Run python calc.py to verify', status: 'pending' }] } } }] } }) + '\n');
+      res.write(JSON.stringify({ message: { role: 'assistant', content: hpChats === 1 ? 'Plan recorded.' : 'Concrete plan recorded.', tool_calls: [{ function: { name: 'todo_write', arguments: { todos } } }] } }) + '\n');
       res.write(JSON.stringify({ done: true, done_reason: 'stop', prompt_eval_count: 90 }) + '\n');
       return res.end();
     });
@@ -125,12 +129,15 @@ try {
     { timeout: 45_000 }
   ).catch(() => fail('the everyday model never finished executing the plan'));
 
-  if (hpChats !== 1) fail(`expected exactly 1 planning chat on the ⚡ node, saw ${hpChats}`);
+  if (hpChats !== 2) fail(`expected 2 planning chats on the ⚡ node (vague plan + rewrite), saw ${hpChats}`);
   const hpReq = JSON.parse(hpBodies[0] || '{}');
   if (hpReq.model !== 'qwen3-coder:30b') fail(`the planning turn asked for "${hpReq.model}", not the node's strongest model`);
   if (!hpBodies[0].includes('planning model for this task')) fail('the planning reminder never reached the ⚡ node');
-  const planTools = (hpReq.tools || []).map((t) => t.function?.name).sort();
-  if (planTools.join(',') !== 'ask_user,todo_write') fail(`the planning turn should only get planning tools, saw: ${planTools.join(', ')}`);
+  for (const [i, b] of [hpBodies[0], hpBodies[1]].entries()) {
+    const tools = (JSON.parse(b || '{}').tools || []).map((t) => t.function?.name).sort();
+    if (tools.join(',') !== 'ask_user,todo_write') fail(`planning turn ${i + 1} should only get planning tools, saw: ${tools.join(', ')}`);
+  }
+  if (!hpBodies[1].includes('not executable')) fail('the vague-plan corrective reminder never reached the rewrite turn');
   if (localRequests !== 2) fail(`expected 2 everyday-model requests (execute + final), saw ${localRequests}`);
   if (!localBodies[0]?.includes('written by the high-performance node')) fail('the back-to-everyday reminder is missing from the execution request');
   if (!fs.existsSync(madeFile)) fail('the everyday model never wrote the file the plan named');
@@ -159,4 +166,4 @@ try {
   fs.rmSync(ws, { recursive: true, force: true });
 }
 if (process.exitCode) process.exit(process.exitCode);
-console.log(`planfirst smoke ok: 1 planning chat on the node (planning tools only), plan landed as ${2} todos, everyday model executed it (${localRequests} requests)`);
+console.log(`planfirst smoke ok: vague plan bounced for a rewrite (${hpChats} planning chats, planning tools only), concrete plan landed as 2 todos, everyday model executed it (${localRequests} requests)`);
