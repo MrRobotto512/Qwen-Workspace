@@ -63,7 +63,7 @@ test('summarize reports crashes, missing windows and successful runs', () => {
   assert.match(ok, /Actions: clicked \(1, 2\); typed "7"\./);
   assert.match(ok, /still running at the end/);
   assert.match(ok, /screenshot of the window is attached \(320×240 px\)/);
-  assert.match(G.summarize({ windowFound: true, windowTitle: 'C', windowAfterMs: 1, alive: true, shot: { width: 1, height: 1 } }, false), /does not look able to see images/);
+  assert.match(G.summarize({ windowFound: true, windowTitle: 'C', windowAfterMs: 1, alive: true, shot: { width: 1, height: 1 } }, false), /cannot see images/);
   assert.equal(G.summarize({ error: 'empty command' }), 'Error: empty command');
 });
 
@@ -80,4 +80,15 @@ test('webTarget spots web pages behind start/open, and single-letter keys parse'
   assert.deepEqual(G.xdotoolSteps([{ key: 'w' }], 5, null, null).at(-1), ['key', 'w']);
   assert.match(G.summarizePage({ loaded: true, title: 'G', errors: ['Uncaught ReferenceError: animate is not defined (main.js:5)'], logs: ['ready'], shot: { width: 1024, height: 768 } }, true), /Page "G" loaded\.\nConsole errors \(1\) — fix these first:\n- Uncaught ReferenceError[\s\S]*Console output \(last 1\):\n  ready[\s\S]*attached \(1024×768 px\)/);
   assert.match(G.summarizePage({ loaded: false, loadError: 'ERR_FILE_NOT_FOUND' }, false), /did not load: ERR_FILE_NOT_FOUND/);
+});
+
+test('pixel check flags a flat screenshot', () => {
+  const flat = new Uint8Array(100 * 100 * 4).fill(20);
+  const st = G.pixelStats(flat, 100, 100);
+  assert.equal(st.topShare, 1);
+  assert.match(G.pixelNote(st), /100% one colour/);
+  const busy = new Uint8Array(100 * 100 * 4);
+  for (let i = 0; i < busy.length; i++) busy[i] = (i * 37) % 256;
+  assert.equal(G.pixelNote(G.pixelStats(busy, 100, 100)), '');
+  assert.equal(G.pixelNote(null), '');
 });

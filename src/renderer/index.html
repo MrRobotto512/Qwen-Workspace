@@ -246,6 +246,7 @@
       <label class="check"><input type="checkbox" id="s-branchPerTask" /> Branch per task: when a task first edits a file in a git repo, work on a new qwen/&lt;task&gt; branch</label>
       <label class="check"><input type="checkbox" id="s-lessonsEnabled" /> Lessons: after a task that ran commands, propose up to 3 durable notes for QWEN.md (you approve the diff)</label>
       <label class="check"><input type="checkbox" id="s-subagents" /> Subagents: the agent can hand subtasks to fresh agents (only their summaries come back) — at the same time on your other machines with Ollama on 2+ nodes, and on the ⚡ node or planner for "strong" work such as reviewing a spec (paid planner runs ask first unless consult freely is on)</label>
+      <label class="check"><input type="checkbox" id="s-describeScreens" /> Describe screenshots for models that can't see: when the agent's model is text-only, a vision model (on another node, the planner, or this PC) describes each test_app screenshot, so "no errors" isn't taken as "looks right"</label>
       <label class="check"><input type="checkbox" id="s-stopRule" /> Stop rule: when a command fails, the agent names the cause before fixing it; after two failed fixes for the same error it stops and reports to you (or asks the planner once, with consult freely) instead of piling up guesses</label>
       <label class="check"><input type="checkbox" id="s-checksGate" /> Checks gate: when the project has checks (type <code>/checks</code> to set them up), run them before and after each agent task; if the task breaks one, the agent gets one fix attempt, then you can roll its changes back</label>
       <label class="check"><input type="checkbox" id="s-skillWriter" /> Self-written skills: after a long task that worked, propose a reusable skill for your personal skills folder (you approve it; unused ones are archived after 60 days)</label>
@@ -501,6 +502,7 @@
   <script src="skillrun.js"></script>
   <script src="failstreak.js"></script>
   <script src="browserctl.js"></script>
+  <script src="honesty.js"></script>
   <script src="checks.js"></script>
   <script src="subagents.js"></script>
   <script src="guitest.js"></script>

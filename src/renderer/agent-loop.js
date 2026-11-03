@@ -155,12 +155,115 @@ function modelSeesImages(c) {
   return VISION_MODEL.test(String(conversationOverride(c)?.model || c.model || state.settings.model || ''));
 }
 
+// ---------- Eyes for a model that cannot see ----------
+// test_app screenshots are useless to a text-only model, and "No console errors" reads as "it
+// works" (a field report: coins and obstacles were invisible for an hour while qwen3-coder kept
+// saying they were fixed). So a vision model describes the screenshot against the user's latest
+// request: one on another Ollama node first (free, and its GPU is not the one busy with the
+// task), then the planner when it can see (cloud — gated by the monthly budget like the review
+// pass), then one on this PC (free, but swaps models on this GPU). A pixel check needs no model.
+
+// The vision model to ask, as { override, label, cloud } or null.
+async function pickLooker() {
+  const s = state.settings;
+  const local = [];
+  if (s.provider === 'ollama') {
+    await refreshNodeHealth().catch(() => {});
+    for (const n of Nodes.normalizeNodes(s)) {
+      const h = state.nodeHealth?.byId?.[n.id];
+      if (!n.enabled || h?.up !== true || h.kind === 'lmstudio') continue;
+      const m = (h.models || []).find((x) => VISION_MODEL.test(x) && !/embed/i.test(x));
+      if (m) local.push({ override: { ...(Nodes.nodeOverride(n, h, m) || {}), model: m }, label: `${m} on ${n.name}`, thisPc: n.id === Nodes.THIS_PC_ID });
+    }
+  }
+  const remote = local.find((l) => !l.thisPc);
+  if (remote) return remote;
+  const planner = heavyOverride();
+  if (planner && VISION_MODEL.test(planner.model) && !Costs.capReached(s.spend, s.prices, s.monthlyCapUSD)) return { override: planner, label: heavyLabel(), cloud: true };
+  return local[0] || null;
+}
+
+// Decode a PNG (base64) and run the pixel check; null if the browser cannot decode it.
+async function screenshotPixels(png) {
+  try {
+    const bytes = Uint8Array.from(atob(png), (ch) => ch.charCodeAt(0));
+    const bmp = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
+    const canvas = new OffscreenCanvas(bmp.width, bmp.height);
+    const g = canvas.getContext('2d');
+    g.drawImage(bmp, 0, 0);
+    return GuiTest.pixelStats(g.getImageData(0, 0, bmp.width, bmp.height).data, bmp.width, bmp.height);
+  } catch {
+    return null;
+  }
+}
+
+// The lines a text-only model gets after a test_app screenshot: the blind-model rule, the
+// pixel check, and a vision model's description when one is available.
+async function describeForBlindModel(c, shot) {
+  const lines = [Honesty.BLIND_NOTE];
+  const px = GuiTest.pixelNote(await screenshotPixels(shot.png));
+  if (px) lines.push(px);
+  if (state.settings.describeScreens === false) return lines.join('\n');
+  c.lookCache = c.lookCache || new Map();
+  const key = `${shot.png.length}:${shot.png.slice(-64)}:${shot.png.slice(4000, 4064)}`;
+  let look = c.lookCache.get(key);
+  if (!look) {
+    const who = await pickLooker();
+    if (who) {
+      setActivity(c, `Asking ${who.label} to look at the screenshot`);
+      const task = Honesty.userWords(c.history, { max: 1 })[0] || '';
+      const payload = { override: who.override, messages: [{ role: 'user', content: Honesty.lookPrompt(task), images: [{ mime: 'image/png', data: shot.png }] }] };
+      const res = who.cloud ? await cloudChat(c, 'look', payload) : await api.chatStream(`look${Date.now()}`, payload);
+      if (who.cloud && res.usage) recordSpend(c, res.model || who.override.model, res.usage.promptTokens || 0, res.usage.completionTokens || 0);
+      const text = res.ok ? stripThink(res.content || '').trim().slice(0, 1200) : '';
+      DebugLog.add(c, 'notice', { text: text ? `look: ${who.label} described the screenshot` : `look: ${who.label} failed — ${String(res.error || 'empty answer').slice(0, 160)}` });
+      if (text) look = { by: res.model && who.cloud ? res.model : who.label, text };
+    }
+    if (look) c.lookCache.set(key, look);
+  }
+  lines.push(look
+    ? `What the screenshot shows, described by ${look.by} (it can see images; you cannot):\n${look.text}`
+    : 'No vision model was available to describe the screenshot. Tell the user you could not check how it looks and ask them to look, instead of saying it works.');
+  return lines.join('\n');
+}
+
 // ---------- Cloud model ladder (Gemini / Claude) ----------
 // Every cloud call — task steps, escalations, plan-first, consult_planner, the review pass, the
 // goal judge, lessons, skills — runs on the best model of its family that is not resting. A
 // busy model (503/429, or no first token in two minutes) rests five minutes and the next call
 // goes straight to the next model down; after the rest QWS climbs back up. See cloudladder.js.
 const cloudCool = new Map(); // model -> resting until (ms)
+const cloudWhy = new Map(); // model -> why it rests: 'busy' | 'quota' | 'quota-day' | 'dead'
+let quotaWarned = false; // the used-up-quota explanation is shown once per app session
+
+// Rest a cloud model after a failed answer, for as long as the error says (a daily quota rests
+// until it resets), and explain a used-up quota once — plainly, with what lifts it.
+function restCloud(c, model, error, dead) {
+  const r = CloudLadder.restFor(error, Date.now(), dead);
+  CloudLadder.rest(cloudCool, model, Date.now(), dead, r.ms);
+  cloudWhy.set(model, r.why);
+  if (!r.quota || quotaWarned) return r;
+  quotaWarned = true;
+  const gemini = /^gemini/i.test(model);
+  const until = r.why === 'quota-day' ? 'until its daily quota resets (midnight Pacific time)' : 'for a minute';
+  const text = r.quota.freeTier && gemini
+    ? `Google says your Gemini API key is on the free tier and has used up its ${r.quota.daily || r.quota.none ? 'daily ' : ''}requests for ${model}${r.quota.none ? ' (the free tier does not include it)' : ''}. A Google AI Plus, Pro or Ultra subscription covers the Gemini app, not the API — turning on billing for the key's Google Cloud project (AI Studio → API keys → Set up billing) lifts the limit. QWS skips ${model} ${until} and uses the next model.`
+    : `${model} has used up its quota on this API key — QWS skips it ${until} and uses the next model.`;
+  DebugLog.add(c, 'notice', { text });
+  if (c) {
+    const item = { t: 'notice', text };
+    c.display.push(item);
+    renderNotice(c, item);
+  }
+  toast({ key: 'cloud-quota', icon: 'alert', timeout: 30000, text, actions: gemini && r.quota.freeTier ? [{ label: 'Open AI Studio', primary: true, onClick: () => api.openExternal('https://aistudio.google.com/apikey') }] : [] });
+  return r;
+}
+
+// Why every candidate of a ladder rests, in words: used-up quota or busy.
+function restingWords(candidates) {
+  const why = (candidates || []).map((m) => cloudWhy.get(m));
+  return why.length && why.every((w) => w === 'quota' || w === 'quota-day' || w === 'dead') && why.some((w) => w !== 'dead') ? 'out of quota on this key' : 'busy right now';
+}
 const liveModelCache = new Map(); // provider|baseUrl -> { at, list }
 
 async function liveModels(conn) {
@@ -193,7 +296,10 @@ async function cloudChat(c, kind, payload) {
   const base = payload.override || mainCloudConn();
   for (let attempt = 0; attempt < 6; attempt++) {
     const r = await resolveCloud(base);
-    if (!r.conn && base) return { ok: false, error: `Every ${CloudLadder.familyOf(base.provider, base.model)} model is busy right now — try again in a few minutes.` };
+    if (!r.conn && base) {
+      const words = restingWords(r.candidates);
+      return { ok: false, error: `Every ${CloudLadder.familyOf(base.provider, base.model)} model is ${words}${words === 'busy right now' ? ' — try again in a few minutes' : ''}.`, resting: true };
+    }
     const used = r.conn || undefined;
     const res = await api.chatStream(`${kind}${Date.now()}`, { ...payload, override: used || payload.override || undefined });
     const laddered = used && CloudLadder.familyOf(used.provider, used.model);
@@ -201,8 +307,8 @@ async function cloudChat(c, kind, payload) {
     const busy = ToolParse.isBusyModelError(res.error);
     const dead = !busy && ToolParse.isDeadModelError(res.error);
     if (!busy && !dead) return { ...res, model: used.model };
-    CloudLadder.rest(cloudCool, used.model, Date.now(), dead);
-    if (c) DebugLog.add(c, 'notice', { text: `${kind}: ${used.model} ${dead ? 'is not available on this key' : 'is busy'} — trying the next model` });
+    const why = restCloud(c, used.model, res.error, dead).why;
+    if (c) DebugLog.add(c, 'notice', { text: `${kind}: ${used.model} ${dead ? 'is not available on this key' : why.startsWith('quota') ? 'is out of quota' : 'is busy'} — trying the next model` });
   }
   return { ok: false, error: 'No cloud model answered.' };
 }
@@ -511,10 +617,7 @@ async function executeTool(c, call, row) {
         };
       }
       case 'todo_write': {
-        const todos = (Array.isArray(args.todos) ? args.todos : [])
-          .slice(0, 20)
-          .map((t) => ({ content: String(t.content || '').slice(0, 200), status: ['pending', 'in_progress', 'completed'].includes(t.status) ? t.status : 'pending' }))
-          .filter((t) => t.content);
+        const todos = todosFromArgs(args);
         c.todos = todos;
         if (c === state.conv) renderTodoBar();
         // Escalation suggestion (optional, off by default): a plan touching many files is
@@ -571,7 +674,8 @@ async function executeTool(c, call, row) {
           setActivity(c, `Testing ${web.url || web.file}`);
           const r = await api.guiTestPage({ file: web.file ? normPath(web.file) : undefined, url: web.url, actions: pa.actions, waitSeconds: args.wait_seconds });
           const vision = modelSeesImages(c);
-          const text = GuiTest.summarizePage(r, !!(r.shot && vision));
+          let text = GuiTest.summarizePage(r, !!(r.shot && vision));
+          if (r.shot && !vision && r.loaded) text += `\n${await describeForBlindModel(c, r.shot)}`;
           row.setBody(text);
           if (r.shot) row.setImage?.(`data:image/png;base64,${r.shot.png}`);
           const errs = (r.errors || []).length;
@@ -591,7 +695,8 @@ async function executeTool(c, call, row) {
         setActivity(c, `Testing ${cmd}`);
         const r = await api.guiTest({ command: cmd, waitSeconds: args.wait_seconds, windowTitle: args.window_title, actions: pa.actions });
         const vision = modelSeesImages(c);
-        const text = GuiTest.summarize(r, !!(r.shot && vision));
+        let text = GuiTest.summarize(r, !!(r.shot && vision));
+        if (r.shot && !vision && r.windowFound) text += `\n${await describeForBlindModel(c, r.shot)}`;
         row.setBody(text);
         if (r.shot) row.setImage?.(`data:image/png;base64,${r.shot.png}`);
         const failed = !!r.error || !r.windowFound || !r.alive || !!r.actionError;
@@ -1921,6 +2026,8 @@ async function runConversation(c) {
   const deadNodes = new Set(); // Ollama nodes given up on for the rest of this task
   let lastNodeId = c.pinNodeId || null; // which node the previous step ran on (a subagent starts on its assigned one)
   let capBlocked = false; // the user declined to pass the monthly budget; stay local this task
+  const spokenTexts = []; // long replies that came with tool calls this run (to spot the same one again)
+  let noopRounds = 0; // consecutive rounds whose every call did nothing (print-only commands, an unchanged plan)
 
   const note = (text) => {
     const item = { t: 'notice', text };
@@ -2157,7 +2264,7 @@ async function runConversation(c) {
             const lastMsg = c.history[c.history.length - 1];
             if (lastMsg?.role === 'user' && String(lastMsg.content).includes(Escalation.PLAN_FIRST_REMINDER)) c.history.pop();
           }
-          note(`Every ${CloudLadder.familyOf(base.provider, base.model) === 'gemini' ? 'Gemini' : 'cloud'} model is busy right now — continuing on ${state.settings.model}.`);
+          note(`Every ${CloudLadder.familyOf(base.provider, base.model) === 'gemini' ? 'Gemini' : 'cloud'} model is ${restingWords(r.candidates)} — continuing on ${state.settings.model}.`);
         } else if (cloudWaits < 3) {
           // The main model is cloud and every sibling rests: wait for the first to come back.
           const s = CloudLadder.soonest(r.candidates, cloudCool, Date.now());
@@ -2346,8 +2453,8 @@ async function runConversation(c) {
         // A laddered cloud model rests and the very next try goes to the next model down —
         // no fixed wait, no retry into the same overload.
         if (CloudLadder.familyOf(override?.provider || state.settings.provider, failedModel)) {
-          CloudLadder.rest(cloudCool, failedModel, Date.now(), dead);
-          note(dead ? `${failedModel} is not available on this key — skipping it for a day.` : `${failedModel} is busy — moving to the next model now; QWS tries ${failedModel} again in ${CloudLadder.COOL_BUSY_MS / 60_000} minutes.`);
+          const why = restCloud(c, failedModel, res.error, dead).why;
+          if (!why.startsWith('quota')) note(dead ? `${failedModel} is not available on this key — skipping it for a day.` : `${failedModel} is busy — moving to the next model now; QWS tries ${failedModel} again in ${CloudLadder.COOL_BUSY_MS / 60_000} minutes.`);
           continue;
         }
         if (busy && !retriedBusy.has(failedModel)) {
@@ -2470,6 +2577,32 @@ async function runConversation(c) {
     }
     ranTools = true;
 
+    // The victory lap (a field report: 35 rounds of the same "project completed" summary, each
+    // with an `echo "COMPLETION CONFIRMED"` or an unchanged todo_write): a long reply sent again
+    // with only calls that do nothing is the final answer. The first such round gets a plain
+    // "that did nothing" result; the repeat ends the task with the reply as the answer.
+    {
+      const said = msg.content || '';
+      const longText = Honesty.normText(said).length >= Honesty.MIN_REPEAT_CHARS;
+      const noops = calls.map((tc) => noopCall(c, tc));
+      const allNoop = noops.every(Boolean);
+      const repeated = longText && spokenTexts.some((t) => Honesty.sameText(t, said));
+      const harmless = calls.every((tc, i) => noops[i] || READ_ONLY_TOOLS.has(tc.function.name));
+      if (longText && ((allNoop && (repeated || noopRounds > 0)) || (repeated && harmless))) {
+        delete msg.tool_calls;
+        view.finish(false);
+        saveConv(c);
+        note('Qwen had already given its final answer and kept re-confirming it — ended the task here.');
+        if (c.skillsUsed?.size) {
+          note(`Skills used: ${[...c.skillsUsed].join(', ')}.`);
+          c.skillsUsed = new Set();
+        }
+        return false;
+      }
+      if (longText) spokenTexts.push(said);
+      noopRounds = allNoop ? noopRounds + 1 : 0;
+    }
+
     let progressed = false;
     let roundFailed = false;
     for (const batch of toolBatches(calls)) {
@@ -2567,11 +2700,47 @@ async function runConversation(c) {
   return true; // unfinished: show the task as failed, not done
 }
 
+// 'print' for a command that only prints text, 'plan' for a todo_write that changes nothing,
+// else null. Both are what a model does when it is "confirming" instead of working.
+function todosFromArgs(args) {
+  return (Array.isArray(args?.todos) ? args.todos : [])
+    .slice(0, 20)
+    .map((t) => ({ content: String(t?.content || '').slice(0, 200), status: ['pending', 'in_progress', 'completed'].includes(t?.status) ? t.status : 'pending' }))
+    .filter((t) => t.content);
+}
+
+function noopCall(c, call) {
+  const name = call?.function?.name;
+  if (name !== 'run_command' && name !== 'todo_write') return null;
+  let args;
+  try {
+    args = JSON.parse(call.function.arguments || '{}');
+  } catch {
+    return null;
+  }
+  if (name === 'run_command') return Honesty.isReportOnlyCommand(args.command) ? 'print' : null;
+  const todos = todosFromArgs(args);
+  return todos.length && (c.todos || []).length && Honesty.todosEqual(c.todos, todos) ? 'plan' : null;
+}
+
 // Runs a tool, unless it is an identical repeat of an earlier read-only call this run — then it
 // returns the earlier outcome with a note, so the model stops looping instead of re-reading.
 async function runOrSkip(c, call, row, seen, step) {
   const sig = callSignature(call);
   const name = call.function.name;
+  // Calls that do nothing are answered without running and never count as progress.
+  const noop = noopCall(c, call);
+  if (noop === 'print') {
+    row.setBody('(not run — it only prints text)');
+    DebugLog.add(c, 'tool', { name, meta: 'only prints text', failed: false });
+    return { result: Honesty.NOOP_RESULT, meta: 'only prints text', progress: false };
+  }
+  if (noop === 'plan') {
+    row.setBody(todoLines(c.todos || []));
+    DebugLog.add(c, 'tool', { name, meta: 'plan unchanged', failed: false });
+    const done = (c.todos || []).filter((t) => t.status === 'completed').length;
+    return { result: `Plan unchanged (${done}/${(c.todos || []).length} done) — it is exactly the plan you already have. Do not re-send it. Make the next real change, or, if everything is done, reply to the user in plain text with no tool call.`, meta: 'unchanged', progress: false };
+  }
   if (READ_ONLY_TOOLS.has(name) && seen.has(sig)) {
     row.setBody('(skipped — identical to an earlier step)');
     DebugLog.add(c, 'tool', { name, meta: 'repeat skipped', failed: true });
@@ -2685,7 +2854,8 @@ Use these sections:
 <goal>What the user asked for, including constraints and preferences.</goal>
 <progress>What has been done: what was learned from files, which files changed and how, commands run and their results.</progress>
 <state>Where the work stands and the immediate next step.</state>
-<open_questions>Anything unresolved or waiting on the user.</open_questions>
+<open_questions>Anything unresolved or waiting on the user — every problem the user reported that no tool result has shown fixed.</open_questions>
+${Honesty.COMPACT_RULES}
 Keep it under 400 words. Reply with the summary only.
 </instructions>`;
 
@@ -2727,7 +2897,10 @@ async function compactConversation(c, { manual } = {}) {
     addError(c, `Couldn't summarize the conversation to free up context${res.error ? `: ${res.error}` : '.'}`);
     return false;
   }
-  const block = `<conversation-summary>\nEarlier parts of this conversation were summarized to save context.\n${summary}\n</conversation-summary>`;
+  // The user's own words go in verbatim, outside the model's summary: a bug they reported must
+  // not turn into "resolved" because the agent said so (a field report's summary did exactly that).
+  const words = Honesty.userWordsBlock(Honesty.userWords(head));
+  const block = `<conversation-summary>\nEarlier parts of this conversation were summarized to save context.\n${summary}${words ? `\n${words}` : ''}\n</conversation-summary>`;
   let tail = h.slice(cut);
   // A big recent tool result (a long file, say) can blow the tail budget on its own; shorten
   // those instead of keeping them whole, since the model can fetch them again.

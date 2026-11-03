@@ -55,6 +55,7 @@ const DEFAULT_SETTINGS = {
   checksApproved: {}, // project root -> the exact checks.json text the user allowed to run
   skillWriter: true, // after a long task that worked, propose a reusable skill (approval card)
   reviewPass: false, // planner reviews each task's diff and hands fixes back (2 rounds max) // after a task that ran commands, propose lessons for QWEN.md (always behind the diff card)
+  describeScreens: true, // a text-only model's test_app screenshots are described by a vision model
   stopRule: true, // the same command failing the same way: name the cause; after two failed fixes, stop and report
   browserSites: [], // websites where browser tools may act without asking ("Allow on <site>")
   consultFreely: false, // the agent may call consult_planner whenever unsure (more cloud cost; the budget cap applies)
@@ -766,6 +767,16 @@ ipcMain.handle('chat:stream', async (event, id, payload) => {
   }
 });
 
+// An API error body, shortened for the message — but a quota's ids (Gemini puts
+// "GenerateRequestsPerDayPerProjectPerModel-FreeTier" deep in `details`) survive the cut, since
+// they tell a daily free-tier limit from a per-minute one.
+function errorBody(text) {
+  const t = String(text || '');
+  if (t.length <= 600) return t;
+  const ids = [...new Set([...t.matchAll(/"quotaId"\s*:\s*"([^"]+)"/g)].map((m) => m[1]))];
+  return `${t.slice(0, 600)}${ids.length ? ` … [quota: ${ids.join(', ')}]` : ''}`;
+}
+
 async function chatStreamInner(s, payload, controller, send, fail) {
 
   if (s.provider === 'anthropic') {
@@ -817,7 +828,7 @@ async function chatStreamInner(s, payload, controller, send, fail) {
     });
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(`HTTP ${res.status} from ${s.baseUrl}: ${text.slice(0, 600)}`);
+      throw new Error(`HTTP ${res.status} from ${s.baseUrl}: ${errorBody(text)}`);
     }
 
     let content = '';
@@ -1151,7 +1162,7 @@ async function streamAnthropic(s, payload, signal, send) {
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`HTTP ${res.status} from ${s.baseUrl}: ${text.slice(0, 600)}`);
+    throw new Error(`HTTP ${res.status} from ${s.baseUrl}: ${errorBody(text)}`);
   }
 
   let content = '';
