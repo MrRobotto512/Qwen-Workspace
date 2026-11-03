@@ -193,7 +193,7 @@ function summarize(r, sent) {
     if (r.shot) {
       lines.push(sent
         ? `A screenshot of the window is attached (${r.shot.width}×${r.shot.height} px). Click coordinates for the next test_app call are pixels in this screenshot.`
-        : `A ${r.shot.width}×${r.shot.height} screenshot was taken, but the current model does not look able to see images, so only the text above is reported.`);
+        : `A ${r.shot.width}×${r.shot.height} screenshot was taken, but the current model cannot see images.`);
     } else {
       lines.push('The window could not be captured (on macOS, QWS needs Screen Recording permission).');
     }
@@ -235,11 +235,39 @@ function summarizePage(r, sent) {
   if (r.shot) {
     lines.push(sent
       ? `A screenshot of the page is attached (${r.shot.width}×${r.shot.height} px). Click coordinates for the next test_app call are pixels in this screenshot.`
-      : `A ${r.shot.width}×${r.shot.height} screenshot was taken, but the current model does not look able to see images.`);
+      : `A ${r.shot.width}×${r.shot.height} screenshot was taken, but the current model cannot see images.`);
   }
   return lines.join('\n');
 }
 
-const GuiTestExports = { MAX_ACTIONS, SHOT_BOX, KEYS, parseActions, windowIdFromSource, pickWindow, scalePoint, xdotoolSteps, sendKeysEscape, windowsScript, macScript, describeAction, summarize, webTarget, electronKey, summarizePage };
+// What a screenshot's pixels say without any model: how much of it is one colour, and how many
+// colours it has. A page or 3D scene that draws nothing is one flat colour. `rgba` is
+// ImageData-style bytes; every `step`-th pixel is sampled, colours bucketed to 4 bits a channel.
+function pixelStats(rgba, width, height, step = 7) {
+  const counts = new Map();
+  let n = 0;
+  const total = width * height;
+  for (let i = 0; i < total; i += step) {
+    const o = i * 4;
+    const key = ((rgba[o] >> 4) << 8) | ((rgba[o + 1] >> 4) << 4) | (rgba[o + 2] >> 4);
+    counts.set(key, (counts.get(key) || 0) + 1);
+    n++;
+  }
+  let top = 0;
+  let topKey = 0;
+  for (const [k, v] of counts) if (v > top) [top, topKey] = [v, k];
+  const hex = (v) => ((v * 17).toString(16)).padStart(2, '0');
+  return { topShare: n ? top / n : 0, colours: counts.size, top: `#${hex(topKey >> 8)}${hex((topKey >> 4) & 15)}${hex(topKey & 15)}` };
+}
+
+// A line for the model when the picture is suspiciously flat, else ''.
+function pixelNote(st) {
+  if (!st) return '';
+  if (st.topShare >= 0.97 || st.colours <= 3) return `Pixel check: the screenshot is ${Math.round(st.topShare * 100)}% one colour (${st.top}) — the page or scene looks empty or is not drawing.`;
+  if (st.topShare >= 0.85) return `Pixel check: ${Math.round(st.topShare * 100)}% of the screenshot is one colour (${st.top}) — most of the view is empty background.`;
+  return '';
+}
+
+const GuiTestExports = { pixelStats, pixelNote, MAX_ACTIONS, SHOT_BOX, KEYS, parseActions, windowIdFromSource, pickWindow, scalePoint, xdotoolSteps, sendKeysEscape, windowsScript, macScript, describeAction, summarize, webTarget, electronKey, summarizePage };
 if (typeof module !== 'undefined' && module.exports) module.exports = GuiTestExports;
 if (typeof window !== 'undefined') window.GuiTest = GuiTestExports;

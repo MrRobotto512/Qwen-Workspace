@@ -38,8 +38,9 @@ function pick(candidates, cool, now) {
   return (candidates || []).find((m) => !(cool.get(m) > now)) || null;
 }
 
-function rest(cool, model, now, dead) {
-  cool.set(model, now + (dead ? COOL_DEAD_MS : COOL_BUSY_MS));
+// `ms` (from restFor) overrides the default rest: five minutes busy, a day dead.
+function rest(cool, model, now, dead, ms) {
+  cool.set(model, now + (ms || (dead ? COOL_DEAD_MS : COOL_BUSY_MS)));
 }
 
 // When every candidate rests: the one free soonest, and how long until then.
@@ -52,6 +53,43 @@ function soonest(candidates, cool, now) {
   return best ? { model: best.model, waitMs: Math.max(0, best.until - now) } : null;
 }
 
-const CloudLadderExports = { COOL_BUSY_MS, COOL_DEAD_MS, isAuto, familyOf, ladder, pick, rest, soonest };
+// ---------- used-up quota ----------
+// A 429 is not always "busy". Gemini says RESOURCE_EXHAUSTED with "Quota exceeded for metric:
+// …free_tier_requests, limit: N" when the key has spent its allowance — per minute (a short
+// wait helps) or per day (nothing helps until the reset at midnight Pacific). A free-tier key
+// says "free_tier" (a Google AI Plus/Pro subscription does not raise API limits; billing on the
+// key's Cloud project does); "limit: 0" means the model is not in the free tier at all.
+// Returns null for anything that is not a quota answer.
+function quotaInfo(text) {
+  const t = String(text || '');
+  if (!/quota|RESOURCE_EXHAUSTED/i.test(t)) return null;
+  if (!/\b429\b|RESOURCE_EXHAUSTED|quota exceeded|exceeded your (current )?quota/i.test(t)) return null;
+  const retry = /retry in ([\d.]+)\s*s/i.exec(t) || /"retryDelay"\s*:\s*"([\d.]+)s"/.exec(t);
+  return {
+    freeTier: /free[_ -]?tier/i.test(t),
+    daily: /per ?day|PerDay|daily/i.test(t),
+    none: /limit:\s*0\b/.test(t),
+    retryMs: retry ? Math.ceil(parseFloat(retry[1]) * 1000) : null
+  };
+}
+
+// Milliseconds from `now` to the next midnight in Los Angeles, when Gemini's daily quotas reset.
+function msToPacificMidnight(now) {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(new Date(now));
+  const get = (k) => Number(parts.find((p) => p.type === k)?.value || 0) % 24;
+  const since = (get('hour') * 3600 + get('minute') * 60 + get('second')) * 1000;
+  return Math.max(60_000, 24 * 3600_000 - since);
+}
+
+// How long a model rests after `error`: { ms, why } with why 'dead' | 'quota-day' | 'quota' | 'busy'.
+function restFor(error, now, dead) {
+  if (dead) return { ms: COOL_DEAD_MS, why: 'dead' };
+  const q = quotaInfo(error);
+  if (q && (q.daily || q.none)) return { ms: msToPacificMidnight(now), why: 'quota-day', quota: q };
+  if (q) return { ms: Math.min(COOL_BUSY_MS, Math.max(60_000, (q.retryMs || 0) + 2000)), why: 'quota', quota: q };
+  return { ms: COOL_BUSY_MS, why: 'busy' };
+}
+
+const CloudLadderExports = { COOL_BUSY_MS, COOL_DEAD_MS, isAuto, familyOf, ladder, pick, rest, soonest, quotaInfo, msToPacificMidnight, restFor };
 if (typeof module !== 'undefined' && module.exports) module.exports = CloudLadderExports;
 if (typeof window !== 'undefined') window.CloudLadder = CloudLadderExports;

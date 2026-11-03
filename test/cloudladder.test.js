@@ -31,3 +31,26 @@ test('busy models rest, the next one is picked at once, and the top comes back a
   assert.equal(L.pick(ladder, cool, t0 + 200), null);
   assert.deepEqual(L.soonest(ladder, cool, t0 + 200), { model: 'gemini-3.1-pro-preview', waitMs: L.COOL_BUSY_MS - 100 });
 });
+
+test('a used-up quota is told apart from busy, and rests until it resets', () => {
+  const free = 'HTTP 429 from https://generativelanguage.googleapis.com/v1beta/openai: [{"error":{"code":429,"message":"You exceeded your current quota, please check your plan and billing details. Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 50, model: gemini-3.1-pro. Please retry in 33.5s.","status":"RESOURCE_EXHAUSTED","details":[{"quotaId":"GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}}]';
+  const q = L.quotaInfo(free);
+  assert.equal(q.freeTier, true);
+  assert.equal(q.daily, true);
+  assert.equal(q.retryMs, 33500);
+  const now = Date.UTC(2026, 10, 3, 17, 0, 0); // 09:00 in Los Angeles (PST)
+  assert.equal(L.msToPacificMidnight(now), 15 * 3600_000);
+  assert.deepEqual(L.restFor(free, now, false).why, 'quota-day');
+  assert.equal(L.restFor(free, now, false).ms, 15 * 3600_000);
+  const minute = 'HTTP 429: {"error":{"status":"RESOURCE_EXHAUSTED","message":"Quota exceeded for metric: generate_content_paid_tier_input_token_count, limit: 2000000 per minute. Please retry in 12s."}}';
+  assert.equal(L.restFor(minute, now, false).why, 'quota');
+  assert.equal(L.restFor(minute, now, false).ms, 60_000, 'at least a minute');
+  assert.equal(L.quotaInfo('HTTP 503: The model is overloaded. Please try again later.'), null);
+  assert.equal(L.quotaInfo('HTTP 429: rate_limit_error'), null, 'a plain rate limit stays "busy"');
+  assert.equal(L.restFor('HTTP 503 overloaded', now, false).why, 'busy');
+  assert.equal(L.restFor('HTTP 404', now, true).why, 'dead');
+  assert.equal(L.quotaInfo('HTTP 429: {"error":{"message":"Quota exceeded for metric: free_tier_requests, limit: 0, model: gemini-3.1-pro-preview","status":"RESOURCE_EXHAUSTED"}}').none, true);
+  const cool = new Map();
+  L.rest(cool, 'm', 1000, false, 5000);
+  assert.equal(cool.get('m'), 6000, 'rest takes an explicit length');
+});

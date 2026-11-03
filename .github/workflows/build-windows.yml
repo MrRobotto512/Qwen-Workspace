@@ -49,6 +49,7 @@ jobs:
       - run: xvfb-run -a npm run test:e2e:ladder
       - run: xvfb-run -a npm run test:e2e:sdd
       - run: xvfb-run -a npm run test:e2e:browser
+      - run: xvfb-run -a npm run test:e2e:honesty
       - run: xvfb-run -a npm run test:e2e:progress
       - run: xvfb-run -a npm run test:e2e:gpufit
       - run: xvfb-run -a npm run test:e2e:mcpimages
