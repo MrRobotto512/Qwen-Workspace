@@ -119,11 +119,12 @@ test('vaguePlanSteps flags steps that name no file and no command', () => {
   const vague = E.vaguePlanSteps(fieldPlan);
   assert.ok(vague.length * 2 > fieldPlan.length, `the field plan must count as vague, flagged: ${vague}`);
   // A concrete plan passes: file names, backticked commands, known command words.
+  const D = 'Do exactly this, with these names and values: write the functions named in the step, keep every number from the request, and check it with the command that shows the step is done.';
   const good = [
-    { content: 'Run `swift package init --type executable` in the project folder' },
-    { content: 'Write Sources/main.swift with the calculator UI and logic' },
-    { content: 'Build with swift build -c release' },
-    { content: 'Open the built binary with `open .build/release/Calculator`' }
+    { content: 'Run `swift package init --type executable` in the project folder', details: D },
+    { content: 'Write Sources/main.swift with the calculator UI and logic', details: D },
+    { content: 'Build with swift build -c release', details: D },
+    { content: 'Open the built binary with `open .build/release/Calculator`', details: D }
   ];
   assert.deepStrictEqual(E.vaguePlanSteps(good), []);
   assert.deepStrictEqual(E.vaguePlanSteps([]), []);
@@ -148,12 +149,25 @@ test('a plan that builds everything in one step, or only tests and polishes, goe
   assert.match(E.planRetryReminder(p.map((x) => x.step), p), /step 1 builds the whole thing in one step/);
   assert.match(E.planRetryReminder([1], p), /done when/);
   // Split, checked steps pass.
+  const DD = 'Write it with the named functions and the exact values given, connect it to the earlier steps, avoid the listed pitfalls, and finish with the check named in the step.';
   const good = [
-    { content: 'subwaysurfer.html: Three.js scene, camera behind the player, 3-lane track scrolling toward it — done when test_app shows no errors and the picture is not blank' },
-    { content: 'subwaysurfer.html: player box with ArrowLeft/Right lane switch (eased) and jump (velocity 8, gravity 20) — done when window.selfTest move and act pass' },
-    { content: 'subwaysurfer.html: obstacles and coins spawned 60 units ahead in random lanes — done when the self-test step "spawn" passes' },
-    { content: 'Verify with test_app subwaysurfer.html that every self-test step passes' }
+    { content: 'subwaysurfer.html: Three.js scene, camera behind the player, 3-lane track scrolling toward it — done when test_app shows no errors and the picture is not blank', details: DD },
+    { content: 'subwaysurfer.html: player box with ArrowLeft/Right lane switch (eased) and jump (velocity 8, gravity 20) — done when window.selfTest move and act pass', details: DD },
+    { content: 'subwaysurfer.html: obstacles and coins spawned 60 units ahead in random lanes — done when the self-test step "spawn" passes', details: DD },
+    { content: 'Verify with test_app subwaysurfer.html that every self-test step passes', details: DD }
   ];
   assert.deepStrictEqual(E.planProblems(good), []);
   for (const must of ['done when', 'Never one step that builds the whole thing', 'window.selfTest()']) assert.ok(E.PLAN_FIRST_REMINDER.includes(must), must);
+});
+
+test('every step needs details: how to do it, not a heading', () => {
+  const E = require('../src/renderer/escalation.js');
+  const p = E.planProblems([
+    { content: 'calc.py: add() and sub() — done when `python calc.py` prints 2' },
+    { content: 'calc.py: mul() — done when `python calc.py` prints 6', details: 'Add mul.' },
+    { content: 'calc.py: div() — done when `python calc.py` prints 3', details: 'Add def div(a, b) returning a / b; when b == 0 raise ZeroDivisionError("cannot divide by zero"). Print div(6, 2) in the main block and run python calc.py: it must print 3.0.' }
+  ]);
+  assert.deepStrictEqual(p.map((x) => [x.step, x.why]), [[1, 'has no details (how to do it)'], [2, 'has only a line of details — say how to do it: names, values, the check']]);
+  assert.match(E.PLAN_FIRST_REMINDER, /explain in detail how you would complete the request/);
+  assert.match(E.PLAN_FIRST_REMINDER, /give EVERY todo a `details` field/);
 });

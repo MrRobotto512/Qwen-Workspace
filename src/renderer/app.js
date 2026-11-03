@@ -1330,7 +1330,8 @@ function renderTodoBar() {
       iconEl('list'), el('span', { class: 'todo-title', text: `Plan · ${done}/${todos.length}` }),
       el('span', { class: 'todo-current', text: current ? current.content : done === todos.length ? 'All done' : '' }),
       iconEl('chevronDown', 'chev')),
-    el('ul', { class: 'todo-list' }, ...todos.map((t) => el('li', { class: t.status }, iconEl(t.status === 'completed' ? 'check' : t.status === 'in_progress' ? 'play' : 'stop'), el('span', { text: t.content }))))
+    el('ul', { class: 'todo-list' }, ...todos.map((t) => el('li', { class: t.status }, iconEl(t.status === 'completed' ? 'check' : t.status === 'in_progress' ? 'play' : 'stop'),
+      el('span', {}, el('span', { text: t.content }), ...(t.details ? [el('details', { class: 'todo-details' }, el('summary', { text: 'How' }), el('div', { text: t.details }))] : [])))))
   );
 }
 

@@ -138,7 +138,8 @@ const CORE_TOOLS = [
               type: 'object',
               properties: {
                 content: { type: 'string', description: 'What needs to be done, in a few words.' },
-                status: { type: 'string', enum: ['pending', 'in_progress', 'completed'] }
+                status: { type: 'string', enum: ['pending', 'in_progress', 'completed'] },
+                details: { type: 'string', description: 'When planning: how to do this step, so someone who sees only this step can do it — what to write (functions, variables, data, with their names), the exact values (sizes, speeds, limits), how it connects to earlier steps, pitfalls to avoid, and the check that shows it is done. Several lines. Leave it out when only updating statuses: earlier details are kept.' }
               },
               required: ['content', 'status']
             }

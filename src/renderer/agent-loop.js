@@ -100,9 +100,21 @@ function todoLines(todos) {
   return todos.map((t) => `${t.status === 'completed' ? '[x]' : t.status === 'in_progress' ? '[~]' : '[ ]'} ${t.content}`).join('\n');
 }
 
+// The plan with each step's details under it, for the transcript.
+function planText(todos) {
+  return todos.map((t) => `${todoLines([t])}${t.details ? `\n${t.details.split('\n').map((l) => `    ${l}`).join('\n')}` : ''}`).join('\n');
+}
+
 function turnReminder(c) {
   const lines = [];
-  if (c.todos?.length) lines.push(`Plan (update it with todo_write as you go):\n${todoLines(c.todos)}`);
+  if (c.todos?.length) {
+    lines.push(`Plan (update it with todo_write as you go):\n${todoLines(c.todos)}`);
+    // The planner's detailed instructions for the step being worked on, and its overview, come
+    // from the conversation's state on every request, so compaction can't lose them.
+    const cur = c.todos.find((t) => t.status === 'in_progress') || c.todos.find((t) => t.status === 'pending');
+    if (c.planOverview && cur) lines.push(`The planner's approach (follow it):\n${c.planOverview.slice(0, 1500)}`);
+    if (cur?.details) lines.push(`Current step: ${cur.content}\nHow to do it (from the plan):\n${cur.details}`);
+  }
   if (state.active && c === state.conv) {
     const sel = editor.getSelection();
     lines.push(`Open in the editor: ${state.active}${sel && !sel.isEmpty() ? ` (lines ${sel.startLineNumber}-${sel.endLineNumber} selected)` : ''}`);
@@ -694,7 +706,7 @@ async function executeTool(c, call, row) {
         };
       }
       case 'todo_write': {
-        const todos = todosFromArgs(args);
+        const todos = todosFromArgs(args, c.todos);
         c.todos = todos;
         if (c === state.conv) renderTodoBar();
         // Escalation suggestion (optional, off by default): a plan touching many files is
@@ -708,7 +720,7 @@ async function executeTool(c, call, row) {
           }
         }
         const done = todos.filter((t) => t.status === 'completed').length;
-        row.setBody(todoLines(todos));
+        row.setBody(planText(todos));
         const current = todos.find((t) => t.status === 'in_progress');
         return { result: `Plan updated: ${done}/${todos.length} done.${current ? ` In progress: ${current.content}.` : ''}`, meta: `${done}/${todos.length}` };
       }
@@ -2835,6 +2847,9 @@ async function runConversation(c) {
     // planning model exactly once for a rewrite. Otherwise, tell the everyday model it owns
     // the execution now, so it starts on step 1 instead of answering in the planner's voice.
     if (planTurn) {
+      // The planner's explanation of its approach (its reply text) guides every later step.
+      const overview = stripThink(msg.content || '').trim();
+      if (overview.length >= 200) c.planOverview = overview.slice(0, 4000);
       const vague = Escalation.vaguePlanSteps(c.todos);
       const names = calls.map((tc) => tc.function?.name);
       const wrote = names.includes('todo_write');
@@ -2903,10 +2918,18 @@ async function runConversation(c) {
 
 // 'print' for a command that only prints text, 'plan' for a todo_write that changes nothing,
 // else null. Both are what a model does when it is "confirming" instead of working.
-function todosFromArgs(args) {
+// The todos a todo_write call sends, with each step's `details` (how to do it, from the planner)
+// kept: an update that only changes statuses carries the earlier details over by step text.
+function todosFromArgs(args, previous) {
+  const key = (t) => String(t || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const earlier = new Map((previous || []).filter((t) => t.details).map((t) => [key(t.content), t.details]));
   return (Array.isArray(args?.todos) ? args.todos : [])
     .slice(0, 20)
-    .map((t) => ({ content: String(t?.content || '').slice(0, 320), status: ['pending', 'in_progress', 'completed'].includes(t?.status) ? t.status : 'pending' }))
+    .map((t) => {
+      const content = String(t?.content || '').slice(0, 320);
+      const details = String(t?.details || '').trim().slice(0, 2000) || earlier.get(key(content)) || '';
+      return { content, status: ['pending', 'in_progress', 'completed'].includes(t?.status) ? t.status : 'pending', ...(details ? { details } : {}) };
+    })
     .filter((t) => t.content);
 }
 
@@ -2920,8 +2943,10 @@ function noopCall(c, call) {
     return null;
   }
   if (name === 'run_command') return Honesty.isReportOnlyCommand(args.command) ? 'print' : null;
-  const todos = todosFromArgs(args);
-  return todos.length && (c.todos || []).length && Honesty.todosEqual(c.todos, todos) ? 'plan' : null;
+  const todos = todosFromArgs(args, c.todos);
+  // A plan whose steps gained details is new information, not a repeat.
+  const newDetails = todos.some((t, i) => t.details && t.details !== c.todos?.[i]?.details);
+  return todos.length && (c.todos || []).length && !newDetails && Honesty.todosEqual(c.todos, todos) ? 'plan' : null;
 }
 
 // Runs a tool, unless it is an identical repeat of an earlier read-only call this run — then it

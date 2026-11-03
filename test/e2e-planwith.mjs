@@ -39,7 +39,7 @@ const mock = (handler) => http.createServer((req, res) => {
 const plannerBodies = [];
 const planner = mock((b, res) => {
   plannerBodies.push(b);
-  sse(res, call('p1', 'todo_write', { todos: [{ content: 'Create calc.py with add()', status: 'in_progress' }, { content: 'Run python calc.py', status: 'pending' }] }, { prompt_tokens: 1200, completion_tokens: 80 }));
+  sse(res, call('p1', 'todo_write', { todos: [{ content: 'Create calc.py with add()', status: 'in_progress', details: 'Write calc.py with def add(a, b): return a + b, and under if __name__ == "__main__": print(add(1, 1)). Keep it to plain Python; no imports are needed for this step.' }, { content: 'Run python calc.py', status: 'pending', details: 'Run python calc.py from the project root. Done when it prints 2 and exits with code 0; if python is missing, install it with install_app and run it again.' }] }, { prompt_tokens: 1200, completion_tokens: 80 }));
 });
 const localBodies = [];
 const local = mock((b, res) => {
