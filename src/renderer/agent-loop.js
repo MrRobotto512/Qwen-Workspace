@@ -56,6 +56,7 @@ function systemPrompt(c) {
         : null,
       "- Save what future work will need (toolchain, install steps, build commands, key links) to QWEN.md in the project root.",
       '- Long files come back a page at a time; read the next page only when you need it, instead of re-reading the whole file.',
+      '- Before using an import, class or method you are not certain of, confirm it with check_api; after an ImportError or AttributeError, check_api shows where the name really lives. Never guess API names.',
       '- For tasks with 3 or more steps, keep a plan with todo_write and update it as you finish each step.',
       '- When a task looks like earlier work (a recurring error, a toolchain or app type you set up before), search_history finds how it was done. When the user states a lasting fact about themselves or their setup (their machines, OS, preferred stacks), save it with remember.',
       '- When you need several independent lookups (reads, searches, listings), request them all in the same reply; they run in parallel. Edits and commands run one at a time, in the order you give them.',
@@ -447,8 +448,14 @@ async function executeTool(c, call, row) {
         row.setBody(r.output || '(no output)');
         state.fileIndex = null;
         renderTree();
-        const hint = ToolParse.cmdShellHint(cmd, r.output, state.ws?.platform);
+        const hint = [ToolParse.cmdShellHint(cmd, r.output, state.ws?.platform), r.code !== 0 ? ToolParse.apiErrorHint(r.output) : ''].filter(Boolean).join('\n');
         return { result: `Exit code: ${r.code}\n${truncate(r.output || '(no output)')}${hint ? `\n${hint}` : ''}`, meta: `exit ${r.code}`, failed: r.code !== 0 };
+      }
+      case 'check_api': {
+        const r = await api.checkApi(args.names, args.language);
+        row.setBody(r.text);
+        const bad = (r.results || []).filter((x) => !x.ok).length;
+        return { result: truncate(r.text), meta: r.results?.length ? (bad ? `${bad} not found` : 'all exist') : 'failed', failed: /^Error/.test(r.text) };
       }
       case 'test_app': {
         const cmd = String(args.command || '').trim();

@@ -2050,6 +2050,35 @@ ipcMain.handle('web:fetch', (_e, url) => web.fetchPage(loadSettings(), url));
 
 // ---------- MCP ----------
 ipcMain.handle('mcp:list', () => mcp.describe());
+// check_api: does this name exist in the project's installed packages? (apicheck.js)
+ipcMain.handle('api:check', async (_e, names, language) => {
+  try {
+    return await require('./apicheck.js').checkApi({
+      names,
+      language,
+      root: workspaceRoot,
+      platform: process.platform,
+      electronPath: process.execPath,
+      tmpDir: (() => { const d = path.join(app.getPath('userData'), 'apicheck'); fs.mkdirSync(d, { recursive: true }); return d; })(),
+      run: (cmd, args, opts) => new Promise((resolve) => {
+        let out = '';
+        let child;
+        try {
+          child = spawn(cmd, args, { cwd: opts?.cwd, windowsHide: true, env: { ...commandEnv(), ...(opts?.env || {}) } });
+        } catch (e) {
+          return resolve({ code: -1, out: `ENOENT ${e.message}` });
+        }
+        const timer = setTimeout(() => killTree(child), 30_000);
+        child.stdout.on('data', (d) => (out += d));
+        child.stderr.on('data', (d) => (out += d));
+        child.on('error', (e) => { clearTimeout(timer); resolve({ code: -1, out: `${e.code === 'ENOENT' ? 'ENOENT ' : ''}${e.message}` }); });
+        child.on('close', (code) => { clearTimeout(timer); resolve({ code, out }); });
+      })
+    });
+  } catch (e) {
+    return { text: `Error: ${e.message}`, results: [] };
+  }
+});
 // One-click GIMP setup (gimp-mcp): downloads the pinned server + plugin, installs the plugin into
 // GIMP's newest 3.x plug-ins folder, and returns the server entry. Started from a Settings button
 // behind a confirmation, since it writes outside the project.
