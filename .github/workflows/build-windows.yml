@@ -46,6 +46,7 @@ jobs:
       - run: xvfb-run -a npm run test:e2e:planwith
       - run: xvfb-run -a npm run test:e2e:samegpu
       - run: xvfb-run -a npm run test:e2e:consult
+      - run: xvfb-run -a npm run test:e2e:ladder
       - run: xvfb-run -a npm run test:e2e:progress
       - run: xvfb-run -a npm run test:e2e:gpufit
       - run: xvfb-run -a npm run test:e2e:mcpimages

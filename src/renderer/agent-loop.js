@@ -153,6 +153,58 @@ function modelSeesImages(c) {
   return VISION_MODEL.test(String(conversationOverride(c)?.model || c.model || state.settings.model || ''));
 }
 
+// ---------- Cloud model ladder (Gemini / Claude) ----------
+// Every cloud call — task steps, escalations, plan-first, consult_planner, the review pass, the
+// goal judge, lessons, skills — runs on the best model of its family that is not resting. A
+// busy model (503/429, or no first token in two minutes) rests five minutes and the next call
+// goes straight to the next model down; after the rest QWS climbs back up. See cloudladder.js.
+const cloudCool = new Map(); // model -> resting until (ms)
+const liveModelCache = new Map(); // provider|baseUrl -> { at, list }
+
+async function liveModels(conn) {
+  const key = `${conn.provider}|${conn.baseUrl}`;
+  const hit = liveModelCache.get(key);
+  if (hit && Date.now() - hit.at < 3600_000) return hit.list;
+  const list = await api.listModels({ provider: conn.provider, baseUrl: conn.baseUrl, apiKey: conn.apiKey }).catch(() => []);
+  if (list.length) liveModelCache.set(key, { at: Date.now(), list });
+  return list;
+}
+
+// The main connection, as an override-shaped object, when it is a laddered cloud model.
+function mainCloudConn() {
+  const s = state.settings;
+  return CloudLadder.familyOf(s.provider, s.model) ? { provider: s.provider, baseUrl: s.baseUrl, apiKey: s.apiKey, model: s.model } : null;
+}
+
+// { conn } with the model to use now (conn unchanged when it has no ladder), or { conn: null,
+// candidates } when every model of the family is resting.
+async function resolveCloud(conn) {
+  if (!conn || !CloudLadder.familyOf(conn.provider, conn.model)) return { conn };
+  const candidates = CloudLadder.ladder(conn.provider, conn.model, await liveModels(conn), ToolParse.modelAlternates);
+  const model = CloudLadder.pick(candidates, cloudCool, Date.now());
+  return model ? { conn: { ...conn, model }, candidates } : { conn: null, candidates };
+}
+
+// One cloud request outside the task loop, walking the ladder on busy/unavailable answers.
+// The result carries `model`: the one that actually answered (for the cost meter).
+async function cloudChat(c, kind, payload) {
+  const base = payload.override || mainCloudConn();
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const r = await resolveCloud(base);
+    if (!r.conn && base) return { ok: false, error: `Every ${CloudLadder.familyOf(base.provider, base.model)} model is busy right now — try again in a few minutes.` };
+    const used = r.conn || undefined;
+    const res = await api.chatStream(`${kind}${Date.now()}`, { ...payload, override: used || payload.override || undefined });
+    const laddered = used && CloudLadder.familyOf(used.provider, used.model);
+    if (res.ok || !laddered) return { ...res, model: used?.model || state.settings.model };
+    const busy = ToolParse.isBusyModelError(res.error);
+    const dead = !busy && ToolParse.isDeadModelError(res.error);
+    if (!busy && !dead) return { ...res, model: used.model };
+    CloudLadder.rest(cloudCool, used.model, Date.now(), dead);
+    if (c) DebugLog.add(c, 'notice', { text: `${kind}: ${used.model} ${dead ? 'is not available on this key' : 'is busy'} — trying the next model` });
+  }
+  return { ok: false, error: 'No cloud model answered.' };
+}
+
 // A write that put another script inside code identifiers ("MeshStandard材料") gets a warning
 // in its result, so the model fixes the glitch on its next step instead of shipping it.
 function withGlitchWarning(p, before, after, out) {
@@ -353,7 +405,7 @@ async function executeTool(c, call, row) {
           c.capApproved = true;
         }
         setActivity(c, `Asking ${override.model}`);
-        const res = await api.chatStream(`consult${Date.now()}`, {
+        const res = await cloudChat(c, 'consult', {
           override,
           messages: [
             { role: 'system', content: 'You are a senior engineer advising another AI coding agent working in the user\'s project. Give precise, actionable guidance: the decision or plan, the specific code to write or fix, and any gotchas. Be concise. Do not ask to run tools; answer from what you are given.' },
@@ -361,10 +413,10 @@ async function executeTool(c, call, row) {
           ]
         });
         const answer = res.ok ? stripThink(res.content || '').trim() : '';
-        if (res.usage && !['ollama', 'lmstudio'].includes(override.provider)) recordSpend(c, override.model, res.usage.promptTokens || 0, res.usage.completionTokens || 0);
+        if (res.usage && !['ollama', 'lmstudio'].includes(override.provider)) recordSpend(c, res.model || override.model, res.usage.promptTokens || 0, res.usage.completionTokens || 0);
         if (!answer) return { result: `The planner model did not answer${res.error ? `: ${res.error}` : '.'}`, failed: true };
         row.setBody(answer);
-        return { result: `<planner_advice model="${override.model}">\n${truncate(answer)}\n</planner_advice>\nUse this advice to continue the work yourself.`, meta: override.model };
+        return { result: `<planner_advice model="${res.model || override.model}">\n${truncate(answer)}\n</planner_advice>\nUse this advice to continue the work yourself.`, meta: res.model || override.model };
       }
       case 'tool_search': {
         const words = String(args.query || '').toLowerCase().split(/[^a-z0-9_]+/).filter((w) => w.length > 2);
@@ -731,10 +783,10 @@ async function maybeCheckGoal(c, failed) {
   g.checks++;
   renderGoalBar();
   setActivity(c, 'Checking the goal');
-  const res = await api.chatStream(`goal${Date.now()}`, { override, messages: Goal.judgeMessages(g.text, lastReply, evidence) });
+  const res = await cloudChat(c, 'goal', { override, messages: Goal.judgeMessages(g.text, lastReply, evidence) });
   setActivity(c, '');
   if (override && !['ollama', 'lmstudio'].includes(override.provider) && res.usage?.promptTokens) {
-    recordSpend(c, override.model, res.usage.promptTokens || 0, res.usage.completionTokens || 0);
+    recordSpend(c, res.model || override.model, res.usage.promptTokens || 0, res.usage.completionTokens || 0);
   }
   const say = (text) => {
     const item = { t: 'notice', text };
@@ -1216,7 +1268,7 @@ async function proposeLessons(c) {
       digest = Lessons.rescueDigest(reasons, failed);
     }
     setActivity(c, rescued ? 'Noting lessons from this task’s rescues' : 'Noting lessons from this task');
-    const res = await api.chatStream(`lessons${Date.now()}`, {
+    const res = await cloudChat(c, 'lessons', {
       override: override || undefined,
       messages: [
         { role: 'system', content: rescued && override ? Lessons.RESCUE_LESSONS_SYSTEM : Lessons.LESSONS_SYSTEM },
@@ -1227,7 +1279,7 @@ async function proposeLessons(c) {
     if (!res.ok) return;
     // A cloud teacher costs money like any other cloud call; the ⚡ node costs nothing.
     if (override && !['ollama', 'lmstudio'].includes(override.provider) && res.usage?.promptTokens) {
-      recordSpend(c, override.model, res.usage.promptTokens || 0, res.usage.completionTokens || 0);
+      recordSpend(c, res.model || override.model, res.usage.promptTokens || 0, res.usage.completionTokens || 0);
     }
     const bullets = Lessons.dedupeLessons(Lessons.parseLessons(stripThink(res.content || '')), md);
     if (!bullets.length) return;
@@ -1235,7 +1287,7 @@ async function proposeLessons(c) {
     let proposed = Lessons.withLessons(md, bullets);
     if (proposed.sectionLines > Lessons.SECTION_CAP) {
       // The section is full: propose a merge of old entries instead of endless growth.
-      const merged = await api.chatStream(`lessons${Date.now()}m`, {
+      const merged = await cloudChat(c, 'lessons', {
         override: override || undefined,
         messages: [
           { role: 'system', content: `You compact a project's lesson notes. Merge overlapping entries, keep every distinct fact, drop nothing important. Reply with only "- " bullet lines, at most ${Lessons.SECTION_CAP - 4} of them.` },
@@ -1317,7 +1369,7 @@ async function proposeSkill(c, failed) {
     const override = lh?.override || heavyOverride() || undefined;
     const existing = await api.skillsList().catch(() => []);
     setActivity(c, 'Writing a reusable skill from this task');
-    const res = await api.chatStream(`skill${Date.now()}`, {
+    const res = await cloudChat(c, 'skill', {
       override,
       messages: [
         { role: 'system', content: SkillWriter.SKILL_WRITER_SYSTEM },
@@ -1327,7 +1379,7 @@ async function proposeSkill(c, failed) {
     setActivity(c, '');
     if (!res.ok) return;
     if (override && !['ollama', 'lmstudio'].includes(override.provider) && res.usage?.promptTokens) {
-      recordSpend(c, override.model, res.usage.promptTokens || 0, res.usage.completionTokens || 0);
+      recordSpend(c, res.model || override.model, res.usage.promptTokens || 0, res.usage.completionTokens || 0);
     }
     const draft = SkillWriter.parseSkillDraft(stripThink(res.content || ''));
     if (!draft) return;
@@ -1416,14 +1468,14 @@ async function reviewChanges(c, { auto } = {}) {
       const current = ch.deleted ? null : await api.read(p).catch(() => null);
       files.push({ path: p, original: ch.original, current, deleted: !!ch.deleted });
     }
-    const res = await api.chatStream(`review${Date.now()}`, {
+    const res = await cloudChat(c, 'review', {
       override: planner,
       messages: [
         { role: 'system', content: ReviewPass.REVIEW_SYSTEM },
         { role: 'user', content: ReviewPass.reviewRequest(files) }
       ]
     });
-    if (res.usage && !['ollama', 'lmstudio'].includes(planner.provider)) recordSpend(c, planner.model, res.usage.promptTokens || 0, res.usage.completionTokens || 0);
+    if (res.usage && !['ollama', 'lmstudio'].includes(planner.provider)) recordSpend(c, res.model || planner.model, res.usage.promptTokens || 0, res.usage.completionTokens || 0);
     if (!res.ok) {
       addError(c, `The review pass failed: ${res.error}`);
       return;
@@ -1679,7 +1731,8 @@ async function runConversation(c) {
   let planOnPlanner = false; // the last plan try goes to the planner instead of the ⚡ node
   let planRetrying = false; // this planning turn is a rewrite request
   const retriedBusy = new Set(); // models that already got one same-model retry after a 503/429
-  const modelSwap = new Map(); // overloaded model -> working sibling, for the rest of this task
+  const cloudUsed = new Map(); // requested cloud model -> the one the ladder last ran it on (to announce changes)
+  let cloudWaits = 0; // waits for a resting model when the main model is cloud and every sibling rests
   let cloudDead = false; // every cloud sibling was busy; finish on the local default model
   const nodeRetried = new Set(); // Ollama nodes that already got one retry after not answering
   const deadNodes = new Set(); // Ollama nodes given up on for the rest of this task
@@ -1821,12 +1874,6 @@ async function runConversation(c) {
     if (esc && escLocal && escLabel !== lastEscLabel) note(`Running this step on ${escLabel}.`);
     if (esc) lastEscLabel = escLabel;
     let override = esc || (cloudDead ? null : conversationOverride(c));
-    // A model that went "busy" earlier in this task stays swapped for its working sibling.
-    if (override && modelSwap.has(override.model)) override = { ...override, model: modelSwap.get(override.model) };
-    else if (!override && modelSwap.has(state.settings.model)) {
-      const sNow = state.settings;
-      override = { provider: sNow.provider, baseUrl: sNow.baseUrl, apiKey: sNow.apiKey, model: modelSwap.get(sNow.model) };
-    }
     escalateNext = false;
     // Plan-first mode (opt-in): the first turn of a conversation runs on the high-performance
     // node's strongest model, restricted to planning tools, so the everyday model executes a
@@ -1897,6 +1944,46 @@ async function runConversation(c) {
           else if (thisOn) note(`This PC's node doesn't have ${state.settings.model} ready — running on ${node.name}.`);
         }
         lastNodeId = node.id;
+      }
+    }
+    // Cloud ladder: a Gemini/Claude step runs on the best model of its family not resting after
+    // a busy answer (and "auto" means the best on the live list).
+    {
+      const base = override?.provider ? override : !override ? mainCloudConn() : null;
+      if (base && CloudLadder.familyOf(base.provider, base.model)) {
+        const r = await resolveCloud(base);
+        if (r.conn) {
+          const prev = cloudUsed.get(base.model);
+          if (r.conn.model !== prev && (prev || r.conn.model !== base.model)) {
+            note(prev && r.candidates.indexOf(r.conn.model) < r.candidates.indexOf(prev)
+              ? `${r.conn.model} is free again — back to it.`
+              : CloudLadder.isAuto(base.model) && !prev ? `Using ${r.conn.model}, the best ${CloudLadder.familyOf(base.provider, base.model) === 'gemini' ? 'Gemini' : 'Claude'} model available.` : `Running on ${r.conn.model}.`);
+          }
+          cloudUsed.set(base.model, r.conn.model);
+          if (r.conn.model !== base.model || override) override = { ...(override || base), model: r.conn.model };
+        } else if (override) {
+          // Every model of a cloud helper (escalation, planner, plan-first) is resting: finish on
+          // the local model, as before. A planning turn that cannot run is skipped cleanly.
+          cloudDead = true;
+          override = null;
+          esc = null;
+          heavyTakeover = false;
+          if (planTurn) {
+            planTurn = false;
+            const lastMsg = c.history[c.history.length - 1];
+            if (lastMsg?.role === 'user' && String(lastMsg.content).includes(Escalation.PLAN_FIRST_REMINDER)) c.history.pop();
+          }
+          note(`Every ${CloudLadder.familyOf(base.provider, base.model) === 'gemini' ? 'Gemini' : 'cloud'} model is busy right now — continuing on ${state.settings.model}.`);
+        } else if (cloudWaits < 3) {
+          // The main model is cloud and every sibling rests: wait for the first to come back.
+          const s = CloudLadder.soonest(r.candidates, cloudCool, Date.now());
+          const waitMs = Math.min(s?.waitMs ?? 0, 60_000);
+          cloudWaits++;
+          note(`Every model in the ladder is busy — waiting ${Math.ceil(waitMs / 1000)}s for ${s?.model}.`);
+          await new Promise((res) => setTimeout(res, waitMs));
+          if (s) cloudCool.delete(s.model);
+          continue;
+        }
       }
     }
     const view = addAssistantMessage(c, null, override?.model || null);
@@ -2072,22 +2159,20 @@ async function runConversation(c) {
         const failedModel = override?.model || state.settings.model;
         dropEmptyTurn();
         if (esc && !heavyTakeover) escalateNext = true; // keep a one-shot escalation alive
+        // A laddered cloud model rests and the very next try goes to the next model down —
+        // no fixed wait, no retry into the same overload.
+        if (CloudLadder.familyOf(override?.provider || state.settings.provider, failedModel)) {
+          CloudLadder.rest(cloudCool, failedModel, Date.now(), dead);
+          note(dead ? `${failedModel} is not available on this key — skipping it for a day.` : `${failedModel} is busy — moving to the next model now; QWS tries ${failedModel} again in ${CloudLadder.COOL_BUSY_MS / 60_000} minutes.`);
+          continue;
+        }
         if (busy && !retriedBusy.has(failedModel)) {
           retriedBusy.add(failedModel);
           note(`${failedModel} is overloaded — retrying in 8 seconds.`);
           await new Promise((r) => setTimeout(r, 8000));
           continue;
         }
-        retriedBusy.add(failedModel); // dead, or already retried: move to a sibling
-        const conn = override || { provider: state.settings.provider, baseUrl: state.settings.baseUrl, apiKey: state.settings.apiKey };
-        const live = await api.listModels({ provider: conn.provider, baseUrl: conn.baseUrl, apiKey: conn.apiKey }).catch(() => []);
-        const next = ToolParse.modelAlternates(failedModel, live).find((m) => !retriedBusy.has(m));
-        if (next) {
-          modelSwap.set(failedModel, next);
-          for (const [orig, cur] of modelSwap) if (cur === failedModel) modelSwap.set(orig, next);
-          note(dead ? `${failedModel} is not available on this key anymore — switching to ${next} for the rest of this task.` : `${failedModel} is still overloaded — switching to ${next} for the rest of this task.`);
-          continue;
-        }
+        retriedBusy.add(failedModel); // dead, or already retried
         if (override) {
           cloudDead = true;
           note(`No usable ${/^gemini/i.test(failedModel) ? 'Gemini' : 'cloud'} model right now — continuing on ${state.settings.model}.`);

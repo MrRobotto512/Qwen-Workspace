@@ -2509,10 +2509,11 @@ function bindUi() {
     try {
       const models = await api.listModels({ provider: $('#s-heavy-provider').value, baseUrl: $('#s-heavy-baseUrl').value.trim(), apiKey: $('#s-heavy-apiKey').value.trim() });
       const clean = [...new Set(models.map((m) => String(m).replace(/^models\//, '')))];
-      $('#heavy-model-list').replaceChildren(...clean.map((m) => el('option', { value: m })));
-      const ranked = ToolParse.modelAlternates('gemini-none', clean);
+      const fam = ['gemini', 'anthropic'].includes($('#s-heavy-provider').value);
+      $('#heavy-model-list').replaceChildren(...(fam ? ['auto'] : []).concat(clean).map((m) => el('option', { value: m, label: m === 'auto' ? 'auto — the best model available, falling down the ladder when busy' : undefined })));
+      const ranked = ToolParse.modelAlternates($('#s-heavy-provider').value === 'anthropic' ? 'claude-none' : 'gemini-none', clean);
       out.className = 'hint ok';
-      out.textContent = `Connected ✓ ${clean.length} models${ranked.length ? `. Strongest for planning: ${ranked.slice(0, 3).join(', ')}` : ''}`;
+      out.textContent = `Connected ✓ ${clean.length} models${ranked.length ? `. Best first: ${ranked.slice(0, 4).join(' → ')}${fam ? ' — or type "auto" to always use the best one free right now' : ''}` : ''}`;
       if (ranked.length && !clean.includes($('#s-heavy-model').value.trim())) $('#s-heavy-model').value = ranked[0];
     } catch (e) {
       out.className = 'hint bad';
