@@ -55,6 +55,7 @@ const DEFAULT_SETTINGS = {
   checksApproved: {}, // project root -> the exact checks.json text the user allowed to run
   skillWriter: true, // after a long task that worked, propose a reusable skill (approval card)
   reviewPass: false, // planner reviews each task's diff and hands fixes back (2 rounds max) // after a task that ran commands, propose lessons for QWEN.md (always behind the diff card)
+  planWith: 'node', // who writes the plan-first plan: 'node' (⚡, free), 'planner' (cloud), 'auto' (⚡, else planner)
   planFirst: false, // a conversation's first turn runs on the ⚡ node's strongest model, restricted to planning (todo_write)
   prices: {}, // $/1M tokens per model, user-entered: { 'gemini-2.5-pro': { in: 1.25, out: 10 } }
   monthlyCapUSD: 0, // when > 0 and the month's priced spend reaches it, escalations ask first

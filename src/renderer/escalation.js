@@ -62,7 +62,7 @@ function planFiles(todos) {
 // that opens a task. It must produce a plan a smaller model can follow mechanically — files
 // and commands by name, simplest stack, recorded as todos — and must not start executing.
 const PLAN_FIRST_REMINDER = [
-  'You are the planning model for this task, running on a high-performance node. Write a concrete plan that a smaller model will execute mechanically:',
+  'You are the planning model for this task (a stronger model than the one that will do the work). Write a concrete plan that a smaller model will execute mechanically:',
   '- Make every decision NOW and bake it into the plan. A step may never say "choose", "decide" or "pick an approach" — the small model cannot make that call. If one crucial decision genuinely needs the user, ask with ask_user in this turn instead of planning.',
   '- Every step must name the exact file to create or change, or the exact command to run. A step with neither is not a step.',
   '- Command-line stacks only: the plan builds and runs everything with commands the small model can execute. Never plan around a GUI IDE (Xcode, Visual Studio, Android Studio) or an app store — if a toolchain is needed, the plan installs it with a command or install_app.',

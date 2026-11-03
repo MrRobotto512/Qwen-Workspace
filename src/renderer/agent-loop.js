@@ -1823,20 +1823,28 @@ async function runConversation(c) {
       override = heavyOverride();
       note(`Asking the planner (${heavyLabel()}) to write the plan.`);
       DebugLog.add(c, 'escalate', { reason: 'plan-first: the ⚡ node gave no usable plan; the planner writes it', interventions, takeover: false });
-    } else if (useTools && !override && state.settings.planFirst && ((step === 0 && !c.planned) || planAgain) && highPerfConfigured()) {
+    } else if (useTools && !override && state.settings.planFirst && ((step === 0 && !c.planned) || planAgain) && (highPerfConfigured() || heavyOverride())) {
+      // Who plans (Settings → "Plan with"): the ⚡ node (free), the planner model (cloud, on the
+      // cost meter), or the ⚡ node with the planner as the fallback when no node can serve.
+      const planWith = state.settings.planWith || 'node';
       const retry = planAgain;
       planAgain = false;
       planRetrying = retry;
       c.planned = true; // whatever happens below, plan at most once per conversation
-      const lh = await localHeavyOverride();
-      if (lh) {
+      let target = null;
+      if (planWith !== 'planner' && highPerfConfigured()) {
+        const lh = await localHeavyOverride();
+        if (lh) target = { override: lh.override, label: lh.label, who: 'the high-performance node' };
+      }
+      if (!target && planWith !== 'node' && heavyOverride()) target = { override: heavyOverride(), label: heavyLabel(), who: 'the planner model' };
+      if (target) {
         planTurn = true;
-        override = lh.override;
+        override = target.override;
         if (!retry) {
           c.history.push({ role: 'user', content: `<system-reminder>\n${Escalation.PLAN_FIRST_REMINDER}\n</system-reminder>` });
-          note(`Planning on ${lh.label}.`);
+          note(`Planning on ${target.label}.`);
         }
-        DebugLog.add(c, 'escalate', { reason: retry ? 'plan-first: vague plan sent back for a rewrite' : 'plan-first: the high-performance node writes the plan', interventions, takeover: false });
+        DebugLog.add(c, 'escalate', { reason: retry ? 'plan-first: vague plan sent back for a rewrite' : `plan-first: ${target.who} writes the plan`, interventions, takeover: false });
       }
     }
     // Local requests route across Ollama nodes when more than one is enabled: the first
@@ -2224,7 +2232,7 @@ async function runConversation(c) {
         note(wrote ? 'The plan is too vague to execute — sending it back for a rewrite with exact files and commands.' : 'No plan came back — asking again for the plan only.');
       } else {
         if (unusable) note('The plan is still vague — the everyday model takes over and works out each step as it goes.');
-        c.history.push({ role: 'user', content: '<system-reminder>\nThe plan above was written by the high-performance node. You are the everyday model now: execute the todo list step by step, starting with the first item. Do not re-plan.\n</system-reminder>' });
+        c.history.push({ role: 'user', content: '<system-reminder>\nThe plan above was written by the planning model. You are the everyday model now: execute the todo list step by step, starting with the first item. Do not re-plan.\n</system-reminder>' });
       }
     }
 
