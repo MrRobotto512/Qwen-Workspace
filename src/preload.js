@@ -57,6 +57,7 @@ contextBridge.exposeInMainWorld('api', {
   mcpList: () => ipcRenderer.invoke('mcp:list'),
   checkApi: (names, language) => ipcRenderer.invoke('api:check', names, language),
   gimpSetup: () => ipcRenderer.invoke('gimp:setup'),
+  browserSetup: (opts) => ipcRenderer.invoke('browser:setup', opts),
   mcpReconnect: () => ipcRenderer.invoke('mcp:reconnect'),
   mcpConnectOne: (cfg) => ipcRenderer.invoke('mcp:connectOne', cfg),
   mcpDisconnect: (id) => ipcRenderer.invoke('mcp:disconnect', id),

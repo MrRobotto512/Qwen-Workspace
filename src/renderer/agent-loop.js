@@ -67,6 +67,7 @@ function systemPrompt(c) {
       '- A build or install that takes long is normal: pass timeout_seconds (up to 3600) to run_command instead of splitting the build or giving up when the 2-minute default cuts it off.',
       '- Windows "permission" errors usually are not about rights: "Filename too long" means long paths — run `git config --global core.longpaths true` (the app enables this when git is available) and retry, or clone to a short path like D:/dev. "Access is denied" during a build usually means the folder is protected (never work in Program Files or C:/Windows — use the project folder), synced by OneDrive, or a file is locked by a previous build (retry, or kill leftover MSBuild/cmake processes with taskkill). You already run with the user\'s full rights and cannot elevate a command; if something genuinely needs administrator rights, say so and ask the user to run that one step.',
       state.settings.stopRule !== false ? FailStreak.SYSTEM_LINE : null,
+      mcpToolSpecs().some((t) => BrowserCtl.isBrowserTool(mcpToolShort(t.function.name))) ? BrowserCtl.SYSTEM_LINE : null,
       '- When a command or tool call fails, deal with that failure before any other step: read the error output, research it with web_search if it is unclear, then fix it or change approach. Never move to the next planned step as if a failed one had succeeded, and never rerun a failed command unchanged. If something cannot be installed (e.g. winget has no such package), pick a different way to meet the goal rather than skipping it.',
       '- To build or run a project, follow its own documented steps (its README and package.json scripts) rather than inventing a raw build command. If a required tool needs a reboot, admin rights or manual setup (for example Docker Desktop with WSL2), install and do what you can, then tell the user exactly what is left for them. If the project already ships a prebuilt download (a release asset) that meets the request, point the user to it instead of building from source.',
       '- Read a file before editing it. Use edit_file for targeted changes instead of rewriting whole files with write_file.',
@@ -232,20 +233,38 @@ async function executeTool(c, call, row) {
   }
   if (name.startsWith('mcp__')) {
     const label = mcpServerOf(name);
-    if (needsApproval('command', name)) {
-      const ok = await row.requestApproval({ kind: 'mcp', question: `Let the "${label}" MCP server run ${mcpToolShort(name)}?`, server: label, tool: mcpToolShort(name), args: call.function.arguments });
+    const raw = mcpToolShort(name);
+    // Browser tools (BrowserCtl) have their own rules in every mode, Auto included: reading is
+    // free, acting asks once per website, code/uploads/cookies ask every time.
+    const browser = BrowserCtl.isBrowserTool(raw);
+    c.browserUrl = c.browserUrl || {};
+    if (browser) {
+      const cls = BrowserCtl.classify(raw, args, mcpToolReadOnly(name));
+      const site = BrowserCtl.actionSite(raw, args, c.browserUrl[label]);
+      const d = BrowserCtl.decide({ cls, mode: approvalMode(), site, allowedSites: state.settings.browserSites });
+      if (d !== 'run') {
+        const ok = await row.requestApproval({ kind: 'browser', question: BrowserCtl.describeAction(raw, args, site), site, danger: d === 'ask-danger', args: call.function.arguments });
+        if (!ok) return { result: 'The user declined this browser action. Do not retry it; ask the user how they would like to proceed.', rejected: true };
+      }
+    } else if (needsApproval('command', name)) {
+      const ok = await row.requestApproval({ kind: 'mcp', question: `Let the "${label}" MCP server run ${raw}?`, server: label, tool: raw, args: call.function.arguments });
       if (!ok) return { result: 'The user declined to run this MCP tool. Do not retry it; ask the user how they would like to proceed.', rejected: true };
     }
     try {
       const r = await api.mcpCall(name, args);
       row.setBody(r.text);
+      if (browser) {
+        const url = BrowserCtl.pageUrlFrom(r.text);
+        if (url) c.browserUrl[label] = url;
+        r.text = BrowserCtl.wrapUntrusted(truncate(r.text), c.browserUrl[label]);
+      }
       const imgs = r.images || [];
       for (const img of imgs) row.setImage?.(`data:${img.mime};base64,${img.data}`);
       // Images go to the model the way test_app screenshots do; a model that can't see them is told so.
       const vision = imgs.length && modelSeesImages(c);
       const note = imgs.length && !vision ? `\n(${imgs.length === 1 ? 'An image was' : `${imgs.length} images were`} returned, but the current model does not look able to see images.)` : '';
       return {
-        result: truncate(r.text) + note,
+        result: (browser ? r.text : truncate(r.text)) + note, // browser text is already capped inside its wrapper
         meta: r.isError ? 'error' : imgs.length ? `${imgs.length} image${imgs.length === 1 ? '' : 's'}` : 'done',
         failed: r.isError,
         images: vision ? imgs.map((img, i) => ({ ...img, note: `Image ${i + 1} returned by ${label} ${mcpToolShort(name)}.` })) : null

@@ -383,6 +383,18 @@
         <span class="hint">Image editing with GIMP 3.2+ via gimp-mcp (needs uv)</span>
       </div>
       <div id="gimp-setup-result" class="hint"></div>
+      <div class="mcp-add">
+        <select id="browser-mode" title="Which browser Qwen controls">
+          <option value="profile">QWS's own browser profile</option>
+          <option value="extension">My Chrome/Edge (extension)</option>
+          <option value="headless">Headless (invisible)</option>
+        </select>
+        <select id="browser-name"><option value="chrome">Chrome</option><option value="msedge">Edge</option></select>
+        <button id="browser-setup-btn" class="ghost" title="Adds Playwright MCP so Qwen can open pages, click, type and fill forms in a browser"><span data-icon="external"></span>Set up browser control</button>
+        <span class="hint">Qwen opens pages, clicks, types and fills forms in a browser (Microsoft's Playwright MCP, needs Node.js). Acting on a website asks once per site, even in Auto mode.</span>
+      </div>
+      <div id="browser-setup-result" class="hint"></div>
+      <div id="browser-sites" class="hint"></div>
 
       <div class="section-title">Research</div>
       <label class="check"><input type="checkbox" id="s-webResearch" /> Let Qwen search the web and read pages (web_search, fetch_url)</label>
@@ -488,6 +500,7 @@
   <script src="skillwriter.js"></script>
   <script src="skillrun.js"></script>
   <script src="failstreak.js"></script>
+  <script src="browserctl.js"></script>
   <script src="checks.js"></script>
   <script src="subagents.js"></script>
   <script src="guitest.js"></script>
