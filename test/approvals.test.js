@@ -91,8 +91,21 @@ test('isReadOnlyCommand: look-only commands with look-only options pass (Strata 
     'head -n 20 app.py', 'tail -n 50 build.log', 'wc -l src/main.js', 'rg -n "TODO" src', 'grep -rn needle .',
     'pwd', 'which node', 'node --version', 'python --version', 'uname -a', 'date -u',
     // cmd.exe, as Windows models write it
-    'dir', 'dir /s /b', 'dir "C:\\Users\\Robot\\Q&A"', 'type README.md', 'where python', 'findstr /s /i needle *.py', 'tree /f', 'ver'
+    'dir', 'dir /s /b', 'dir "C:\\Users\\Robot\\Q&A"', 'type README.md', 'where python', 'findstr /s /i needle *.py', 'tree /f', 'ver',
+    // single-quoted operands that carry nothing a shell could act on are still just data
+    "cat 'hello world.txt'", "rg -n 'TODO' src", "grep 'needle' 'hay stack.txt'"
   ]) assert.strictEqual(ro(cmd), true, cmd);
+});
+
+test('isReadOnlyCommand: single quotes hide nothing from cmd.exe, so metacharacters inside them ask', () => {
+  const { isReadOnlyCommand: ro, commandNeedsApproval } = require('../src/renderer/approvals.js');
+  // cmd.exe treats ' as an ordinary character: each of these used to run its second command unasked.
+  for (const cmd of [
+    "type 'a & python evil.py & echo '", "dir 'x | node evil.js | echo '", "cat 'a; rm -rf x; echo '",
+    "type 'a' & calc", "rg 'foo|bar' src", "type 'a > b'", "cat 'x %PATH% y'", "dir '^'", "type 'a<b'", "cat 'a\nb'"
+  ]) assert.strictEqual(ro(cmd), false, cmd);
+  assert.strictEqual(commandNeedsApproval('ask', "type 'a & python evil.py & echo '", []), true);
+  assert.strictEqual(commandNeedsApproval('edits', "dir 'x | node evil.js | echo '", []), true);
 });
 
 test('isReadOnlyCommand: anything that writes, runs, never ends, or is not understood asks', () => {

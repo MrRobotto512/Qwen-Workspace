@@ -158,9 +158,13 @@ const RO_SAFE_VERSION = /^(node|python|python3|py|npm|pnpm|git|dotnet|cargo|rust
 // cmd.exe's %VAR% expansion and `^` escapes.
 const RO_UNSAFE = /[;&<>`${}()%^]|\r|\n|\bcurl\b|\bwget\b|\bsudo\b|(?<![-\w])sh(?![-\w])|\bbash\b|\bpwsh\b|\bpowershell\b|\bcmd\b|-exec\b|-delete\b|-execdir\b/i;
 
-// The command with quoted text set aside (it is data: a path like "C:\Q&A", a pattern 'a|b'),
-// or null when it can't be read safely (an unterminated quote, $ or ` inside double quotes, a
-// quote glued to other characters or starting with a dash, which could hide an option).
+// The command with quoted text set aside (it is data: a path like "C:\Q&A"), or null when it
+// can't be read safely (an unterminated quote, $ or ` inside double quotes, a quote glued to
+// other characters or starting with a dash, which could hide an option). Single quotes get no
+// such trust: cmd.exe does not treat them as quoting at all, so `type 'a & evil.exe & echo '`
+// runs evil.exe — and this check cannot know which shell will run the command. A single-quoted
+// span that holds anything a shell could act on (& | ; < > and friends) makes the command ask.
+const RO_SINGLE_QUOTE_UNSAFE = /[;&|<>`${}()%^\r\n]/;
 function roMaskQuotes(text, quoted) {
   let out = '';
   for (let i = 0; i < text.length; i++) {
@@ -169,7 +173,8 @@ function roMaskQuotes(text, quoted) {
     let end = text.indexOf(ch, i + 1);
     while (end >= 0 && text[end + 1] === ch) end = text.indexOf(ch, end + 2);
     if (end < 0) return null;
-    if (ch === '"' && /[$`%]/.test(text.slice(i + 1, end))) return null;
+    const inner = text.slice(i + 1, end);
+    if (ch === '"' ? /[$`%]/.test(inner) : RO_SINGLE_QUOTE_UNSAFE.test(inner)) return null;
     const before = text[i - 1];
     const after = text[end + 1];
     if ((before !== undefined && !/[\s|]/.test(before)) || (after !== undefined && !/[\s|]/.test(after)) || text[i + 1] === '-') return null;

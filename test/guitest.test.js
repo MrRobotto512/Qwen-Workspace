@@ -82,6 +82,21 @@ test('webTarget spots web pages behind start/open, and single-letter keys parse'
   assert.match(G.summarizePage({ loaded: false, loadError: 'ERR_FILE_NOT_FOUND' }, false), /did not load: ERR_FILE_NOT_FOUND/);
 });
 
+// test_app clicks and types in the page with nobody asked, so only pages served by this PC
+// count as web targets; a LAN device's page or a public site comes back marked remote.
+test('isLocalUrl / webTarget: only localhost-style URLs are pages test_app may load', () => {
+  for (const u of ['http://localhost:5173/', 'http://127.0.0.1:8000/index.html', 'http://[::1]:3000/', 'https://app.localhost/', 'http://0.0.0.0:8080', 'http://127.1.2.3/']) {
+    assert.equal(G.isLocalUrl(u), true, u);
+  }
+  for (const u of ['http://192.168.1.1/', 'https://example.com/', 'http://10.0.0.5:5173/', 'file:///C:/x.html', 'ftp://localhost/', 'not a url', 'http://localhost.evil.com/', 'http://[fe80::1]/', '']) {
+    assert.equal(G.isLocalUrl(u), false, u);
+  }
+  assert.deepEqual(G.webTarget('http://192.168.1.1/admin'), { url: 'http://192.168.1.1/admin', remote: true });
+  assert.deepEqual(G.webTarget('start https://example.com/game'), { url: 'https://example.com/game', remote: true });
+  assert.deepEqual(G.webTarget('http://127.0.0.1:5173/'), { url: 'http://127.0.0.1:5173/' });
+  assert.deepEqual(G.webTarget('open "http://[::1]:3000/play"'), { url: 'http://[::1]:3000/play' });
+});
+
 test('pixel check flags a flat screenshot', () => {
   const flat = new Uint8Array(100 * 100 * 4).fill(20);
   const st = G.pixelStats(flat, 100, 100);
