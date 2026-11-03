@@ -367,6 +367,13 @@ function reasoningRepeatCoverage(text) {
   return covered.size / (words.length - start);
 }
 
-const ToolParseExports = { rescueReasoningCalls, resolveToolName, reasoningRepeatCoverage, LOOP_COVERAGE, TOOL_TEXT_MARKER, jsonToolCallRe, textToolCallStart, readJsonObject, extractTextToolCalls, announcesAction, looksLikeInstructions, stripFakeReminders, forgedToolResponse, isBusyModelError, isDeadModelError, modelAlternates, normalizeToolArgs, deniesCapability, deferredListing, cmdShellHint, GEMINI_FAMILY };
+// After a failed command: errors that mean a wrong or made-up API name, which check_api answers
+// (the idea from XR Blocks: an agent should verify a symbol before calling it).
+const API_ERROR = /\b(ImportError|ModuleNotFoundError|AttributeError|cannot import name|has no attribute|is not a function|is not a constructor|does not provide an export named)\b/;
+function apiErrorHint(output) {
+  return API_ERROR.test(String(output || '')) ? 'Tip: this looks like a wrong or made-up API name — check_api shows whether a name exists and where it really lives (e.g. check_api(["PyQt5.QtCore.Qt"])).' : '';
+}
+
+const ToolParseExports = { apiErrorHint, rescueReasoningCalls, resolveToolName, reasoningRepeatCoverage, LOOP_COVERAGE, TOOL_TEXT_MARKER, jsonToolCallRe, textToolCallStart, readJsonObject, extractTextToolCalls, announcesAction, looksLikeInstructions, stripFakeReminders, forgedToolResponse, isBusyModelError, isDeadModelError, modelAlternates, normalizeToolArgs, deniesCapability, deferredListing, cmdShellHint, GEMINI_FAMILY };
 if (typeof module !== 'undefined' && module.exports) module.exports = ToolParseExports;
 if (typeof window !== 'undefined') window.ToolParse = ToolParseExports;

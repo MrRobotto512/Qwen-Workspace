@@ -166,6 +166,21 @@ const CORE_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'check_api',
+      description: 'Check that functions, classes or modules really exist in the project\'s installed packages before you use them — and, after an ImportError or AttributeError, find where a name really lives. Python (the project\'s own interpreter) and JavaScript (node_modules and Node built-ins). Returns each name\'s kind and signature, or close matches and the module it is actually in.',
+      parameters: {
+        type: 'object',
+        properties: {
+          names: { type: 'array', items: { type: 'string' }, description: 'Dotted names, up to 12: e.g. "PyQt5.QtCore.Qt", "PySide6.QtWidgets.QApplication.exec", "fs.promises.readFile", "express.Router".' },
+          language: { type: 'string', enum: ['python', 'node'], description: 'Optional; detected from the project when left out.' }
+        },
+        required: ['names']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
       name: 'test_app',
       description: 'Test a desktop GUI app you built: launch it, wait for its window, and get back whether it started or crashed, its console output and (for models that can see images) a screenshot of the window; then it is closed. Optionally click, type and press keys in it first, like a user, to check that it works. Use it before telling the user a GUI app is done.',
       parameters: {
@@ -389,7 +404,7 @@ function toolsFor(c) {
 
 // Tools that only read can run together; anything that changes files or runs commands is a
 // barrier that runs alone, in the order Qwen asked.
-const READ_ONLY_TOOLS = new Set(['list_files', 'read_file', 'search_code', 'semantic_search', 'load_skill', 'tool_search', 'web_search', 'fetch_url', 'consult_planner', 'search_history']);
+const READ_ONLY_TOOLS = new Set(['list_files', 'read_file', 'search_code', 'semantic_search', 'load_skill', 'tool_search', 'web_search', 'fetch_url', 'consult_planner', 'search_history', 'check_api']);
 const WEB_PAGE_CHARS = 12_000;
 const READ_PAGE = 400;
 
@@ -442,7 +457,8 @@ const TOOL_INFO = {
   search_history: { icon: 'history', verb: 'Past chats', doing: 'Searching past conversations for' },
   remember: { icon: 'star', verb: 'Remember', doing: 'Saving to personal memory' },
   delegate_tasks: { icon: 'server', verb: 'Delegate', doing: 'Running subagents for' },
-  test_app: { icon: 'play', verb: 'Test app', doing: 'Testing the app' }
+  test_app: { icon: 'play', verb: 'Test app', doing: 'Testing the app' },
+  check_api: { icon: 'shieldCheck', verb: 'Check API', doing: 'Checking' }
 };
 
 // Context is assembled in layers, from least to most likely to change, so Ollama can reuse its
@@ -517,6 +533,8 @@ function describeCall(name, args) {
       return { target: args.id ? `conversation ${args.id}` : String(args.query || '') };
     case 'remember':
       return { target: String(args.fact || '') };
+    case 'check_api':
+      return { target: (Array.isArray(args.names) ? args.names : [args.names]).filter(Boolean).join(', ').slice(0, 120) };
     case 'test_app':
       return { target: `${String(args.command || '')}${Array.isArray(args.actions) && args.actions.length ? ` · ${args.actions.length} action${args.actions.length === 1 ? '' : 's'}` : ''}` };
     case 'delegate_tasks': {
