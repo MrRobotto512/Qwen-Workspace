@@ -63,6 +63,8 @@ function planFiles(todos) {
 // and commands by name, simplest stack, recorded as todos — and must not start executing.
 const PLAN_FIRST_REMINDER = [
   'You are the planning model for this task (a stronger model than the one that will do the work). Write a concrete plan that a smaller model will execute mechanically:',
+  '- First, in your reply text, explain in detail how you would complete the request: the files; the main objects, functions and data and how they fit together; the numbers to use (sizes, speeds, limits, colours); the order of the work; and what could go wrong and how to avoid it. Write it for a developer who will follow it without asking questions.',
+  '- Then give EVERY todo a `details` field: how to do that step — what to write, with the names of the functions, variables and data; the exact values; how it connects to earlier steps; pitfalls; and the check that shows it is done. The smaller model sees one step\'s details at a time, so each must stand on its own. Several lines per step, not a sentence.',
   '- Make every decision NOW and bake it into the plan. A step may never say "choose", "decide" or "pick an approach" — the small model cannot make that call. If one crucial decision genuinely needs the user, ask with ask_user in this turn instead of planning.',
   '- Every step must name the exact file to create or change, or the exact command to run. A step with neither is not a step.',
   '- Each step is ONE piece the smaller model can finish in one or two tool calls and then check: write it as "<file or command>: <what to add, with the user\'s specifics and numbers> — done when <a check test_app, a command or a self-test step can show>". Never one step that builds the whole thing ("create the full game/app"): split it into the parts it needs — for a game, e.g. scene and track; player and controls; obstacles and pickups; score, start and game-over screens; and a window.selfTest() that measures each of them.',
@@ -95,6 +97,9 @@ const WHOLE_THING = /\b(full|complete|entire|whole|fully[- ]featured|all (the )?
 const CHECK_ONLY = /^\s*(test|verify|polish|ensure|improve|optimi[sz]e|refine|review|fine-tune|finali[sz]e|clean ?up|make sure)\b/i;
 const NAMED_CHECK = /test_app|self-?test|`[^`]+`|\bdone when\b|\b(npm|npx|pytest|node|python3?|cargo|go|dotnet|make)\s+\S/i;
 
+// A step's `details` shorter than this is a heading, not instructions.
+const MIN_DETAILS = 120;
+
 // Each problem step as { step, why }: no file or command, the whole thing at once, or a
 // test/polish step with no check named.
 function planProblems(todos) {
@@ -103,9 +108,11 @@ function planProblems(todos) {
     const text = String((t && t.content) ?? t ?? '');
     FILE_EXT.lastIndex = 0; // shared global regex: reset between tests
     const concrete = FILE_EXT.test(text) || /`[^`]+`/.test(text) || PLAN_COMMAND_RE.test(text);
+    const details = String((t && t.details) || '').trim();
     if (!concrete) out.push({ step: i + 1, why: 'names no file and no command' });
     else if (WHOLE_THING.test(text)) out.push({ step: i + 1, why: 'builds the whole thing in one step' });
     else if (CHECK_ONLY.test(text) && !NAMED_CHECK.test(text)) out.push({ step: i + 1, why: 'only tests or polishes, with no check named' });
+    else if (details.length < MIN_DETAILS) out.push({ step: i + 1, why: details ? 'has only a line of details — say how to do it: names, values, the check' : 'has no details (how to do it)' });
   });
   return out;
 }
@@ -120,7 +127,7 @@ function planRetryReminder(vagueSteps, problems) {
   const list = Array.isArray(problems) && problems.length
     ? problems.map((p) => `step ${p.step} ${p.why}`).join('; ')
     : `step${vagueSteps.length === 1 ? '' : 's'} ${vagueSteps.join(', ')} name${vagueSteps.length === 1 ? 's' : ''} no file and no command`;
-  return `Your plan is not executable by a smaller model: ${list}. Rewrite the COMPLETE todo list now in one todo_write call: every step names an exact file path (with extension) or an exact command, adds ONE piece of the work, and ends with "done when <check>" (test_app, a command, or a self-test step). Split anything that builds the whole thing into its parts, and fold testing and polish into the steps they check.`;
+  return `Your plan is not executable by a smaller model: ${list}. Rewrite the COMPLETE todo list now in one todo_write call: every step names an exact file path (with extension) or an exact command, adds ONE piece of the work, ends with "done when <check>" (test_app, a command, or a self-test step), and has a \`details\` field saying how to do it — names, exact values, how it connects to earlier steps, pitfalls and the check, in several lines. Split anything that builds the whole thing into its parts, and fold testing and polish into the steps they check.`;
 }
 
 // A planning turn may only plan. A field report's ⚡ node answered the rewrite request with
@@ -132,6 +139,6 @@ function planMissingReminder() {
   return 'You did not write a plan. Do not execute any step yourself. Reply now with ONE todo_write call holding the complete todo list (3-8 steps); every step must contain an exact file path (with extension) or an exact command.';
 }
 
-const EscalationExports = { commandRuns, commandFailStreak, planFiles, PLAN_FIRST_REMINDER, planningTools, isPlanningTool, PLAN_ONLY_REFUSAL, planProblems, vaguePlanSteps, planRetryReminder, planMissingReminder };
+const EscalationExports = { commandRuns, commandFailStreak, planFiles, PLAN_FIRST_REMINDER, planningTools, isPlanningTool, PLAN_ONLY_REFUSAL, MIN_DETAILS, planProblems, vaguePlanSteps, planRetryReminder, planMissingReminder };
 if (typeof module !== 'undefined' && module.exports) module.exports = EscalationExports;
 if (typeof window !== 'undefined') window.Escalation = EscalationExports;

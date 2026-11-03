@@ -64,6 +64,7 @@ function serializeConv(c) {
     spend: c.spend || {},
     log: c.log || [],
     todos: c.todos,
+    planOverview: c.planOverview || undefined,
     goal: c.goal || null,
     compactions: c.compactions,
     activeTools: c.activeTools,

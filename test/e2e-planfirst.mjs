@@ -71,9 +71,12 @@ const hpNode = http.createServer((req, res) => {
       hpBodies.push(body);
       const todos = hpChats === 1
         ? [{ content: 'Set up the project structure', status: 'in_progress' }, { content: 'Implement the calculator logic', status: 'pending' }, { content: 'Test the application', status: 'pending' }]
-        : [{ content: 'Create calc.py with the four operations', status: 'in_progress' }, { content: 'Run python calc.py to verify', status: 'pending' }];
+        : [
+            { content: 'Create calc.py with the four operations', status: 'in_progress', details: 'Write calc.py with def add(a, b), sub(a, b), mul(a, b) and div(a, b); div raises ZeroDivisionError with the message "cannot divide by zero" when b == 0. At the bottom, under if __name__ == "__main__":, print add(1, 1).' },
+            { content: 'Run python calc.py to verify', status: 'pending', details: 'Run python calc.py from the project root. Done when it prints 2 and exits with code 0; if Python is missing, install it with install_app first and run again.' }
+          ];
       res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
-      res.write(JSON.stringify({ message: { role: 'assistant', content: hpChats === 1 ? 'Plan recorded.' : 'Concrete plan recorded.', tool_calls: [{ function: { name: 'todo_write', arguments: { todos } } }] } }) + '\n');
+      res.write(JSON.stringify({ message: { role: 'assistant', content: hpChats === 1 ? 'Plan recorded.' : 'Approach: one Python file, calc.py, holding four pure functions (add, sub, mul, div) so each can be checked on its own, with a tiny main block that prints one result. No packages are needed. Division by zero is the only pitfall: raise a clear error instead of returning inf. Concrete plan recorded.', tool_calls: [{ function: { name: 'todo_write', arguments: { todos } } }] } }) + '\n');
       res.write(JSON.stringify({ done: true, done_reason: 'stop', prompt_eval_count: 90 }) + '\n');
       return res.end();
     });
@@ -143,6 +146,12 @@ try {
   if (!fs.existsSync(madeFile)) fail('the everyday model never wrote the file the plan named');
   const todos = await win.evaluate(() => (state.conv?.todos || []).map((t) => t.content));
   if (todos.length !== 2 || !todos[0].includes('calc.py')) fail(`the plan never landed as todos: ${JSON.stringify(todos)}`);
+  // The everyday model gets the planner's approach and the current step's details every turn.
+  const first = localBodies[0] || '';
+  if (!first.includes("The planner's approach (follow it)") || !first.includes('four pure functions')) fail('the executor did not get the planner\'s approach');
+  if (!first.includes('How to do it (from the plan)') || !first.includes('ZeroDivisionError')) fail('the executor did not get the current step\'s details');
+  const kept = await win.evaluate(() => state.conv.todos.every((t) => t.details && t.details.length > 100));
+  if (!kept) fail('step details were lost');
   const notes = await win.evaluate(() => (state.conv?.display || []).filter((d) => d.t === 'notice').map((d) => d.text));
   if (!notes.some((t) => /Planning on qwen3-coder:30b on Big PC/.test(t))) fail(`the planning notice is missing; notices were: ${JSON.stringify(notes)}`);
 } catch (e) {
