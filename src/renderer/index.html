@@ -186,13 +186,16 @@
           <option value="lmstudio">LM Studio (local)</option>
           <option value="dashscope">Alibaba Cloud Model Studio / DashScope</option>
           <option value="gemini">Google Gemini (API key)</option>
-          <option value="openrouter">OpenRouter</option>
+          <option value="openrouter">OpenRouter (free models available)</option>
+          <option value="groq">Groq (free tier)</option>
           <option value="anthropic">Anthropic Claude (API key)</option>
           <option value="custom">Custom OpenAI-compatible</option>
         </select>
       </label>
       <label>Base URL <input id="s-baseUrl" spellcheck="false" /></label>
       <label>API key <input id="s-apiKey" type="password" placeholder="Not needed for Ollama / LM Studio" spellcheck="false" /></label>
+      <div id="s-key-help" class="hint key-help"></div>
+      <label class="check hidden" id="s-freeOnly-row"><input type="checkbox" id="s-freeOnly" checked /> List free models only (OpenRouter)</label>
       <label>Model
         <div class="row">
           <input id="s-model" list="model-list" spellcheck="false" />
@@ -278,7 +281,8 @@
           <select id="s-heavy-provider">
             <option value="gemini">Google Gemini</option>
             <option value="anthropic">Anthropic Claude</option>
-            <option value="openrouter">OpenRouter</option>
+            <option value="openrouter">OpenRouter (free models available)</option>
+            <option value="groq">Groq (free tier)</option>
             <option value="dashscope">Alibaba DashScope</option>
             <option value="openai">OpenAI-compatible</option>
             <option value="ollama">Ollama (local)</option>
@@ -287,6 +291,7 @@
         </label>
         <label>Planner base URL <input id="s-heavy-baseUrl" spellcheck="false" /></label>
         <label>Planner API key <input id="s-heavy-apiKey" type="password" placeholder="Not needed for Ollama / LM Studio" spellcheck="false" /></label>
+        <div id="s-heavy-key-help" class="hint key-help"></div>
         <label>Planner model <input id="s-heavy-model" list="heavy-model-list" spellcheck="false" placeholder="e.g. the newest gemini pro" /></label>
         <datalist id="heavy-model-list"></datalist>
         <button id="s-heavy-fetch" type="button">Fetch models</button>
@@ -384,6 +389,11 @@
         <span class="hint">Image editing with GIMP 3.2+ via gimp-mcp (needs uv)</span>
       </div>
       <div id="gimp-setup-result" class="hint"></div>
+      <div class="mcp-add">
+        <button id="craft-setup-btn" class="ghost" title="Downloads the Craft Anything command-line tool (MIT/Apache-2.0, early alpha) from its GitHub release, checks its checksum, and adds it here — so Qwen can study programs, files, game data and websites with ~320 inspection tools"><span data-icon="wand"></span>Set up Craft Anything</button>
+        <span class="hint">Study how a program, file, game or website works: disassembler, decompiler, .NET/Java/Android/Electron, firmware (storytold/craft-anything, alpha)</span>
+      </div>
+      <div id="craft-setup-result" class="hint"></div>
       <div class="mcp-add">
         <select id="browser-mode" title="Which browser Qwen controls">
           <option value="profile">QWS's own browser profile</option>
@@ -503,6 +513,9 @@
   <script src="failstreak.js"></script>
   <script src="browserctl.js"></script>
   <script src="honesty.js"></script>
+  <script src="likeness.js"></script>
+  <script src="selftest.js"></script>
+  <script src="freecloud.js"></script>
   <script src="checks.js"></script>
   <script src="subagents.js"></script>
   <script src="guitest.js"></script>

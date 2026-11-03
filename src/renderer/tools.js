@@ -193,7 +193,10 @@ const CORE_TOOLS = [
             type: 'array',
             description: 'Optional, in order: {"click": [x, y]} with pixel coordinates from a previous test_app screenshot, {"type": "text"}, {"key": "Enter"} (also Tab, Escape, Backspace, Space, Left/Right/Up/Down, or one letter/digit), {"wait": 1}.',
             items: { type: 'object' }
-          }
+          },
+          compare_with: { type: 'string', description: 'Optional: what the result should look like — a picture in the project ("reference/home.png") or the original page\'s URL. test_app says how alike the build looks (a web page at 1440, 768 and 390 px wide).' },
+          widths: { type: 'array', items: { type: 'number' }, description: 'Optional, web pages with compare_with: the widths to compare at (default [1440, 768, 390]).' },
+          self_test: { type: 'boolean', description: 'Desktop games: also run the game with --self-test <file.json> and read its report (a browser game\'s window.selfTest() runs automatically).' }
         },
         required: ['command']
       }

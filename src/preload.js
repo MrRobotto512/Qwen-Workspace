@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('api', {
   runCommand: (command, timeoutMs) => ipcRenderer.invoke('cmd:run', command, timeoutMs),
   guiTest: (opts) => ipcRenderer.invoke('gui:test', opts),
   guiTestPage: (opts) => ipcRenderer.invoke('gui:testPage', opts),
+  guiSelfTest: (opts) => ipcRenderer.invoke('gui:selfTest', opts),
+  readImage: (rel) => ipcRenderer.invoke('fs:readImage', rel),
   onCommandOutput: (cb) => {
     const fn = (_e, text) => cb(text);
     ipcRenderer.on('cmd:output', fn);
@@ -57,6 +59,7 @@ contextBridge.exposeInMainWorld('api', {
   mcpList: () => ipcRenderer.invoke('mcp:list'),
   checkApi: (names, language) => ipcRenderer.invoke('api:check', names, language),
   gimpSetup: () => ipcRenderer.invoke('gimp:setup'),
+  craftSetup: () => ipcRenderer.invoke('craft:setup'),
   browserSetup: (opts) => ipcRenderer.invoke('browser:setup', opts),
   mcpReconnect: () => ipcRenderer.invoke('mcp:reconnect'),
   mcpConnectOne: (cfg) => ipcRenderer.invoke('mcp:connectOne', cfg),
@@ -131,6 +134,7 @@ contextBridge.exposeInMainWorld('api', {
   convSave: (conv) => ipcRenderer.invoke('conv:save', conv),
   convDelete: (id) => ipcRenderer.invoke('conv:delete', id),
 
+  modelCatalog: (override) => ipcRenderer.invoke('model:catalog', override),
   listModels: (override) => ipcRenderer.invoke('model:list', override),
   chatStream: (id, payload) => ipcRenderer.invoke('chat:stream', id, payload),
   chatAbort: (id) => ipcRenderer.invoke('chat:abort', id),

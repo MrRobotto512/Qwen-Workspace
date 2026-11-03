@@ -157,6 +157,22 @@ async function setupGimpFromSettings() {
   out.textContent = [...(r.steps || []).map((s) => `✓ ${s}`), r.message].join('\n');
 }
 
+// One-click Craft Anything tools: replaces an earlier Craft Anything entry.
+async function setupCraftFromSettings() {
+  const out = $('#craft-setup-result');
+  if (!confirm('Set up Craft Anything for Qwen?\n\n• Download the Craft Anything command-line tool (open source, MIT or Apache-2.0, early alpha) from its GitHub release into QWS\'s data folder, checked against the release\'s checksums\n• Add a "Craft Anything" MCP server here: ~320 tools that study programs, files, game data and websites\n• Its results reach Qwen marked as untrusted content\n\nUse it on software you own or are allowed to examine. Nothing in your projects changes.')) return;
+  out.className = 'hint';
+  out.textContent = 'Downloading Craft Anything…';
+  const r = await api.craftSetup().catch((e) => ({ ok: false, message: cleanError(e) }));
+  if (r.ok && r.server) {
+    const configs = (state.settings.mcpServers || []).filter((c) => sanitizeServerId(c.name) !== sanitizeServerId(r.server.name));
+    configs.push(r.server);
+    await saveServers(configs);
+  }
+  out.className = r.ok ? 'hint ok' : 'hint bad';
+  out.textContent = [...(r.steps || []).map((t) => `✓ ${t}`), r.message].filter(Boolean).join('\n');
+}
+
 // One-click browser control: replaces any Playwright MCP server already in the list.
 async function setupBrowserFromSettings() {
   const out = $('#browser-setup-result');
@@ -516,6 +532,7 @@ function openSettings() {
   const h = s.heavy || {};
   $('#s-heavy-enabled').checked = !!h.enabled;
   $('#s-heavy-provider').value = h.provider || 'gemini';
+  setTimeout(renderProviderHelp, 0); // after the rest of the form is filled
   $('#s-heavy-baseUrl').value = h.baseUrl || PROVIDERS.gemini.baseUrl;
   $('#s-heavy-apiKey').value = h.apiKey || '';
   $('#s-heavy-model').value = h.model || '';
@@ -606,6 +623,50 @@ async function saveSettingsFromUi() {
   checkConnection();
 }
 
+// The sign-up link and free-tier note under an API key field, for the chosen provider.
+function renderKeyHelp(provider, out) {
+  if (!out) return;
+  const h = FreeCloud.SIGNUP[provider];
+  if (!h) {
+    out.replaceChildren();
+    return;
+  }
+  out.replaceChildren(el('a', { href: '#', text: `${h.label} ↗`, onclick: (e) => { e.preventDefault(); api.openExternal(h.url); } }), ' — ', h.note);
+}
+
+function renderProviderHelp() {
+  const p = $('#s-provider').value;
+  renderKeyHelp(p, $('#s-key-help'));
+  $('#s-freeOnly-row')?.classList.toggle('hidden', p !== 'openrouter');
+  renderKeyHelp($('#s-heavy-provider').value, $('#s-heavy-key-help'));
+}
+
+// OpenRouter and Groq: the model list with what each model can do (free, tools, images,
+// context), best for an agent first. Remembered for the session so image support is known.
+async function fillCatalog(listEl, conn, freeOnly) {
+  const models = await api.modelCatalog(conn);
+  if (!Array.isArray(models)) return null;
+  state.cloudCatalog = state.cloudCatalog || {};
+  for (const m of models) state.cloudCatalog[m.id] = m;
+  const ranked = FreeCloud.rank(models, { freeOnly });
+  listEl.replaceChildren(...ranked.map((m) => el('option', { value: m.id, label: FreeCloud.optionLabel(m) })));
+  return { models, ranked };
+}
+
+// Load the catalog once in the background when the main or planner model is on OpenRouter or
+// Groq, so test_app knows whether that model can see images.
+async function loadCloudCatalogs() {
+  const s = state.settings;
+  const conns = [s.provider, s.heavy?.enabled ? s.heavy.provider : null].map((p, i) => (['openrouter', 'groq'].includes(p) ? (i ? { provider: p, baseUrl: s.heavy.baseUrl, apiKey: s.heavy.apiKey } : undefined) : null));
+  for (const conn of conns) {
+    if (conn === null) continue;
+    const models = await api.modelCatalog(conn).catch(() => null);
+    if (!Array.isArray(models)) continue;
+    state.cloudCatalog = state.cloudCatalog || {};
+    for (const m of models) state.cloudCatalog[m.id] = m;
+  }
+}
+
 async function fetchModels() {
   const out = $('#s-test-result');
   out.className = 'hint';
@@ -613,6 +674,20 @@ async function fetchModels() {
   // Save the connection fields first so the main process uses them (and keep state in sync).
   state.settings = await api.setSettings({ baseUrl: $('#s-baseUrl').value.trim(), apiKey: $('#s-apiKey').value.trim(), provider: $('#s-provider').value });
   try {
+    const provider = $('#s-provider').value;
+    if (['openrouter', 'groq'].includes(provider)) {
+      const freeOnly = provider === 'openrouter' && $('#s-freeOnly').checked;
+      const got = await fillCatalog($('#model-list'), undefined, freeOnly);
+      if (got) {
+        out.className = 'hint ok';
+        const cur = $('#s-model').value.trim();
+        const known = got.models.find((m) => m.id === cur);
+        const warn = known && !known.tools ? ` ⚠ ${cur} can't call tools, so agent mode won't work with it — pick one marked "tools".` : '';
+        out.textContent = FreeCloud.summary(provider, got.models, { freeOnly }) + warn;
+        if (!known && cur !== 'openrouter/free' && got.ranked[0]) $('#s-model').value = provider === 'openrouter' && freeOnly ? 'openrouter/free' : got.ranked[0].id;
+        return;
+      }
+    }
     const models = await api.listModels();
     $('#model-list').replaceChildren(...(['gemini', 'anthropic'].includes($('#s-provider').value) ? ['auto'] : []).concat(models).map((m) => el('option', { value: m })));
     const qwen = models.filter((m) => /qwen/i.test(m));

@@ -140,6 +140,7 @@ require(['vs/editor/editor.main'], async () => {
   restoreLayout();
   applySettingsToUi();
   checkConnection();
+  loadCloudCatalogs().catch(() => {});
   initUpdates();
   initMcp();
   api.userMemoryGet().then((text) => { state.userMemory = text; }).catch(() => {});
@@ -1447,6 +1448,8 @@ function addError(c, text, usedTools) {
     hint = '\n\nThis model may not support tool calling (in Ollama, Gemma has it only from gemma4 on). Switch to "Chat" below the message box, or pick a tool-capable model such as qwen3-coder, qwen2.5-coder or gemma4.';
   } else if (/connect|ECONNREFUSED|fetch failed/i.test(text)) {
     hint = `\n\nCheck Settings: is the base URL right and is the server running? For Ollama run "ollama serve" and "ollama pull ${state.settings.model}".`;
+  } else if (/No endpoints found matching your data policy/i.test(text)) {
+    hint = '\n\nOpenRouter\'s privacy settings block every provider of this free model (free models are often served by providers that may log prompts). Allow them under openrouter.ai/settings/privacy, or pick another model.';
   } else if (/402|more credits|requires more|insufficient|quota|billing/i.test(text)) {
     hint = '\n\nYour provider account is out of credit for a request this size. Add credits (e.g. openrouter.ai/settings/credits), or lower "Max response tokens" in Settings so each reply reserves less.';
   } else if (/401|403|api key|unauthorized/i.test(text)) {
@@ -2517,18 +2520,31 @@ function bindUi() {
     const p = PROVIDERS[e.target.value];
     if (p.baseUrl) $('#s-baseUrl').value = p.baseUrl;
     if (p.model) $('#s-model').value = p.model;
+    renderProviderHelp();
   };
   $('#s-heavy-provider').onchange = (e) => {
     const p = PROVIDERS[e.target.value];
     if (p && p.baseUrl) $('#s-heavy-baseUrl').value = p.baseUrl;
     if (p && p.model) $('#s-heavy-model').value = p.model;
+    renderProviderHelp();
   };
+  $('#s-freeOnly').onchange = fetchModels;
   $('#s-heavy-enabled').onchange = (e) => $('#s-heavy-fields').classList.toggle('hidden', !e.target.checked);
   $('#s-heavy-fetch').onclick = async () => {
     const out = $('#s-heavy-result');
     out.className = 'hint';
     out.textContent = 'Connecting…';
     try {
+      const hp = $('#s-heavy-provider').value;
+      if (['openrouter', 'groq'].includes(hp)) {
+        const got = await fillCatalog($('#heavy-model-list'), { provider: hp, baseUrl: $('#s-heavy-baseUrl').value.trim(), apiKey: $('#s-heavy-apiKey').value.trim() }, false);
+        if (got) {
+          out.className = 'hint ok';
+          out.textContent = FreeCloud.summary(hp, got.models, {});
+          if (!got.models.some((m) => m.id === $('#s-heavy-model').value.trim()) && got.ranked[0]) $('#s-heavy-model').value = got.ranked[0].id;
+          return;
+        }
+      }
       const models = await api.listModels({ provider: $('#s-heavy-provider').value, baseUrl: $('#s-heavy-baseUrl').value.trim(), apiKey: $('#s-heavy-apiKey').value.trim() });
       const clean = [...new Set(models.map((m) => String(m).replace(/^models\//, '')))];
       const fam = ['gemini', 'anthropic'].includes($('#s-heavy-provider').value);
@@ -2547,6 +2563,7 @@ function bindUi() {
   $('#mcp-add-btn').onclick = addServerFromForm;
   $('#gimp-setup-btn').onclick = setupGimpFromSettings;
   $('#browser-setup-btn').onclick = setupBrowserFromSettings;
+  $('#craft-setup-btn').onclick = setupCraftFromSettings;
   $('#node-add-btn').onclick = addNodeFromForm;
   $('#price-add-btn').onclick = addPriceFromForm;
   $('#device-add-btn').onclick = addDeviceFromForm;

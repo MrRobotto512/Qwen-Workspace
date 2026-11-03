@@ -7,7 +7,8 @@ const PROVIDERS = {
   lmstudio: { baseUrl: 'http://localhost:1234/v1', model: 'qwen2.5-coder-7b-instruct' },
   dashscope: { baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', model: 'qwen3-coder-plus' },
   gemini: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.5-flash' },
-  openrouter: { baseUrl: 'https://openrouter.ai/api/v1', model: 'qwen/qwen3-coder' },
+  openrouter: { baseUrl: 'https://openrouter.ai/api/v1', model: 'openrouter/free' },
+  groq: { baseUrl: 'https://api.groq.com/openai/v1', model: 'openai/gpt-oss-120b' },
   anthropic: { baseUrl: 'https://api.anthropic.com/v1', model: 'claude-opus-5-5' },
   custom: { baseUrl: '', model: '' }
 };
