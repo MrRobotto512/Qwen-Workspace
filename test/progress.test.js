@@ -70,3 +70,9 @@ test('kvBytesPerToken reads Ollama model_info; predictFit says whether it fits b
 test('timingText shows the draft model and how much of its guessing was kept', () => {
   assert.equal(P.timingText({ genTokPerSec: 42.5, draftModel: 'qwen/qwen3-1.7b', draftAccepted: 62, ms: 3000 }), ' · 42.5 tok/s · draft qwen/qwen3-1.7b kept 62% · total 3.0s');
 });
+
+test('isMoE spots mixture-of-experts models from model_info', () => {
+  assert.equal(N.isMoE({ 'general.architecture': 'qwen3moe', 'qwen3moe.expert_count': 128, 'qwen3moe.expert_used_count': 8 }), true);
+  assert.equal(N.isMoE({ 'general.architecture': 'qwen3', 'qwen3.block_count': 40 }), false);
+  assert.equal(N.isMoE(null), false);
+});

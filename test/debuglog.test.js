@@ -82,3 +82,15 @@ test('render survives an empty conversation', () => {
   const md = D.render({ conv: { id: 'x', history: [], log: [] }, settings: {}, appInfo: null });
   assert.ok(md.includes('no events recorded'));
 });
+
+test('aborted responses say who stopped them; loop stops carry the end of the thinking', () => {
+  const D = require('../src/renderer/debuglog.js');
+  const conv = { id: 'c1', title: 't', mode: 'agent', status: 'done', createdAt: 0, history: [], log: [
+    { at: 1000, kind: 'response', ok: true, aborted: true, by: 'loop', thinkTail: 'wait, let me check again.\nwait, let me check again.' },
+    { at: 2000, kind: 'response', ok: true, aborted: true, by: 'user' },
+    { at: 3000, kind: 'response', ok: true, aborted: true }
+  ] };
+  const out = D.render({ conv, settings: {}, appInfo: {}, nodeHealth: {}, mcp: [], systemPrompt: '' });
+  assert.match(out, /STOPPED by the reasoning-loop watch \(its thinking repeated itself\)\n\s+last thinking: …wait, let me check again\. wait, let me check again\./);
+  assert.equal((out.match(/← ABORTED \(the user clicked Stop\)/g) || []).length, 2, 'a user Stop, and older logs without "by", keep the old wording');
+});

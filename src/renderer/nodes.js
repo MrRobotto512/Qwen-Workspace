@@ -294,6 +294,13 @@ function kvBytesPerToken(info) {
   return Number.isFinite(per) && per > 0 ? per : null;
 }
 
+// Mixture-of-experts models (qwen3-coder:30b is 30B with ~3B active per token) run tolerably
+// with part of their weights on the CPU, so spill warnings must not tell users to abandon them.
+function isMoE(info) {
+  const arch = info?.['general.architecture'];
+  return !!arch && Number(info[`${arch}.expert_count`]) > 1;
+}
+
 // Will `weights` bytes + the KV cache at `ctx` (+ ~0.5 GB of compute buffers) fit in `vram`?
 // { fits, neededGB, vramGB } plus fitCtx (the largest that fits) or tooSmall when not.
 const FIT_OVERHEAD = 0.5e9;
@@ -331,6 +338,6 @@ function probeVerdict(promptText, toolMessage) {
   return { ok: prompt.ok && tool.ok, prompt, tool };
 }
 
-const NodesExports = { THIS_PC_ID, REMOTE_KEEP_DEFAULT, nodeId, normalizeNodes, multiNode, sameModel, nodeHasModel, pickNode, nextNode, pickHighPerf, spillInfo, fitContext, kvBytesPerToken, predictFit, looseModelKey, looseSame, lmModelFor, ttlSeconds, suggestDraft, nodeOverride, probeVerdict, PROBE_PROMPT, PROBE_TOOL_PROMPT, PROBE_TOOL, isConnectionError, summarize };
+const NodesExports = { THIS_PC_ID, REMOTE_KEEP_DEFAULT, nodeId, normalizeNodes, multiNode, sameModel, nodeHasModel, pickNode, nextNode, pickHighPerf, spillInfo, fitContext, kvBytesPerToken, predictFit, isMoE, looseModelKey, looseSame, lmModelFor, ttlSeconds, suggestDraft, nodeOverride, probeVerdict, PROBE_PROMPT, PROBE_TOOL_PROMPT, PROBE_TOOL, isConnectionError, summarize };
 if (typeof module !== 'undefined' && module.exports) module.exports = NodesExports;
 if (typeof window !== 'undefined') window.Nodes = NodesExports;

@@ -46,7 +46,7 @@ function line(ev, t0) {
   const t = clock(ev.at, t0);
   switch (ev.kind) {
     case 'request': return `${t} → request step ${ev.step + 1} · ${ev.model}${ev.provider ? ` (${ev.provider})` : ''}${ev.node ? ` · node ${ev.node}` : ''}${ev.escalated ? ' · ESCALATED' : ''}`;
-    case 'response': return `${t} ← ${!ev.ok ? `MODEL ERROR: ${ev.error}` : ev.aborted ? 'ABORTED (the user clicked Stop)' : `ok · finish=${ev.finishReason || '-'} · ${ev.chars || 0} chars · ${ev.toolCalls || 0} tool calls${ev.promptTokens ? ` · ${ev.promptTokens} in/${ev.completionTokens || 0} out tokens` : ''}${Timing.timingText(ev)}`}`;
+    case 'response': return `${t} ← ${!ev.ok ? `MODEL ERROR: ${ev.error}` : ev.aborted ? (ev.by === 'loop' ? `STOPPED by the reasoning-loop watch (its thinking repeated itself)${ev.thinkTail ? `\n      last thinking: …${String(ev.thinkTail).replace(/\s+/g, ' ').slice(-600)}` : ''}` : ev.by === 'app' ? 'ABORTED by the app' : 'ABORTED (the user clicked Stop)') : `ok · finish=${ev.finishReason || '-'} · ${ev.chars || 0} chars · ${ev.toolCalls || 0} tool calls${ev.promptTokens ? ` · ${ev.promptTokens} in/${ev.completionTokens || 0} out tokens` : ''}${Timing.timingText(ev)}`}`;
     case 'tool': return `${t}   tool ${ev.name}${ev.meta ? ` (${ev.meta})` : ''} · ${ev.rejected ? 'REJECTED by user' : ev.failed ? 'FAILED' : 'ok'}${ev.ms ? ` · ${(ev.ms / 1000).toFixed(1)}s` : ''}`;
     case 'notice': return `${t} ⚑ ${ev.text}`;
     case 'escalate': return `${t} ⚑ intervention #${ev.interventions}: ${ev.reason}${ev.takeover ? ' → planner takeover' : ''}`;

@@ -106,8 +106,12 @@ try {
   if (turns !== 4) fail(`expected 4 model turns (rescue, repair, loop, finish), saw ${turns}`);
   const story = await win.evaluate(() => ({
     notices: (state.conv.display || []).filter((d) => d.t === 'notice').map((d) => d.text),
-    log: (state.conv.log || []).filter((e) => e.kind === 'notice').map((e) => e.text)
+    log: (state.conv.log || []).filter((e) => e.kind === 'notice').map((e) => e.text),
+    aborted: (state.conv.log || []).filter((e) => e.kind === 'response' && e.aborted),
+    report: DebugLog.render({ conv: state.conv, settings: state.settings, appInfo: state.appInfo, nodeHealth: {}, mcp: [], systemPrompt: '' })
   }));
+  if (story.aborted.length !== 1 || story.aborted[0].by !== 'loop') fail(`the loop abort should be logged as the loop watch's: ${JSON.stringify(story.aborted)}`);
+  if (!/STOPPED by the reasoning-loop watch[\s\S]*last thinking: …/.test(story.report) || /the user clicked Stop/.test(story.report)) fail('the debug report mislabels the loop abort as a user Stop');
   if (!story.notices.some((t) => /going in circles/.test(t))) fail(`no loop notice; notices: ${JSON.stringify(story.notices)}`);
   if (!story.log.some((t) => /rescued 1 tool call/.test(t))) fail('the rescue is missing from the debug log');
   if (!story.log.some((t) => /repaired tool name "Write-File" → write_file/.test(t))) fail('the name repair is missing from the debug log');
