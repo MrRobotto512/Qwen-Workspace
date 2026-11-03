@@ -255,3 +255,16 @@ test('LM Studio nodes: loose model names, ttl, draft pick, and the per-request o
   assert.equal(pick.model, 'qwen/qwen3-14b');
   assert.equal(pick.kind, 'lmstudio');
 });
+
+test('a crashed model runner is told apart, with advice', () => {
+  const N = require('../src/renderer/nodes.js');
+  const cuda = 'an error was encountered while running the model: CUDA error: an illegal memory access was encountered';
+  assert.equal(N.isRunnerCrash(cuda), true);
+  assert.equal(N.isRunnerCrash('llama runner process has terminated: exit status 0xc0000409'), true);
+  assert.equal(N.isRunnerCrash('model requires more system memory (12.0 GiB) than is available (8.0 GiB)'), true);
+  assert.equal(N.isRunnerCrash('HTTP 404: model "x" not found'), false);
+  assert.equal(N.isRunnerCrash('fetch failed'), false);
+  assert.match(N.crashAdvice(cuda, 'qwen3-coder:30b'), /CUDA error: an illegal memory access was encountered/);
+  assert.match(N.crashAdvice(cuda, 'qwen3-coder:30b'), /update the server .* GPU driver/);
+  assert.match(N.crashAdvice('CUDA error: out of memory', 'm'), /ran out of memory/);
+});

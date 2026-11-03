@@ -147,7 +147,7 @@ const BLIND_NOTE = 'You cannot see this screenshot, so "No console errors" only 
 // The prompt for a vision model describing a screenshot for a model that cannot see it.
 function lookPrompt(task) {
   const t = String(task || '').replace(/\s+/g, ' ').trim().slice(0, 700);
-  return `A coding agent that cannot see images just tested what it built and took this screenshot.${t ? `\nThe user's latest request: "${t}"` : ''}\n\nDescribe literally what is on the screen in 3–5 short sentences: the main objects and their colours and places, any text, and whether anything looks empty, missing, cut off or broken. Do not guess at what is not visible. Then one last line: "Matches the request: yes", "partly" or "no", with the reason in a few words.`;
+  return `A coding agent that cannot see images just tested what it built and took this screenshot.${t ? `\nThe user's latest request: "${t}"` : ''}\n\nIf it shows a title screen, start menu, loading screen or an overlay instead of the app in use, begin your answer with "Start screen:" (or "Title screen:", "Menu screen:", "Loading screen:") and say where the button to start is, in pixels from the top-left. Then describe literally what is on the screen in 3–5 short sentences: the main objects and their colours and places, any text, and whether anything looks empty, missing, cut off or broken. Do not guess at what is not visible. Then one last line: "Matches the request: yes", "partly" or "no", with the reason in a few words.`;
 }
 
 const HonestyExports = { segments, isReportOnlyCommand, NOOP_RESULT, normText, sameText, MIN_REPEAT_CHARS, todosEqual, userWords, userWordsBlock, COMPACT_RULES, BLIND_NOTE, lookPrompt };

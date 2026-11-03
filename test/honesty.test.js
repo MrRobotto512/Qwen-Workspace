@@ -70,3 +70,7 @@ test('the look prompt carries the request and asks for a verdict', () => {
   assert.match(p, /Matches the request: yes/);
   assert.match(H.BLIND_NOTE, /No console errors" only means nothing crashed/);
 });
+
+test('the look prompt asks to flag a start screen first', () => {
+  assert.match(H.lookPrompt('x'), /begin your answer with "Start screen:"/);
+});
