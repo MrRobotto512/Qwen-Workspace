@@ -575,7 +575,7 @@ async function fetchModels() {
   state.settings = await api.setSettings({ baseUrl: $('#s-baseUrl').value.trim(), apiKey: $('#s-apiKey').value.trim(), provider: $('#s-provider').value });
   try {
     const models = await api.listModels();
-    $('#model-list').replaceChildren(...models.map((m) => el('option', { value: m })));
+    $('#model-list').replaceChildren(...(['gemini', 'anthropic'].includes($('#s-provider').value) ? ['auto'] : []).concat(models).map((m) => el('option', { value: m })));
     const qwen = models.filter((m) => /qwen/i.test(m));
     out.className = 'hint ok';
     out.textContent = `Connected ✓ ${models.length} models available${qwen.length ? `, Qwen: ${qwen.slice(0, 8).join(', ')}${qwen.length > 8 ? '…' : ''}` : ''}`;

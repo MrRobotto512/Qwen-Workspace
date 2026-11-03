@@ -689,23 +689,61 @@ ipcMain.handle('chat:abort', (_e, id) => {
 
 // Streams one completion. Deltas are pushed to the renderer as they arrive;
 // the resolved value is the full assistant turn (text + any tool calls).
+// A cloud model that sends nothing for this long counts as busy (an HTTP 503), so the renderer's
+// model ladder moves on instead of hanging — model requests have no network timeout of their own
+// (slow local models need that). Local and private-network servers never get this cutoff.
+const CLOUD_FIRST_TOKEN_MS = 120_000;
+const firstTokenMs = (s) => (Number(s.cloudFirstTokenSec) > 0 ? Number(s.cloudFirstTokenSec) * 1000 : CLOUD_FIRST_TOKEN_MS);
+function isCloudEndpoint(s) {
+  if (['ollama', 'lmstudio'].includes(s.provider)) return false;
+  if (['gemini', 'anthropic', 'openrouter', 'dashscope'].includes(s.provider)) return true;
+  let host = '';
+  try {
+    host = new URL(String(s.baseUrl || '')).hostname;
+  } catch {
+    return false;
+  }
+  return !/^(localhost|127\.|0\.0\.0\.0|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.|\[?::1\]?$)|\.local$/i.test(host);
+}
+
 ipcMain.handle('chat:stream', async (event, id, payload) => {
   // payload.override (optional) runs this one request on a different provider/model (the heavy
   // model) without changing the saved settings.
   const s = { ...loadSettings(), ...(payload.override || {}) };
   const controller = new AbortController();
   chatControllers.set(id, controller);
+  let gotFirst = false;
+  let firstTimedOut = false;
   const send = (type, data) => {
+    gotFirst = true;
     if (!event.sender.isDestroyed()) event.sender.send('chat:event', { id, type, data });
   };
+  const ttft = isCloudEndpoint(s)
+    ? setTimeout(() => {
+      if (!gotFirst) {
+        firstTimedOut = true;
+        controller.abort();
+      }
+    }, firstTokenMs(s))
+    : null;
+  const fail = (err) => (firstTimedOut
+    ? { ok: false, error: `HTTP 503 from ${s.baseUrl}: no answer within ${Math.round(firstTokenMs(s) / 1000)}s — treated as busy` }
+    : chatError(err, s));
+  try {
+    return await chatStreamInner(s, payload, controller, send, fail);
+  } finally {
+    clearTimeout(ttft);
+    chatControllers.delete(id);
+  }
+});
+
+async function chatStreamInner(s, payload, controller, send, fail) {
 
   if (s.provider === 'anthropic') {
     try {
       return await streamAnthropic(s, payload, controller.signal, send);
     } catch (err) {
-      return chatError(err, s);
-    } finally {
-      chatControllers.delete(id);
+      return fail(err);
     }
   }
 
@@ -713,9 +751,7 @@ ipcMain.handle('chat:stream', async (event, id, payload) => {
     try {
       return await streamOllama(s, payload, controller.signal, send);
     } catch (err) {
-      return chatError(err, s);
-    } finally {
-      chatControllers.delete(id);
+      return fail(err);
     }
   }
 
@@ -828,11 +864,9 @@ ipcMain.handle('chat:stream', async (event, id, payload) => {
     const calls = toolCalls.filter(Boolean).map((t, i) => ({ ...t, id: t.id || `call_${Date.now()}_${i}` }));
     return { ok: true, content, reasoning, toolCalls: calls, finishReason, usage: usage || undefined };
   } catch (err) {
-    return chatError(err, s);
-  } finally {
-    chatControllers.delete(id);
+    return fail(err);
   }
-});
+}
 
 // EACCES/EPERM on an outbound connection is the OS forbidding it, not a dead server: on
 // macOS 15+ that is the Local Network privacy permission (silently denied for apps missing
