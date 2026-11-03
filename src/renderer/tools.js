@@ -356,6 +356,17 @@ const CONSULT_TOOL = {
   }
 };
 
+// "Consult freely" (Settings → Planner): the same tool, described as something to use whenever
+// unsure rather than sparingly. Small models follow the wording of a tool description closely.
+const CONSULT_TOOL_FREE = {
+  type: 'function',
+  function: {
+    name: 'consult_planner',
+    description: 'Ask the stronger "planner" model whenever you are unsure: a design decision, an error you do not understand, a bug you cannot find, an API you are not sure of, or before a large change. Include everything it needs in the question (paste the relevant code and the exact error message). Asking is cheaper than a wrong turn — do not guess.',
+    parameters: CONSULT_TOOL.function.parameters
+  }
+};
+
 const DELEGATE_TOOL = {
   type: 'function',
   function: {
@@ -394,7 +405,7 @@ function toolsFor(c) {
   const tools = [...core, ...deferred.filter((t) => active.has(t.function.name))];
   if (c.skills?.length) tools.push(LOAD_SKILL_TOOL);
   if (state.semReady) tools.push(SEM_TOOL);
-  if (heavyOverride()) tools.push(CONSULT_TOOL);
+  if (heavyOverride()) tools.push(state.settings.consultFreely ? CONSULT_TOOL_FREE : CONSULT_TOOL);
   if ((heavyOverride() || conversationOverride(c)) && !tools.some((t) => t.function.name === 'run_program')) tools.push(PROGRAM_TOOL);
   if (deferred.some((t) => !active.has(t.function.name))) tools.push(TOOL_SEARCH_TOOL);
   if (subagentsAvailable(c)) tools.push(DELEGATE_TOOL);

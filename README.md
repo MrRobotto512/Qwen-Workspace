@@ -106,7 +106,7 @@ On macOS the app installs software with [Homebrew](https://brew.sh) when you ask
 - **Planner handoff (two models):**
   - Let a local Qwen do the grunt work and hand the hard parts to a stronger "planner" model (e.g. Gemini 2.5 Pro, or another Qwen in the cloud). Set it up in **Settings → Planner (heavy model) handoff**.
   - When Qwen stalls — repeating steps without progress — the next step runs on the planner automatically to break the impasse, then control returns to Qwen.
-  - Qwen can also ask the planner for help on demand with a `consult_planner` tool (a design decision, a tricky bug, a review), and uses the advice to keep working locally.
+  - Qwen can also ask the planner for help on demand with a `consult_planner` tool (a design decision, a tricky bug, a review), and uses the advice to keep working locally. By default it is told to do that sparingly; tick **Let Qwen consult the planner whenever it's unsure** (Settings → Planner) and it asks whenever it is unsure — a design choice, an error it doesn't understand, a fix that keeps failing — and a failed command nudges it to ask before trying again. Each consultation is on the cost meter, and once your monthly budget is reached it asks you first, like escalations do.
   - A small badge on a message shows when it ran on the planner. The planner's requests go to that provider and use its quota/billing; the grunt work stays on your local model.
 - **MCP servers (external tools):**
   - Add servers in **Settings → Tools & MCP servers** (a command like `npx -y rea-agents mcp`, or an `https://` URL).
