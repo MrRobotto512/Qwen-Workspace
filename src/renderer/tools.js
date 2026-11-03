@@ -485,6 +485,11 @@ const TOOL_INFO = {
 function mcpServerOf(name) {
   return (/^mcp__([a-z0-9_]+)__/.exec(name) || [])[1] || 'mcp';
 }
+// The server's own "read-only" annotation for one of its tools.
+function mcpToolReadOnly(name) {
+  for (const srv of state.mcp || []) for (const t of srv.tools || []) if (t.name === name) return !!t.readOnly;
+  return false;
+}
 function mcpToolShort(name) {
   return name.replace(/^mcp__[a-z0-9_]+__/, '');
 }

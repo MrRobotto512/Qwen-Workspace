@@ -56,6 +56,7 @@ const DEFAULT_SETTINGS = {
   skillWriter: true, // after a long task that worked, propose a reusable skill (approval card)
   reviewPass: false, // planner reviews each task's diff and hands fixes back (2 rounds max) // after a task that ran commands, propose lessons for QWEN.md (always behind the diff card)
   stopRule: true, // the same command failing the same way: name the cause; after two failed fixes, stop and report
+  browserSites: [], // websites where browser tools may act without asking ("Allow on <site>")
   consultFreely: false, // the agent may call consult_planner whenever unsure (more cloud cost; the budget cap applies)
   planWith: 'node', // who writes the plan-first plan: 'node' (⚡, free), 'planner' (cloud), 'auto' (⚡, else planner)
   planFirst: false, // a conversation's first turn runs on the ⚡ node's strongest model, restricted to planning (todo_write)
@@ -2282,6 +2283,42 @@ ipcMain.handle('gimp:setup', async () => {
   } catch (e) {
     return { ok: false, message: `GIMP setup failed: ${e.message}` };
   }
+});
+// One-click browser control (Playwright MCP): checks Node and the chosen browser, makes QWS's
+// own profile and output folders in its data folder, and returns the server entry. Nothing is
+// downloaded here — npx fetches the pinned @playwright/mcp the first time the server starts.
+function browserInstalled(browser) {
+  const env = process.env;
+  const win = (...rel) => [env.ProgramFiles, env['ProgramFiles(x86)'], env.LOCALAPPDATA].filter(Boolean).map((b) => path.join(b, ...rel));
+  const paths = process.platform === 'win32'
+    ? (browser === 'msedge' ? win('Microsoft', 'Edge', 'Application', 'msedge.exe') : win('Google', 'Chrome', 'Application', 'chrome.exe'))
+    : process.platform === 'darwin'
+      ? [browser === 'msedge' ? '/Applications/Microsoft Edge.app' : '/Applications/Google Chrome.app']
+      : (browser === 'msedge' ? ['/opt/microsoft/msedge/msedge', '/usr/bin/microsoft-edge'] : ['/opt/google/chrome/chrome', '/usr/bin/google-chrome']);
+  return paths.some((p) => fs.existsSync(p));
+}
+ipcMain.handle('browser:setup', async (_e, opts) => {
+  const BrowserCtl = require('./renderer/browserctl.js');
+  const mode = BrowserCtl.MODES.includes(opts?.mode) ? opts.mode : 'profile';
+  const browser = BrowserCtl.BROWSERS.includes(opts?.browser) ? opts.browser : 'chrome';
+  const nameOf = { chrome: 'Chrome', msedge: 'Edge' }[browser];
+  const node = await runQuiet('node', ['--version']);
+  if (node.code !== 0) return { ok: false, message: 'Browser control runs on Node.js, which is not installed (or not on PATH). Install Node.js LTS from https://nodejs.org (or ask Qwen to install it with install_app), then click Set up again.' };
+  const steps = [`Node.js ${node.out.trim()} found`];
+  const warn = [];
+  if (browserInstalled(browser)) steps.push(`${nameOf} found`);
+  else warn.push(`${nameOf} was not found in its usual place. ${mode === 'extension' ? `Install ${nameOf} and the extension first.` : `Install ${nameOf}, or pick ${browser === 'chrome' ? 'Edge' : 'Chrome'} instead — otherwise the first page will fail to open.`}`);
+  const profileDir = path.join(app.getPath('userData'), 'browser-profile');
+  const outputDir = path.join(app.getPath('userData'), 'browser-output');
+  await fsp.mkdir(outputDir, { recursive: true });
+  if (mode === 'profile') {
+    await fsp.mkdir(profileDir, { recursive: true });
+    steps.push(`QWS's own ${nameOf} profile: ${profileDir} (sign in there once; your normal ${nameOf} profile is not touched)`);
+  }
+  if (mode === 'headless') steps.push('Headless: an invisible browser with no saved logins, fresh each time');
+  if (mode === 'extension') steps.push(`Uses your running ${nameOf}: install the "Playwright MCP Bridge" extension in it (link below). ${nameOf} asks you to allow the connection when QWS first connects.`);
+  steps.push(`Added the "Browser" MCP server (@playwright/mcp ${BrowserCtl.PLAYWRIGHT_MCP_VERSION}, fetched by npx on first start)`);
+  return { ok: true, steps, warn, server: BrowserCtl.serverConfig({ mode, browser, profileDir, outputDir }), extensionUrl: mode === 'extension' ? 'https://github.com/microsoft/playwright/tree/main/packages/extension#readme' : null };
 });
 ipcMain.handle('mcp:reconnect', () => mcp.connectAll(loadSettings().mcpServers));
 ipcMain.handle('mcp:connectOne', (_e, cfg) => mcp.connectOne(cfg));

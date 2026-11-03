@@ -157,6 +157,40 @@ async function setupGimpFromSettings() {
   out.textContent = [...(r.steps || []).map((s) => `✓ ${s}`), r.message].join('\n');
 }
 
+// One-click browser control: replaces any Playwright MCP server already in the list.
+async function setupBrowserFromSettings() {
+  const out = $('#browser-setup-result');
+  const mode = $('#browser-mode').value;
+  const browser = $('#browser-name').value;
+  const what = { profile: "a separate browser profile of QWS's own (you sign in there once)", extension: 'your running browser and its open tabs, logged in as you', headless: 'an invisible browser with no saved logins' }[mode];
+  if (!confirm(`Let Qwen control ${what}?\n\n• Adds a "Browser" MCP server (Microsoft's Playwright MCP, Apache-2.0; npx fetches it on first start)\n• Reading pages never asks. Opening pages, clicking and typing ask once per website, even in Auto mode — your own localhost pages never ask\n• Running code in a page, uploading files and touching cookies ask every time\n\nNothing in your projects changes.`)) return;
+  out.className = 'hint';
+  out.textContent = 'Setting up browser control…';
+  const r = await api.browserSetup({ mode, browser }).catch((e) => ({ ok: false, message: cleanError(e) }));
+  if (r.ok && r.server) {
+    const configs = (state.settings.mcpServers || []).filter((c) => !BrowserCtl.isPlaywrightServer(c) && sanitizeServerId(c.name) !== sanitizeServerId(r.server.name));
+    configs.push(r.server);
+    await saveServers(configs);
+  }
+  out.className = r.ok ? (r.warn?.length ? 'hint' : 'hint ok') : 'hint bad';
+  out.replaceChildren(...[...(r.steps || []).map((t) => `✓ ${t}`), ...(r.warn || []).map((t) => `⚠ ${t}`), r.message].filter(Boolean).flatMap((t) => [t, el('br')]),
+    ...(r.extensionUrl ? [el('a', { href: '#', text: 'Get the Playwright MCP Bridge extension', onclick: (e) => { e.preventDefault(); api.openExternal(r.extensionUrl); } })] : []));
+}
+
+// The websites browser tools may act on without asking, each removable.
+function renderBrowserSites() {
+  const box = $('#browser-sites');
+  if (!box) return;
+  const sites = state.settings.browserSites || [];
+  const save = async (list) => {
+    state.settings = await api.setSettings({ browserSites: list });
+    renderBrowserSites();
+  };
+  box.replaceChildren(...(sites.length
+    ? ['Browser may act without asking on: ', ...sites.flatMap((site) => [el('span', { class: 'chip' }, site, el('button', { class: 'icon-btn', title: `Ask again on ${site}`, onclick: () => save(sites.filter((x) => x !== site)) }, '×')), ' ']), el('button', { class: 'ghost', onclick: () => save([]) }, 'Clear all')]
+    : []));
+}
+
 async function addServerFromForm() {
   const name = $('#mcp-new-name').value.trim();
   const cmd = $('#mcp-new-cmd').value.trim();
@@ -466,6 +500,7 @@ function openSettings() {
   $('#s-planWith').value = ['node', 'planner', 'auto'].includes(s.planWith) ? s.planWith : 'node';
   for (const k of ['agentMode', 'planFirst', 'includeCurrentFile', 'followAgent', 'autoCheckUpdates', 'branchPerTask', 'lessonsEnabled', 'skillWriter', 'checksGate', 'subagents', 'reviewPass', 'consultFreely']) $(`#s-${k}`).checked = !!s[k];
   $('#s-stopRule').checked = s.stopRule !== false;
+  renderBrowserSites();
   $('#about-version').textContent = state.appInfo?.version || '';
   $('#about-kind').textContent = KIND_TEXT[state.appInfo?.kind] || '';
   renderUpdateUi();

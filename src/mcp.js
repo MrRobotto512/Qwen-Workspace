@@ -36,7 +36,7 @@ function describe() {
     id,
     status: s.status,
     error: s.error || null,
-    tools: (s.tools || []).map((t) => ({ name: toolName(id, t.name), rawName: t.name, description: t.description || '', parameters: t.inputSchema || { type: 'object', properties: {} } }))
+    tools: (s.tools || []).map((t) => ({ name: toolName(id, t.name), rawName: t.name, readOnly: !!t.annotations?.readOnlyHint, description: t.description || '', parameters: t.inputSchema || { type: 'object', properties: {} } }))
   }));
 }
 

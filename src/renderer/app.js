@@ -1816,6 +1816,28 @@ function makeStepRow(c, container, call, rec) {
               el('button', { class: 'primary', onclick: () => finish(true) }, iconEl('check'), 'Approve all'))
           );
           if (state.settings.followAgent && c === state.conv) review();
+        } else if (opts.kind === 'browser') {
+          // Browser actions (BrowserCtl): once per website, remembered by "Allow on <site>";
+          // code, uploads and cookies (danger) ask every time and have no "always".
+          let argText = opts.args || '{}';
+          try {
+            argText = JSON.stringify(JSON.parse(opts.args || '{}'), null, 2);
+          } catch {
+            /* show raw */
+          }
+          const remember = !opts.danger && opts.site && !BrowserCtl.isLocalSite(opts.site);
+          bar.append(
+            el('div', { class: 'q' }, el('span', { text: opts.question })),
+            el('details', { class: 'cmd-details', open: !!opts.danger }, el('summary', { text: 'Details' }), el('div', { class: 'cmd', text: argText })),
+            el('div', { class: 'btns' },
+              el('button', { class: 'ghost danger-text', onclick: () => finish(false) }, 'Reject'),
+              remember ? el('button', { class: 'ghost', title: `Let the browser act on ${opts.site} without asking again (Settings → Tools & MCP servers lists these)`, onclick: async () => {
+                const list = state.settings.browserSites || [];
+                if (!list.includes(opts.site)) state.settings = await api.setSettings({ browserSites: [...list, opts.site] });
+                finish(true);
+              } }, `Allow on ${opts.site}`) : null,
+              el('button', { class: 'primary', onclick: () => finish(true) }, iconEl('play'), opts.danger ? 'Run once' : 'Allow once'))
+          );
         } else if (opts.kind === 'mcp') {
           let argText = opts.args || '{}';
           try {
@@ -2524,6 +2546,7 @@ function bindUi() {
   $('#s-searchProvider').onchange = renderSearchFields;
   $('#mcp-add-btn').onclick = addServerFromForm;
   $('#gimp-setup-btn').onclick = setupGimpFromSettings;
+  $('#browser-setup-btn').onclick = setupBrowserFromSettings;
   $('#node-add-btn').onclick = addNodeFromForm;
   $('#price-add-btn').onclick = addPriceFromForm;
   $('#device-add-btn').onclick = addDeviceFromForm;
