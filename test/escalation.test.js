@@ -131,3 +131,29 @@ test('vaguePlanSteps flags steps that name no file and no command', () => {
   assert.ok(E.planRetryReminder([2, 3]).includes('steps 2, 3'));
   assert.ok(E.planRetryReminder([4]).includes('step 4'));
 });
+
+test('a plan that builds everything in one step, or only tests and polishes, goes back', () => {
+  const E = require('../src/renderer/escalation.js');
+  // The field report's plan, written by a strong planner: every step names a file or not, but
+  // none is one checked piece of work.
+  const field = [
+    { content: 'Create subwaysurfer.html with full 3D endless runner game' },
+    { content: 'Test game in browser, verify playability and fix issues' },
+    { content: 'Polish: ensure 60fps, touch controls, high score persistence' }
+  ];
+  const p = E.planProblems(field);
+  assert.deepStrictEqual(p.map((x) => x.step), [1, 2, 3]);
+  assert.match(p[0].why, /whole thing/);
+  assert.match(p[2].why, /no check named|no file/);
+  assert.match(E.planRetryReminder(p.map((x) => x.step), p), /step 1 builds the whole thing in one step/);
+  assert.match(E.planRetryReminder([1], p), /done when/);
+  // Split, checked steps pass.
+  const good = [
+    { content: 'subwaysurfer.html: Three.js scene, camera behind the player, 3-lane track scrolling toward it — done when test_app shows no errors and the picture is not blank' },
+    { content: 'subwaysurfer.html: player box with ArrowLeft/Right lane switch (eased) and jump (velocity 8, gravity 20) — done when window.selfTest move and act pass' },
+    { content: 'subwaysurfer.html: obstacles and coins spawned 60 units ahead in random lanes — done when the self-test step "spawn" passes' },
+    { content: 'Verify with test_app subwaysurfer.html that every self-test step passes' }
+  ];
+  assert.deepStrictEqual(E.planProblems(good), []);
+  for (const must of ['done when', 'Never one step that builds the whole thing', 'window.selfTest()']) assert.ok(E.PLAN_FIRST_REMINDER.includes(must), must);
+});

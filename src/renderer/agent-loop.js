@@ -293,6 +293,8 @@ async function describeForBlindModel(c, shot) {
     }
     if (look) c.lookCache.set(key, look);
   }
+  // A start screen or menu says nothing about the game itself: tell the model how to get past it.
+  if (look && /^\s*(start|title|menu|loading) screen\b/i.test(look.text)) lines.push('The screenshot shows a start screen, not the app in use. To test the game itself, call test_app again with actions that start it — {"click": [x, y]} on its Start button (pixels in this screenshot) or {"key": "Enter"} / {"key": "Space"} — or give the game a window.selfTest() that starts a game and plays it.');
   lines.push(look
     ? `What the screenshot shows, described by ${look.by} (it can see images; you cannot):\n${look.text}`
     : 'No vision model was available to describe the screenshot. Tell the user you could not check how it looks and ask them to look, instead of saying it works.');
@@ -1188,7 +1190,7 @@ async function send() {
     flushSpend();
     proposeLessons(c);
     proposeSkill(c, failed);
-    maybeReviewPass(c);
+    maybeReviewPass(c, failed);
     continueIfSteered(c);
     maybeCheckGoal(c, failed);
   }
@@ -1827,8 +1829,10 @@ function skillCard(c, draft) {
 
 // The auto trigger, called when a task finishes: only in agent mode, only when files
 // changed, only with a planner configured, and never past the round cap.
-function maybeReviewPass(c) {
-  if (!state.settings.reviewPass || !c || c.mode !== 'agent' || c.stopRequested) return;
+function maybeReviewPass(c, failed) {
+  // A task that ended in an error is unfinished work: reviewing it spends the planner on code
+  // the agent never got to finish (a field report: a paid review right after a GPU crash).
+  if (!state.settings.reviewPass || !c || c.mode !== 'agent' || c.stopRequested || failed) return;
   if (!c.changes.size || !heavyOverride() || c.reviewBusy) return;
   if ((c.reviewRounds || 0) >= ReviewPass.RP_MAX_ROUNDS) return;
   reviewChanges(c, { auto: true });
@@ -1938,7 +1942,7 @@ async function rerunConversation(c) {
     flushSpend();
     proposeLessons(c);
     proposeSkill(c, failed);
-    maybeReviewPass(c);
+    maybeReviewPass(c, failed);
     continueIfSteered(c);
     maybeCheckGoal(c, failed);
   }
@@ -2130,6 +2134,7 @@ async function runConversation(c) {
   const deadNodes = new Set(); // Ollama nodes given up on for the rest of this task
   let lastNodeId = c.pinNodeId || null; // which node the previous step ran on (a subagent starts on its assigned one)
   let capBlocked = false; // the user declined to pass the monthly budget; stay local this task
+  let runnerCrashes = 0; // Ollama model-runner crashes this task (CUDA errors, a runner that died)
   let rateWaits = 0; // per-minute rate-limit waits this task (OpenRouter free models, Groq free tier)
   let toolUseRetries = 0; // tool calls a provider refused as malformed (Groq's tool_use_failed)
   const spokenTexts = []; // long replies that came with tool calls this run (to spot the same one again)
@@ -2526,6 +2531,52 @@ async function runConversation(c) {
           : 'The high-performance node stopped answering — continuing on the default model.');
         continue;
       }
+      // Ollama's model runner crashed (CUDA error, out of GPU memory, a runner that died): the
+      // server reloads the model on the next request, so retry once; then move to another node
+      // that has the model, then to a stronger model; only then stop, with what helps.
+      const stepProvider = override?.provider || state.settings.provider;
+      const runner = stepProvider === 'ollama' ? "Ollama's model runner" : stepProvider === 'lmstudio' ? "LM Studio's model runner" : 'The model server';
+      if (Nodes.isRunnerCrash(res.error)) {
+        runnerCrashes++;
+        const crashedModel = override?.model || state.settings.model;
+        const where = node ? node.name : escLocal ? escLabel : 'This PC';
+        dropEmptyTurn();
+        DebugLog.add(c, 'notice', { text: `runner crash #${runnerCrashes} on ${where}: ${String(res.error).slice(0, 200)}` });
+        if (runnerCrashes === 1) {
+          note(`${runner} crashed on ${where} — retrying (the server reloads ${crashedModel}).`);
+          await new Promise((r) => setTimeout(r, 4000));
+          if (c.stopRequested) return false;
+          continue;
+        }
+        if (escLocal) {
+          // The ⚡ node's runner keeps crashing: drop it for this task, the next rung inherits.
+          localHeavyDead = true;
+          lhCache = { at: 0, pick: null };
+          if (localTakeover) {
+            localTakeover = false;
+            if (heavyOverride()) heavyTakeover = true;
+          } else escalateNext = true;
+          note(`The high-performance node's runner crashed again — ${heavyOverride() ? `escalations go to ${heavyLabel()}` : 'continuing on the default model'}.`);
+          continue;
+        }
+        if (node) {
+          deadNodes.add(node.id);
+          const next = Nodes.nextNode(Nodes.normalizeNodes(state.settings), state.nodeHealth.byId, state.settings.model, deadNodes);
+          if (next) {
+            note(`${runner} crashed again on ${node.name} — moving to ${next.name} for the rest of this task.`);
+            lastNodeId = next.id;
+            continue;
+          }
+        }
+        if (runnerCrashes === 2 && !esc && (heavyOverride() || highPerfConfigured()) && !cloudDead && !capBlocked) {
+          escalateNext = true;
+          note(`${runner} crashed again on ${where} — running the next step on ${escalationTargetLabel()}.`);
+          continue;
+        }
+        view.finish(false);
+        addError(c, `${res.error}\n\n${Nodes.crashAdvice(res.error, crashedModel, runner)}`, false);
+        return true;
+      }
       // A node that stopped answering mid-task (shop PC switched off, Wi-Fi drop) gets one
       // retry, then the task moves to the next healthy node that has the model and says so.
       if (node && Nodes.isConnectionError(res.error)) {
@@ -2799,8 +2850,9 @@ async function runConversation(c) {
       } else if (unusable && c.planTries < 3) {
         planAgain = true;
         planOnPlanner = c.planTries === 2 && !!heavyOverride();
-        c.history.push({ role: 'user', content: `<system-reminder>\n${wrote ? Escalation.planRetryReminder(vague) : Escalation.planMissingReminder()}\n</system-reminder>` });
-        note(wrote ? 'The plan is too vague to execute — sending it back for a rewrite with exact files and commands.' : 'No plan came back — asking again for the plan only.');
+        const problems = Escalation.planProblems(todos);
+        c.history.push({ role: 'user', content: `<system-reminder>\n${wrote ? Escalation.planRetryReminder(vague, problems) : Escalation.planMissingReminder()}\n</system-reminder>` });
+        note(wrote ? `The plan is too vague for the everyday model (${problems.slice(0, 3).map((p) => `step ${p.step} ${p.why}`).join('; ')}) — sending it back for a rewrite: one checked piece per step.` : 'No plan came back — asking again for the plan only.');
       } else {
         if (unusable) note('The plan is still vague — the everyday model takes over and works out each step as it goes.');
         c.history.push({ role: 'user', content: '<system-reminder>\nThe plan above was written by the planning model. You are the everyday model now: execute the todo list step by step, starting with the first item. Do not re-plan.\n</system-reminder>' });
@@ -2854,7 +2906,7 @@ async function runConversation(c) {
 function todosFromArgs(args) {
   return (Array.isArray(args?.todos) ? args.todos : [])
     .slice(0, 20)
-    .map((t) => ({ content: String(t?.content || '').slice(0, 200), status: ['pending', 'in_progress', 'completed'].includes(t?.status) ? t.status : 'pending' }))
+    .map((t) => ({ content: String(t?.content || '').slice(0, 320), status: ['pending', 'in_progress', 'completed'].includes(t?.status) ? t.status : 'pending' }))
     .filter((t) => t.content);
 }
 

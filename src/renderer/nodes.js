@@ -338,6 +338,24 @@ function probeVerdict(promptText, toolMessage) {
   return { ok: prompt.ok && tool.ok, prompt, tool };
 }
 
-const NodesExports = { THIS_PC_ID, REMOTE_KEEP_DEFAULT, nodeId, normalizeNodes, multiNode, sameModel, nodeHasModel, pickNode, nextNode, pickHighPerf, spillInfo, fitContext, kvBytesPerToken, predictFit, isMoE, looseModelKey, looseSame, lmModelFor, ttlSeconds, suggestDraft, nodeOverride, probeVerdict, PROBE_PROMPT, PROBE_TOOL_PROMPT, PROBE_TOOL, isConnectionError, summarize };
+// Ollama's model runner died mid-request (a field report: "CUDA error: an illegal memory
+// access was encountered" on a 30B model filling a 10 GB card). The server itself is fine and
+// reloads the model on the next request, so this is worth a retry — unlike a model error.
+const RUNNER_CRASH = /CUDA error|illegal memory access|cudaMalloc|CUBLAS_STATUS|ROCm error|hipError|llama runner (process )?(has )?terminated|model runner has unexpectedly stopped|runner process (has )?(terminated|no longer running)|GGML_ASSERT|ggml_metal|exit status 0x?c0000409|signal: (killed|segmentation fault|aborted)/i;
+const OUT_OF_MEMORY = /out of memory|cudaMalloc failed|failed to allocate|insufficient memory|requires more system memory/i;
+
+function isRunnerCrash(msg) {
+  const t = String(msg || '');
+  return RUNNER_CRASH.test(t) || OUT_OF_MEMORY.test(t);
+}
+
+// What to tell the user once retries ran out: the likely cause in plain words and what helps.
+function crashAdvice(msg, model, runner = "Ollama's GPU runner") {
+  const t = String(msg || '');
+  if (OUT_OF_MEMORY.test(t)) return `The GPU ran out of memory running ${model}. Lower "Context window" in Settings → Model, close other programs using the GPU, or pick a smaller model.`;
+  return `${runner} crashed while running ${model} (${(/CUDA error[^.\n]*|illegal memory access[^.\n]*|GGML_ASSERT[^.\n]*|runner[^.\n]*/i.exec(t) || [t.slice(0, 80)])[0].trim()}). This is usually a model-server or GPU-driver bug that shows up when a model does not fit fully in VRAM: update the server (Ollama, LM Studio) and the GPU driver, lower "Context window" in Settings → Model, or run this model on another node.`;
+}
+
+const NodesExports = { isRunnerCrash, crashAdvice, THIS_PC_ID, REMOTE_KEEP_DEFAULT, nodeId, normalizeNodes, multiNode, sameModel, nodeHasModel, pickNode, nextNode, pickHighPerf, spillInfo, fitContext, kvBytesPerToken, predictFit, isMoE, looseModelKey, looseSame, lmModelFor, ttlSeconds, suggestDraft, nodeOverride, probeVerdict, PROBE_PROMPT, PROBE_TOOL_PROMPT, PROBE_TOOL, isConnectionError, summarize };
 if (typeof module !== 'undefined' && module.exports) module.exports = NodesExports;
 if (typeof window !== 'undefined') window.Nodes = NodesExports;
