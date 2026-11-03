@@ -21,7 +21,7 @@ async function loadProjectMemory() {
 function systemPrompt(c) {
   const agent = state.settings.agentMode && !!state.ws;
   const web = agent && state.settings.webResearch !== false;
-  const key = `${agent}|${web}|${mcpToolSpecs().map((t) => t.function.name).join(',')}|${c.workspace}|${c.memory?.text || ''}|${state.userMemory || ''}|${(c.skills || []).map((sk) => `${sk.name}:${sk.description}`).join(',')}|${!!c.isSubagent}|${subagentsAvailable(c)}`;
+  const key = `${agent}|${web}|${mcpToolSpecs().map((t) => t.function.name).join(',')}|${c.workspace}|${c.memory?.text || ''}|${state.userMemory || ''}|${(c.skills || []).map((sk) => `${sk.name}:${sk.description}`).join(',')}|${!!c.isSubagent}|${subagentsAvailable(c)}|${!!(state.settings.consultFreely && heavyOverride())}`;
   if (c.sysPrompt?.key === key) return c.sysPrompt.text;
   const win = state.ws?.platform === 'win32';
   const parts = [
@@ -57,6 +57,7 @@ function systemPrompt(c) {
       "- Save what future work will need (toolchain, install steps, build commands, key links) to QWEN.md in the project root.",
       '- Long files come back a page at a time; read the next page only when you need it, instead of re-reading the whole file.',
       '- To run or check a web page or browser game you built, call test_app with its .html file (or a localhost URL): it reports console errors and a screenshot, and can click and press keys. For a desktop app, give test_app its launch command.',
+      state.settings.consultFreely && heavyOverride() ? `- A stronger planner model (${heavyLabel()}) is on call: whenever you are unsure — a design choice, an error you do not understand, a failing fix — call consult_planner with the code and the exact error before guessing.` : null,
       '- Before using an import, class or method you are not certain of, confirm it with check_api; after an ImportError or AttributeError, check_api shows where the name really lives. Never guess API names.',
       '- For tasks with 3 or more steps, keep a plan with todo_write and update it as you finish each step.',
       '- When a task looks like earlier work (a recurring error, a toolchain or app type you set up before), search_history finds how it was done. When the user states a lasting fact about themselves or their setup (their machines, OS, preferred stacks), save it with remember.',
@@ -346,6 +347,11 @@ async function executeTool(c, call, row) {
         if (!override) return { result: 'Error: no planner (heavy) model is configured.', failed: true };
         const question = String(args.question || '').trim();
         if (!question) return { result: 'Error: empty question.' };
+        // The monthly budget applies to consultations too, like escalations and the review pass.
+        if (!['ollama', 'lmstudio'].includes(override.provider) && !c.capApproved && Costs.capReached(state.settings.spend, state.settings.prices, state.settings.monthlyCapUSD)) {
+          if (!(await askBudgetCard(c))) return { result: 'The monthly cloud budget is reached and the user chose not to spend more. Do not call consult_planner again in this task; continue on your own.', meta: 'budget', failed: true };
+          c.capApproved = true;
+        }
         setActivity(c, `Asking ${override.model}`);
         const res = await api.chatStream(`consult${Date.now()}`, {
           override,
@@ -468,7 +474,7 @@ async function executeTool(c, call, row) {
         row.setBody(r.output || '(no output)');
         state.fileIndex = null;
         renderTree();
-        const hint = [ToolParse.cmdShellHint(cmd, r.output, state.ws?.platform), r.code !== 0 ? ToolParse.apiErrorHint(r.output) : ''].filter(Boolean).join('\n');
+        const hint = [ToolParse.cmdShellHint(cmd, r.output, state.ws?.platform), r.code !== 0 ? ToolParse.apiErrorHint(r.output) : '', r.code !== 0 && state.settings.consultFreely && heavyOverride() ? 'If the cause is not clear, ask consult_planner (paste this error) before trying another fix.' : ''].filter(Boolean).join('\n');
         return { result: `Exit code: ${r.code}\n${truncate(r.output || '(no output)')}${hint ? `\n${hint}` : ''}`, meta: `exit ${r.code}`, failed: r.code !== 0 };
       }
       case 'check_api': {
