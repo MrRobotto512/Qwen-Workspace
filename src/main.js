@@ -384,11 +384,19 @@ async function shimPython3(command, cwd) {
   return r.changed ? { command: r.command, note: `[QWS ran python3 as ${python}: python3 is not a working Python on this PC]\n` } : { command, note: '' };
 }
 
+const NON_INTERACTIVE_ENV = { GIT_PAGER: 'cat', PAGER: 'cat', GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', GIT_EDITOR: 'true', DEBIAN_FRONTEND: 'noninteractive', PIP_NO_INPUT: '1' };
+
 ipcMain.handle('cmd:run', async (_e, rawCommand, timeoutMs = 120_000) => {
   const cwd = resolveInWorkspace('.');
   const { command, note } = await shimPython3(rawCommand, cwd);
   return new Promise((resolve) => {
-    const child = spawn(command, { cwd, shell: true, windowsHide: true, env: commandEnv() });
+    // Nothing the agent runs can wait for a person: input is closed at once (a "y/n" prompt or
+    // `python -` reads end-of-file and stops instead of sitting until the timeout), and git, its
+    // credential helper and pagers are told not to prompt or page (from Craft Anything's
+    // pitfalls: commands that waited for a terminal cost 10 minutes each).
+    const child = spawn(command, { cwd, shell: true, windowsHide: true, env: { ...commandEnv(), ...NON_INTERACTIVE_ENV } });
+    child.stdin?.on('error', () => {});
+    child.stdin?.end();
     let output = note;
     const append = (d) => {
       output += d.toString();
@@ -398,7 +406,7 @@ ipcMain.handle('cmd:run', async (_e, rawCommand, timeoutMs = 120_000) => {
     child.stdout.on('data', append);
     child.stderr.on('data', append);
     const timer = setTimeout(() => {
-      append(`\n[timed out after ${timeoutMs / 1000}s — process killed]\n`);
+      append(`\n[timed out after ${timeoutMs / 1000}s — process killed. If it was waiting for input (a question, a sign-in, a pager), run it with its non-interactive flags instead (-y / --yes / --no-pager / --non-interactive).]\n`);
       killTree(child);
     }, timeoutMs);
     child.on('error', (err) => append(`\n[error] ${err.message}\n`));
@@ -494,10 +502,14 @@ ipcMain.handle('gui:testPage', async (_e, opts) => {
   } catch (e) {
     return { error: e.message };
   }
+  // A width asked for (the likeness check pictures pages at 1440, 768 and 390 px) keeps a
+  // screen-like height; otherwise the default 1024×768.
+  const pageW = Math.round(Number(opts?.width)) >= 240 ? Math.min(3840, Math.round(Number(opts.width))) : PAGE_W;
+  const pageH = pageW === PAGE_W ? PAGE_H : Math.max(640, Math.min(1000, Math.round(pageW * 0.625)));
   const win = new BrowserWindow({
     show: false,
-    width: PAGE_W,
-    height: PAGE_H,
+    width: pageW,
+    height: pageH,
     useContentSize: true,
     webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, partition: `qws-pagetest-${Date.now()}`, backgroundThrottling: false }
   });
@@ -543,7 +555,7 @@ ipcMain.handle('gui:testPage', async (_e, opts) => {
       out.shot = await capture();
       if (parsed.actions.length && !crashed) {
         wc.focus();
-        const size = { width: PAGE_W, height: PAGE_H };
+        const size = { width: pageW, height: pageH };
         for (const a of parsed.actions) {
           if (a.click) {
             const [x, y] = GuiTest.scalePoint(a.click, out.shot, size);
@@ -572,6 +584,20 @@ ipcMain.handle('gui:testPage', async (_e, opts) => {
         await sleep(600);
         out.shot = (await capture()) || out.shot;
       }
+      // A game's own self-test (window.selfTest, see renderer/selftest.js): run after the page
+      // and any actions, with a time limit, so its report — measured from the game's state —
+      // reaches the agent. Whether the page draws on a <canvas> tells a game without one.
+      if (!crashed && opts?.selfTest !== false) {
+        const probe = await wc.executeJavaScript('({ selfTest: typeof window.selfTest === "function", canvas: !!document.querySelector("canvas") })', true).catch(() => ({}));
+        out.hasCanvas = !!probe.canvas;
+        out.hasSelfTest = !!probe.selfTest;
+        if (probe.selfTest) {
+          const limit = Math.min(60, Math.max(5, Number(opts?.selfTestSeconds) || 20)) * 1000;
+          out.selfTest = await wc.executeJavaScript(`Promise.race([Promise.resolve().then(() => window.selfTest()).then((r) => JSON.stringify(r === undefined ? null : r)), new Promise((_, no) => setTimeout(() => no(new Error('window.selfTest() did not finish within ${limit / 1000}s')), ${limit}))])`, true)
+            .catch((e) => JSON.stringify({ error: String(e?.message || e).slice(0, 300) }));
+          out.shot = (await capture()) || out.shot;
+        }
+      }
     }
   } catch (e) {
     out.actionError = e.message;
@@ -582,6 +608,62 @@ ipcMain.handle('gui:testPage', async (_e, opts) => {
     if (!win.isDestroyed()) win.destroy();
   }
   return out;
+});
+
+// A picture in the project (a reference the user added, for test_app's likeness check), as
+// base64. Only common image types, inside the project, at most 15 MB.
+ipcMain.handle('fs:readImage', async (_e, rel) => {
+  const abs = resolveInWorkspace(String(rel || ''));
+  const mime = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp' }[path.extname(abs).toLowerCase()];
+  if (!mime) return { error: 'not a picture (png, jpg, webp, gif or bmp)' };
+  const st = fs.statSync(abs, { throwIfNoEntry: false });
+  if (!st?.isFile()) return { error: `${rel} does not exist in the project` };
+  if (st.size > 15 * 1024 * 1024) return { error: `${rel} is over 15 MB` };
+  return { mime, data: fs.readFileSync(abs).toString('base64') };
+});
+
+// A desktop game's own self-test: `<command> --self-test <file.json>` (a Godot project gets it
+// after `--`), waited for up to `seconds`, then the report file is read back. The renderer asks
+// for approval first, exactly as for launching the app.
+ipcMain.handle('gui:selfTest', async (_e, opts) => {
+  const rawCommand = String(opts?.command || '').trim();
+  if (!rawCommand) return { error: 'empty command' };
+  const cwd = resolveInWorkspace('.');
+  const { command } = await shimPython3(rawCommand, cwd);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qws-selftest-'));
+  const file = path.join(dir, 'self-test.json');
+  const flag = `--self-test "${file}"`;
+  const full = /\bgodot/i.test(command) && !/\s--\s/.test(command) ? `${command} -- ${flag}` : `${command} ${flag}`;
+  const seconds = Math.min(180, Math.max(5, Number(opts?.seconds) || 60));
+  const run = await new Promise((resolve) => {
+    let output = '';
+    const child = spawn(full, { cwd, shell: true, windowsHide: true, env: { ...commandEnv(), ...NON_INTERACTIVE_ENV } });
+    child.stdin?.on('error', () => {});
+    child.stdin?.end();
+    const add = (d) => {
+      output = (output + d.toString()).slice(-4000);
+    };
+    child.stdout.on('data', add);
+    child.stderr.on('data', add);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killTree(child);
+    }, seconds * 1000);
+    child.on('error', (err) => add(`\n[error] ${err.message}\n`));
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code, output, timedOut });
+    });
+  });
+  let report = null;
+  try {
+    report = fs.readFileSync(file, 'utf8');
+  } catch {
+    report = null;
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+  return { ...run, report, command: full };
 });
 
 ipcMain.handle('gui:test', async (_e, opts) => {
@@ -696,6 +778,8 @@ function apiHeaders(s) {
     return h;
   }
   if (s.apiKey) h.Authorization = `Bearer ${s.apiKey}`;
+  // OpenRouter credits the app by these headers (and lists free-model use under it).
+  if (s.provider === 'openrouter' || /openrouter\.ai/i.test(String(s.baseUrl || ''))) Object.assign(h, require('./renderer/freecloud.js').ATTRIBUTION);
   return h;
 }
 function apiUrl(s, suffix) {
@@ -712,6 +796,17 @@ ipcMain.handle('model:list', async (_e, override) => {
   return (json.data || json.models || []).map((m) => m.id || m.name).filter(Boolean).sort();
 });
 
+// The provider's full model list (OpenRouter's pricing and capabilities, Groq's context sizes),
+// parsed by renderer/freecloud.js. Only for providers whose list carries that detail.
+ipcMain.handle('model:catalog', async (_e, override) => {
+  const s = { ...loadSettings(), ...(override || {}) };
+  if (!['openrouter', 'groq'].includes(s.provider)) return null;
+  const res = await fetch(apiUrl(s, '/models'), { headers: apiHeaders(s), signal: AbortSignal.timeout(15_000) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const json = await res.json();
+  return require('./renderer/freecloud.js').parseCatalog(s.provider, json);
+});
+
 ipcMain.handle('chat:abort', (_e, id) => {
   chatControllers.get(id)?.abort();
   return true;
@@ -726,7 +821,7 @@ const CLOUD_FIRST_TOKEN_MS = 120_000;
 const firstTokenMs = (s) => (Number(s.cloudFirstTokenSec) > 0 ? Number(s.cloudFirstTokenSec) * 1000 : CLOUD_FIRST_TOKEN_MS);
 function isCloudEndpoint(s) {
   if (['ollama', 'lmstudio'].includes(s.provider)) return false;
-  if (['gemini', 'anthropic', 'openrouter', 'dashscope'].includes(s.provider)) return true;
+  if (['gemini', 'anthropic', 'openrouter', 'dashscope', 'groq'].includes(s.provider)) return true;
   let host = '';
   try {
     host = new URL(String(s.baseUrl || '')).hostname;
@@ -839,7 +934,15 @@ async function chatStreamInner(s, payload, controller, send, fail) {
     const decoder = new TextDecoder();
     let buffer = '';
 
+    let streamError = null;
     const handleChunk = (json) => {
+      // OpenRouter reports an upstream failure after a 200 as an event of its own.
+      if (json.error && !json.choices) {
+        streamError = json.error;
+        return;
+      }
+      // Groq puts the final usage under x_groq.
+      if (json.x_groq?.usage && !json.usage) json.usage = json.x_groq.usage;
       if (json.usage && (json.usage.prompt_tokens || json.usage.completion_tokens)) {
         usage = { ...(usage || {}), promptTokens: json.usage.prompt_tokens || 0, completionTokens: json.usage.completion_tokens || 0 };
       }
@@ -901,6 +1004,12 @@ async function chatStreamInner(s, payload, controller, send, fail) {
       }
     }
 
+    // An error event with nothing else in the reply fails the request like an HTTP error would,
+    // so busy/quota handling sees it (instead of an empty answer).
+    if (streamError && !content && !toolCalls.length) {
+      const code = Number(streamError.code) || 502;
+      throw new Error(`HTTP ${code} from ${s.baseUrl}: ${errorBody(JSON.stringify({ error: streamError }))}`);
+    }
     const calls = toolCalls.filter(Boolean).map((t, i) => ({ ...t, id: t.id || `call_${Date.now()}_${i}` }));
     return { ok: true, content, reasoning, toolCalls: calls, finishReason, usage: usage || undefined };
   } catch (err) {
@@ -2330,6 +2439,36 @@ ipcMain.handle('browser:setup', async (_e, opts) => {
   if (mode === 'extension') steps.push(`Uses your running ${nameOf}: install the "Playwright MCP Bridge" extension in it (link below). ${nameOf} asks you to allow the connection when QWS first connects.`);
   steps.push(`Added the "Browser" MCP server (@playwright/mcp ${BrowserCtl.PLAYWRIGHT_MCP_VERSION}, fetched by npx on first start)`);
   return { ok: true, steps, warn, server: BrowserCtl.serverConfig({ mode, browser, profileDir, outputDir }), extensionUrl: mode === 'extension' ? 'https://github.com/microsoft/playwright/tree/main/packages/extension#readme' : null };
+});
+// One-click Craft Anything tools: the pinned CLI release for this OS, checksum-verified, as an
+// MCP server (see craftsetup.js).
+function extractArchive(archive, dest, kind) {
+  if (kind === 'zip' && process.platform === 'win32') return extractZip(archive, dest);
+  const [cmd, args] = kind === 'zip' ? ['ditto', ['-x', '-k', archive, dest]] : ['tar', ['-xzf', archive, '-C', dest]];
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { windowsHide: true });
+    let err = '';
+    child.stderr.on('data', (d) => (err += d));
+    child.on('error', (e) => reject(new Error(`Could not unpack the download: ${e.message}`)));
+    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`Could not unpack the download.${err ? ` ${err.trim().slice(0, 300)}` : ''}`))));
+  });
+}
+ipcMain.handle('craft:setup', async () => {
+  try {
+    return await require('./craftsetup.js').setupCraft({
+      platform: process.platform,
+      arch: process.arch,
+      dataDir: app.getPath('userData'),
+      fetch: (url) => fetch(url, { headers: { 'User-Agent': 'Qwen-Workspace' }, signal: AbortSignal.timeout(10 * 60_000) }),
+      extract: extractArchive,
+      run: async (cmd, args) => {
+        const r = await runQuiet(cmd, args, 30_000);
+        return { code: r.code, out: r.out };
+      }
+    });
+  } catch (e) {
+    return { ok: false, message: `Craft Anything setup failed: ${e.message}` };
+  }
 });
 ipcMain.handle('mcp:reconnect', () => mcp.connectAll(loadSettings().mcpServers));
 ipcMain.handle('mcp:connectOne', (_e, cfg) => mcp.connectOne(cfg));
