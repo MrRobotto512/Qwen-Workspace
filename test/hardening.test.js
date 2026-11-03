@@ -60,3 +60,13 @@ test('reasoningRepeatCoverage flags circular thinking, not ordinary thinking', (
   assert.strictEqual(T.reasoningRepeatCoverage('short thought'), 0); // under the 2,000-word window
   assert.strictEqual(T.reasoningRepeatCoverage('0123456789a'.repeat(400)), 1); // one long cycling "word"
 });
+
+test('cmdShellHint: Windows start needs a title and quotes; web pages point at test_app', () => {
+  const { cmdShellHint } = require('../src/renderer/toolparse.js');
+  assert.match(cmdShellHint('start D:/GAme Test with QWS/subwaysurfer/index.html', '', 'win32'), /write start "" "D:\/GAme Test with QWS\/subwaysurfer\/index\.html"\..*call test_app with the \.html file/);
+  const quoted = cmdShellHint('start "" "D:/a b/index.html"', '', 'win32');
+  assert.doesNotMatch(quoted, /window title/);
+  assert.match(quoted, /test_app/);
+  assert.equal(cmdShellHint('start notepad', '', 'win32'), null);
+  assert.equal(cmdShellHint('start D:/a b/index.html', '', 'linux'), null);
+});

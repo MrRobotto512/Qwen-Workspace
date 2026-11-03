@@ -13,20 +13,20 @@ const SHOT_BOX = 1024; // screenshots fit in 1024×1024 (Chromium scales small w
 
 // Keys the model may press, with each platform's name for them.
 const KEYS = {
-  enter: { x: 'Return', w: '{ENTER}', m: 36 },
-  return: { x: 'Return', w: '{ENTER}', m: 36 },
-  tab: { x: 'Tab', w: '{TAB}', m: 48 },
-  escape: { x: 'Escape', w: '{ESC}', m: 53 },
-  esc: { x: 'Escape', w: '{ESC}', m: 53 },
-  backspace: { x: 'BackSpace', w: '{BACKSPACE}', m: 51 },
-  delete: { x: 'Delete', w: '{DELETE}', m: 117 },
-  space: { x: 'space', w: ' ', m: 49 },
-  up: { x: 'Up', w: '{UP}', m: 126 },
-  down: { x: 'Down', w: '{DOWN}', m: 125 },
-  left: { x: 'Left', w: '{LEFT}', m: 123 },
-  right: { x: 'Right', w: '{RIGHT}', m: 124 },
-  home: { x: 'Home', w: '{HOME}', m: 115 },
-  end: { x: 'End', w: '{END}', m: 119 }
+  enter: { x: 'Return', w: '{ENTER}', m: 36, e: 'Enter' },
+  return: { x: 'Return', w: '{ENTER}', m: 36, e: 'Enter' },
+  tab: { x: 'Tab', w: '{TAB}', m: 48, e: 'Tab' },
+  escape: { x: 'Escape', w: '{ESC}', m: 53, e: 'Escape' },
+  esc: { x: 'Escape', w: '{ESC}', m: 53, e: 'Escape' },
+  backspace: { x: 'BackSpace', w: '{BACKSPACE}', m: 51, e: 'Backspace' },
+  delete: { x: 'Delete', w: '{DELETE}', m: 117, e: 'Delete' },
+  space: { x: 'space', w: ' ', m: 49, e: 'Space' },
+  up: { x: 'Up', w: '{UP}', m: 126, e: 'Up' },
+  down: { x: 'Down', w: '{DOWN}', m: 125, e: 'Down' },
+  left: { x: 'Left', w: '{LEFT}', m: 123, e: 'Left' },
+  right: { x: 'Right', w: '{RIGHT}', m: 124, e: 'Right' },
+  home: { x: 'Home', w: '{HOME}', m: 115, e: 'Home' },
+  end: { x: 'End', w: '{END}', m: 119, e: 'End' }
 };
 
 // The model's actions → { actions } or { error }. Accepted shapes: {click:[x,y]},
@@ -49,8 +49,8 @@ function parseActions(raw) {
       if (!text || text.length > 500) return { error: 'A type action needs 1–500 characters of text.' };
       actions.push({ type: text });
     } else if (kind === 'key') {
-      const k = String(a.key || '').trim().toLowerCase();
-      if (!KEYS[k]) return { error: `Unknown key "${a.key}". Use one of: ${Object.keys(KEYS).join(', ')}.` };
+      const k = String(a.key || '').trim().toLowerCase().replace(/^arrow/, '');
+      if (!KEYS[k] && !/^[a-z0-9]$/.test(k)) return { error: `Unknown key "${a.key}". Use one of: ${Object.keys(KEYS).join(', ')}, or a single letter or digit.` };
       actions.push({ key: k });
     } else if (kind === 'wait') {
       const s = Number(a.wait ?? a.seconds);
@@ -96,7 +96,7 @@ function xdotoolSteps(actions, wid, shot, win) {
     } else if (a.type) {
       steps.push(['windowfocus', '--sync', String(wid)], ['type', '--delay', '40', a.type]);
     } else if (a.key) {
-      steps.push(['windowfocus', '--sync', String(wid)], ['key', KEYS[a.key].x]);
+      steps.push(['windowfocus', '--sync', String(wid)], ['key', KEYS[a.key]?.x || a.key]);
     } else if (a.wait) {
       steps.push({ sleep: a.wait });
     }
@@ -138,7 +138,7 @@ function windowsScript(hwnd, actions, shot) {
     } else if (a.type) {
       lines.push(`[void][QW]::SetForegroundWindow($h); [System.Windows.Forms.SendKeys]::SendWait(${psString(sendKeysEscape(a.type))}); Start-Sleep -Milliseconds 200`);
     } else if (a.key) {
-      lines.push(`[void][QW]::SetForegroundWindow($h); [System.Windows.Forms.SendKeys]::SendWait(${psString(KEYS[a.key].w)}); Start-Sleep -Milliseconds 200`);
+      lines.push(`[void][QW]::SetForegroundWindow($h); [System.Windows.Forms.SendKeys]::SendWait(${psString(KEYS[a.key]?.w || a.key)}); Start-Sleep -Milliseconds 200`);
     } else if (a.wait) {
       lines.push(`Start-Sleep -Milliseconds ${Math.round(a.wait * 1000)}`);
     }
@@ -153,7 +153,7 @@ function macScript(windowNumber, actions, shot) {
   const steps = actions.map((a) => {
     if (a.click) return `click(${a.click[0]}, ${a.click[1]});`;
     if (a.type) return `se.keystroke(${JSON.stringify(a.type)}); delay(0.2);`;
-    if (a.key) return `se.keyCode(${KEYS[a.key].m}); delay(0.2);`;
+    if (a.key) return KEYS[a.key] ? `se.keyCode(${KEYS[a.key].m}); delay(0.2);` : `se.keystroke(${JSON.stringify(a.key)}); delay(0.2);`;
     if (a.wait) return `delay(${a.wait});`;
     return '';
   });
@@ -203,6 +203,43 @@ function summarize(r, sent) {
   return lines.join('\n');
 }
 
-const GuiTestExports = { MAX_ACTIONS, SHOT_BOX, KEYS, parseActions, windowIdFromSource, pickWindow, scalePoint, xdotoolSteps, sendKeysEscape, windowsScript, macScript, describeAction, summarize };
+// A web page instead of a desktop app: an .html file (optionally behind "start", "open" or
+// "xdg-open", quoted or not) or an http(s) URL. Those are tested in a hidden QWS window instead
+// of an OS process — `start index.html` returns at once, so there is no process to follow.
+function webTarget(command) {
+  let t = String(command || '').trim();
+  t = t.replace(/^(start(\s+"")?|open|xdg-open|explorer(\.exe)?)\s+/i, '').trim().replace(/^"(.*)"$/, '$1').replace(/^'(.*)'$/, '$1').trim();
+  if (/^https?:\/\/\S+$/i.test(t)) return { url: t };
+  if (/^file:\/\//i.test(t)) t = decodeURIComponent(t.replace(/^file:\/\/\/?/i, ''));
+  if (/\.html?$/i.test(t) && !/[|&<>]/.test(t)) return { file: t };
+  return null;
+}
+
+// Electron input-event key code for an action key.
+function electronKey(k) {
+  return KEYS[k]?.e || (k.length === 1 ? k : null);
+}
+
+function summarizePage(r, sent) {
+  if (r.error) return `Error: ${r.error}`;
+  const lines = [];
+  if (!r.loaded) lines.push(`The page did not load: ${r.loadError || 'unknown error'}.`);
+  else lines.push(`Page "${r.title || '(untitled)'}" loaded${r.loadMs != null ? ` in ${(r.loadMs / 1000).toFixed(1)}s` : ''}.`);
+  if (r.crashed) lines.push(`The page crashed: ${r.crashed}.`);
+  if (r.actions?.length) lines.push(`Actions: ${r.actions.map(describeAction).join('; ')}.${r.actionError ? ` Stopped early: ${r.actionError}` : ''}`);
+  const errs = r.errors || [];
+  lines.push(errs.length
+    ? `Console errors (${errs.length}) — fix these first:\n${errs.slice(0, 15).map((e) => `- ${e}`).join('\n')}${errs.length > 15 ? `\n- … ${errs.length - 15} more` : ''}`
+    : 'No console errors.');
+  if (r.logs?.length) lines.push(`Console output (last ${r.logs.length}):\n${r.logs.map((l) => `  ${l}`).join('\n')}`);
+  if (r.shot) {
+    lines.push(sent
+      ? `A screenshot of the page is attached (${r.shot.width}×${r.shot.height} px). Click coordinates for the next test_app call are pixels in this screenshot.`
+      : `A ${r.shot.width}×${r.shot.height} screenshot was taken, but the current model does not look able to see images.`);
+  }
+  return lines.join('\n');
+}
+
+const GuiTestExports = { MAX_ACTIONS, SHOT_BOX, KEYS, parseActions, windowIdFromSource, pickWindow, scalePoint, xdotoolSteps, sendKeysEscape, windowsScript, macScript, describeAction, summarize, webTarget, electronKey, summarizePage };
 if (typeof module !== 'undefined' && module.exports) module.exports = GuiTestExports;
 if (typeof window !== 'undefined') window.GuiTest = GuiTestExports;

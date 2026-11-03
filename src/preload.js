@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('api', {
 
   runCommand: (command, timeoutMs) => ipcRenderer.invoke('cmd:run', command, timeoutMs),
   guiTest: (opts) => ipcRenderer.invoke('gui:test', opts),
+  guiTestPage: (opts) => ipcRenderer.invoke('gui:testPage', opts),
   onCommandOutput: (cb) => {
     const fn = (_e, text) => cb(text);
     ipcRenderer.on('cmd:output', fn);

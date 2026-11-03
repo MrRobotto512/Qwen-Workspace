@@ -7,6 +7,12 @@ const vm = require('node:vm');
 const net = require('node:net');
 const updater = require('./updater');
 const { detectSpecs } = require('./hardware');
+// Model requests never time out on their own. Node's fetch gives up after 5 minutes without a
+// byte (undici's headers/body timeouts), and a local model spilling onto the CPU can read a long
+// prompt that long before streaming anything — a field report lost two steps to
+// UND_ERR_BODY_TIMEOUT and moved a healthy node's task elsewhere. Stop still aborts, via signal.
+const { Agent: UndiciAgent } = require('undici');
+const modelDispatcher = new UndiciAgent({ headersTimeout: 0, bodyTimeout: 0, connectTimeout: 30_000 });
 const web = require('./web');
 const mcp = require('./mcp');
 
@@ -437,6 +443,116 @@ async function guiActions(source, actions, shot) {
   return `Clicking and typing is not supported on ${process.platform}.`;
 }
 
+// Web pages and browser games: loaded in a hidden, sandboxed QWS window (no Node, throwaway
+// storage) instead of an OS browser — `start index.html` returns at once, leaving nothing to
+// watch. Console errors are the main signal (an undefined function, a typo'd variable, a missing
+// file); clicks and keys go straight to the page as input events, so no OS automation is needed.
+const PAGE_W = 1024;
+const PAGE_H = 768;
+ipcMain.handle('gui:testPage', async (_e, opts) => {
+  const parsed = GuiTest.parseActions(opts?.actions);
+  if (parsed.error) return { error: parsed.error };
+  let target;
+  try {
+    if (opts?.url) target = { url: String(opts.url) };
+    else {
+      const abs = resolveInWorkspace(String(opts?.file || ''));
+      if (!fs.existsSync(abs)) return { error: `${opts.file} does not exist in the project` };
+      target = { file: abs };
+    }
+  } catch (e) {
+    return { error: e.message };
+  }
+  const win = new BrowserWindow({
+    show: false,
+    width: PAGE_W,
+    height: PAGE_H,
+    useContentSize: true,
+    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, partition: `qws-pagetest-${Date.now()}`, backgroundThrottling: false }
+  });
+  const errors = new Map(); // message -> count
+  const logs = [];
+  let crashed = null;
+  let loadError = null;
+  const wc = win.webContents;
+  const levelName = (l) => (typeof l === 'number' ? ['debug', 'info', 'warning', 'error'][l] || 'info' : String(l || 'info'));
+  wc.on('console-message', (ev, lvl, msg, line, source) => {
+    const d = ev && typeof ev.message === 'string' ? ev : { level: lvl, message: msg, lineNumber: line, sourceId: source };
+    const where = d.sourceId ? ` (${path.basename(String(d.sourceId))}${d.lineNumber ? `:${d.lineNumber}` : ''})` : '';
+    const text = `${String(d.message).slice(0, 300)}${where}`;
+    if (levelName(d.level) === 'error') errors.set(text, (errors.get(text) || 0) + 1);
+    else if (logs.length < 200) logs.push(text);
+  });
+  wc.on('render-process-gone', (_ev, details) => { crashed = details?.reason || 'renderer gone'; });
+  wc.on('did-fail-load', (_ev, code, desc, url, isMain) => { if (isMain) loadError = `${desc} (${code}) for ${url}`; });
+  const capture = async () => {
+    try {
+      const img = await wc.capturePage();
+      if (img.isEmpty()) return null;
+      const { width, height } = img.getSize();
+      return { png: img.toPNG().toString('base64'), width, height };
+    } catch {
+      return null;
+    }
+  };
+  const t0 = Date.now();
+  let loaded = false;
+  try {
+    await (target.url ? win.loadURL(target.url) : win.loadFile(target.file));
+    loaded = !loadError;
+  } catch (e) {
+    loadError = loadError || e.message;
+  }
+  const loadMs = Date.now() - t0;
+  const out = { loaded, loadMs, loadError, title: '', actions: parsed.actions, actionError: null, shot: null };
+  try {
+    if (loaded) {
+      await sleep(Math.min(10, Math.max(0.5, Number(opts?.waitSeconds) || 1.5)) * 1000); // let scripts start
+      out.title = wc.getTitle();
+      out.shot = await capture();
+      if (parsed.actions.length && !crashed) {
+        wc.focus();
+        const size = { width: PAGE_W, height: PAGE_H };
+        for (const a of parsed.actions) {
+          if (a.click) {
+            const [x, y] = GuiTest.scalePoint(a.click, out.shot, size);
+            wc.sendInputEvent({ type: 'mouseMove', x, y });
+            wc.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+            wc.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+            await sleep(150);
+          } else if (a.type) {
+            for (const ch of a.type) {
+              wc.sendInputEvent({ type: 'keyDown', keyCode: ch });
+              wc.sendInputEvent({ type: 'char', keyCode: ch });
+              wc.sendInputEvent({ type: 'keyUp', keyCode: ch });
+              await sleep(20);
+            }
+          } else if (a.key) {
+            const keyCode = GuiTest.electronKey(a.key);
+            wc.sendInputEvent({ type: 'keyDown', keyCode });
+            if (keyCode.length === 1 || keyCode === 'Space') wc.sendInputEvent({ type: 'char', keyCode: keyCode === 'Space' ? ' ' : keyCode });
+            await sleep(80);
+            wc.sendInputEvent({ type: 'keyUp', keyCode });
+            await sleep(120);
+          } else if (a.wait) {
+            await sleep(a.wait * 1000);
+          }
+        }
+        await sleep(600);
+        out.shot = (await capture()) || out.shot;
+      }
+    }
+  } catch (e) {
+    out.actionError = e.message;
+  } finally {
+    out.crashed = crashed;
+    out.errors = [...errors].map(([m, n]) => (n > 1 ? `${m} ×${n}` : m));
+    out.logs = logs.slice(-20);
+    if (!win.isDestroyed()) win.destroy();
+  }
+  return out;
+});
+
 ipcMain.handle('gui:test', async (_e, opts) => {
   const command = String(opts?.command || '').trim();
   if (!command) return { error: 'empty command' };
@@ -629,7 +745,8 @@ ipcMain.handle('chat:stream', async (event, id, payload) => {
       method: 'POST',
       headers: apiHeaders(s),
       body: JSON.stringify(body),
-      signal: controller.signal
+      signal: controller.signal,
+      dispatcher: modelDispatcher
     });
     if (!res.ok) {
       const text = await res.text();
@@ -833,7 +950,8 @@ async function streamOllama(s, payload, signal, send) {
     method: 'POST',
     headers: apiHeaders(s),
     body: JSON.stringify(body),
-    signal
+    signal,
+    dispatcher: modelDispatcher
   });
   if (!res.ok) {
     const text = await res.text();
@@ -963,7 +1081,8 @@ async function streamAnthropic(s, payload, signal, send) {
     method: 'POST',
     headers: apiHeaders(s),
     body: JSON.stringify(toAnthropicRequest(s, payload)),
-    signal
+    signal,
+    dispatcher: modelDispatcher
   });
   if (!res.ok) {
     const text = await res.text();

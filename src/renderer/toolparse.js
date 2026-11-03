@@ -285,6 +285,17 @@ function cmdShellHint(command, output, platform) {
   if (unix && /is not recognized as an internal or external command/i.test(out)) {
     hints.push(`"${unix[1]}" is a Unix command; in cmd.exe use: ls→dir, cat→type, rm→del (folders: rmdir /s /q), cp→copy, mv→move, grep→findstr, which→where, touch→type nul > file, export→set, pwd→cd.`);
   }
+  // `start` takes the first quoted argument as a window title, and an unquoted path with spaces
+  // breaks — a field report's agent timed out twice on `start D:/GAme Test with QWS/…/index.html`.
+  const st = /^\s*start\s+(.*)$/i.exec(cmd);
+  if (st) {
+    const titled = /^""\s/.test(st[1].trim());
+    const target = st[1].trim().replace(/^""\s+/, '').replace(/^\/\w+\s+/, '');
+    if (!titled && (/^"/.test(target) || /\s/.test(target.replace(/^"|"$/g, '')))) {
+      hints.push(`"start" reads the first quoted argument as a window title and splits unquoted paths at spaces: write start "" "${target.replace(/^"|"$/g, '')}".`);
+    }
+    if (/\.html?"?$/i.test(target)) hints.push('To check a web page or browser game, call test_app with the .html file instead: it loads the page, reports its console errors and a screenshot, and can click and press keys.');
+  }
   return hints.length ? `Hint: ${hints.join(' ')}` : null;
 }
 
