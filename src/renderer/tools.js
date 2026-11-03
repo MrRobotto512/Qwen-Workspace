@@ -371,18 +371,19 @@ const DELEGATE_TOOL = {
   type: 'function',
   function: {
     name: 'delegate_tasks',
-    description: 'Run 2 to 4 INDEPENDENT subtasks at the same time, each by a fresh agent on a different Ollama machine; you get back only each one\'s short summary and the files it changed. Use it when work splits cleanly — separate files or separate questions — never for steps that depend on each other. Each subagent starts with no memory of this conversation: put everything it needs in the task and context.',
+    description: 'Hand 1 to 4 INDEPENDENT subtasks to fresh agents; you get back only each one\'s short summary and the files it changed. Each subtask picks a tier: "strong" (the strongest model set up — for writing or reviewing a spec, design decisions, hard debugging, checking finished work with fresh eyes), "mid" (the default: the everyday model) or "light" (a smaller, faster model — simple mechanical work). Subtasks on different machines run at the same time; ones that share a machine run one after another. Never split steps that depend on each other. Each subagent starts with no memory of this conversation: put everything it needs in the task and context.',
     parameters: {
       type: 'object',
       properties: {
         tasks: {
           type: 'array',
-          description: '2 to 4 subtasks.',
+          description: '1 to 4 subtasks.',
           items: {
             type: 'object',
             properties: {
               task: { type: 'string', description: 'What this subagent should do, including which files it owns.' },
-              context: { type: 'string', description: 'Facts it needs from this conversation: paths, decisions, code to follow.' }
+              context: { type: 'string', description: 'Facts it needs from this conversation: paths, decisions, code to follow.' },
+              tier: { type: 'string', enum: ['strong', 'mid', 'light'], description: 'Which model runs it (default mid).' }
             },
             required: ['task']
           }
@@ -393,9 +394,13 @@ const DELEGATE_TOOL = {
   }
 };
 
-// Parallel subagents need somewhere to run in parallel: Ollama with more than one node enabled.
+// Subagents run in parallel on Ollama with more than one node enabled; with a ⚡ node or a
+// planner model set up they are also worth it on one machine, for "strong" subtasks.
+function parallelSubagents() {
+  return state.settings.provider === 'ollama' && Nodes.multiNode(state.settings);
+}
 function subagentsAvailable(c) {
-  return !c?.isSubagent && state.settings.subagents !== false && state.settings.provider === 'ollama' && Nodes.multiNode(state.settings);
+  return !c?.isSubagent && state.settings.subagents !== false && (parallelSubagents() || highPerfConfigured() || !!heavyOverride());
 }
 
 function toolsFor(c) {
@@ -550,7 +555,7 @@ function describeCall(name, args) {
       return { target: `${String(args.command || '')}${Array.isArray(args.actions) && args.actions.length ? ` · ${args.actions.length} action${args.actions.length === 1 ? '' : 's'}` : ''}` };
     case 'delegate_tasks': {
       const list = Array.isArray(args.tasks) ? args.tasks : [];
-      return { target: `${list.length} subtask${list.length === 1 ? '' : 's'}: ${list.map((t) => String(t?.task || t || '').slice(0, 40)).join(' · ')}`, title: list.map((t) => String(t?.task || t || '')).join('\n') };
+      return { target: `${list.length} subtask${list.length === 1 ? '' : 's'}: ${list.map((t) => `${t?.tier && t.tier !== 'mid' ? `[${t.tier}] ` : ''}${String(t?.task || t || '').slice(0, 40)}`).join(' · ')}`, title: list.map((t) => String(t?.task || t || '')).join('\n') };
     }
     case 'ask_user': {
       const qs = Array.isArray(args.questions) ? args.questions : [args];

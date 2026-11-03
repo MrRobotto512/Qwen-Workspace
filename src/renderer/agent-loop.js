@@ -21,7 +21,7 @@ async function loadProjectMemory() {
 function systemPrompt(c) {
   const agent = state.settings.agentMode && !!state.ws;
   const web = agent && state.settings.webResearch !== false;
-  const key = `${agent}|${web}|${mcpToolSpecs().map((t) => t.function.name).join(',')}|${c.workspace}|${c.memory?.text || ''}|${state.userMemory || ''}|${(c.skills || []).map((sk) => `${sk.name}:${sk.description}`).join(',')}|${!!c.isSubagent}|${subagentsAvailable(c)}|${!!(state.settings.consultFreely && heavyOverride())}`;
+  const key = `${agent}|${web}|${mcpToolSpecs().map((t) => t.function.name).join(',')}|${c.workspace}|${c.memory?.text || ''}|${state.userMemory || ''}|${(c.skills || []).map((sk) => `${sk.name}:${sk.description}`).join(',')}|${!!c.isSubagent}|${subagentsAvailable(c)}|${!!(state.settings.consultFreely && heavyOverride())}|${state.settings.stopRule !== false}`;
   if (c.sysPrompt?.key === key) return c.sysPrompt.text;
   const win = state.ws?.platform === 'win32';
   const parts = [
@@ -62,10 +62,11 @@ function systemPrompt(c) {
       '- For tasks with 3 or more steps, keep a plan with todo_write and update it as you finish each step.',
       '- When a task looks like earlier work (a recurring error, a toolchain or app type you set up before), search_history finds how it was done. When the user states a lasting fact about themselves or their setup (their machines, OS, preferred stacks), save it with remember.',
       '- When you need several independent lookups (reads, searches, listings), request them all in the same reply; they run in parallel. Edits and commands run one at a time, in the order you give them.',
-      subagentsAvailable(c) ? '- When a task splits into independent parts (separate files, separate questions), delegate_tasks runs them at the same time on your other machines. Give each subtask its own files and all the context it needs; do dependent steps yourself.' : null,
+      subagentsAvailable(c) ? `- delegate_tasks hands subtasks to fresh agents${parallelSubagents() ? ' (at the same time, on your other machines)' : ''}. Give each its own files and all the context it needs; do dependent steps yourself. Pick each one's tier: "strong" for work that needs the best model or fresh eyes (writing or reviewing a spec, design, a bug you could not fix, verifying finished work), "light" for simple mechanical work, else "mid".` : null,
       '- Install what the task needs instead of asking the user to do it by hand: when a command fails because a program is "not found" or "not recognized" (a compiler, SDK, CLI or build tool), install the missing tool with install_app (a winget id like "OpenJS.NodeJS" or "Rustlang.Rustup", or a plain name) — or install_git for Git — then retry.',
       '- A build or install that takes long is normal: pass timeout_seconds (up to 3600) to run_command instead of splitting the build or giving up when the 2-minute default cuts it off.',
       '- Windows "permission" errors usually are not about rights: "Filename too long" means long paths — run `git config --global core.longpaths true` (the app enables this when git is available) and retry, or clone to a short path like D:/dev. "Access is denied" during a build usually means the folder is protected (never work in Program Files or C:/Windows — use the project folder), synced by OneDrive, or a file is locked by a previous build (retry, or kill leftover MSBuild/cmake processes with taskkill). You already run with the user\'s full rights and cannot elevate a command; if something genuinely needs administrator rights, say so and ask the user to run that one step.',
+      state.settings.stopRule !== false ? FailStreak.SYSTEM_LINE : null,
       '- When a command or tool call fails, deal with that failure before any other step: read the error output, research it with web_search if it is unclear, then fix it or change approach. Never move to the next planned step as if a failed one had succeeded, and never rerun a failed command unchanged. If something cannot be installed (e.g. winget has no such package), pick a different way to meet the goal rather than skipping it.',
       '- To build or run a project, follow its own documented steps (its README and package.json scripts) rather than inventing a raw build command. If a required tool needs a reboot, admin rights or manual setup (for example Docker Desktop with WSL2), install and do what you can, then tell the user exactly what is left for them. If the project already ships a prebuilt download (a release asset) that meets the request, point the user to it instead of building from source.',
       '- Read a file before editing it. Use edit_file for targeted changes instead of rewriting whole files with write_file.',
@@ -378,7 +379,8 @@ async function executeTool(c, call, row) {
         c.taskUsedSkill = true;
         api.skillsUsed?.(skill.id).catch(() => {});
         const more = !args.file && r.files.length ? `\n\nSupporting files (load one with load_skill and file): ${r.files.join(', ')}` : '';
-        return { result: `<skill name="${skill.name}"${args.file ? ` file="${args.file}"` : ''}>\n${truncate(r.content)}\n</skill>${more}`, meta: args.file || `${skill.scope} skill` };
+        const where = !args.file && r.folder ? `\n\n${SkillRun.folderNote(r.folder)}` : '';
+        return { result: `${SkillRun.skillBlock(skill.name, truncate(r.content), r.folder, args.file)}${more}${where}`, meta: args.file || `${skill.scope} skill` };
       }
       case 'semantic_search': {
         const r = await api.semSearch(String(args.query || ''));
@@ -387,7 +389,7 @@ async function executeTool(c, call, row) {
       }
       case 'delegate_tasks': {
         if (c.isSubagent) return { result: 'Error: a subagent cannot delegate further. Do the subtask yourself.', failed: true };
-        if (!subagentsAvailable(c)) return { result: 'Error: parallel subagents need Ollama with more than one node enabled. Do the subtasks yourself, one at a time.', failed: true };
+        if (!subagentsAvailable(c)) return { result: 'Error: subagents need Ollama with more than one node enabled, a ⚡ node, or a planner model. Do the subtasks yourself, one at a time.', failed: true };
         const parsed = Subagents.parseTasks(args);
         if (parsed.error) return { result: `Error: ${parsed.error}`, failed: true };
         const r = await runSubagents(c, parsed.tasks);
@@ -395,6 +397,7 @@ async function executeTool(c, call, row) {
         return { result: truncate(r.text), meta: r.meta, failed: r.failed };
       }
       case 'consult_planner': {
+        c.consultedDuringStreak = true;
         const override = heavyOverride();
         if (!override) return { result: 'Error: no planner (heavy) model is configured.', failed: true };
         const question = String(args.question || '').trim();
@@ -513,6 +516,7 @@ async function executeTool(c, call, row) {
       case 'run_command': {
         const cmd = String(args.command || '').trim();
         if (!cmd) return { result: 'Error: empty command.' };
+        if (streakBlocked(c, 'cmd', cmd)) return { result: FailStreak.REFUSAL, meta: 'stop rule', failed: true };
         if (needsApproval('command', cmd)) {
           const ok = await row.requestApproval({ kind: 'command', question: 'Run this command?', command: cmd, dangerous: DANGEROUS_COMMAND.test(cmd) });
           if (!ok) return { result: 'The user declined to run this command. Do not retry it; ask the user how they would like to proceed.', rejected: true };
@@ -526,7 +530,8 @@ async function executeTool(c, call, row) {
         row.setBody(r.output || '(no output)');
         state.fileIndex = null;
         renderTree();
-        const hint = [ToolParse.cmdShellHint(cmd, r.output, state.ws?.platform), r.code !== 0 ? ToolParse.apiErrorHint(r.output) : '', r.code !== 0 && state.settings.consultFreely && heavyOverride() ? 'If the cause is not clear, ask consult_planner (paste this error) before trying another fix.' : ''].filter(Boolean).join('\n');
+        const streak = streakAfter(c, 'cmd', cmd, r.code === 0, r.output);
+        const hint = [ToolParse.cmdShellHint(cmd, r.output, state.ws?.platform), r.code !== 0 ? ToolParse.apiErrorHint(r.output) : '', r.code !== 0 && !/consult_planner|Stop now/.test(streak) && state.settings.consultFreely && heavyOverride() ? 'If the cause is not clear, ask consult_planner (paste this error) before trying another fix.' : '', streak].filter(Boolean).join('\n');
         return { result: `Exit code: ${r.code}\n${truncate(r.output || '(no output)')}${hint ? `\n${hint}` : ''}`, meta: `exit ${r.code}`, failed: r.code !== 0 };
       }
       case 'check_api': {
@@ -558,6 +563,7 @@ async function executeTool(c, call, row) {
             images: r.shot && vision ? [{ mime: 'image/png', data: r.shot.png, note: `Screenshot of the page "${r.title || web.file || web.url}" (${r.shot.width}×${r.shot.height} px).` }] : null
           };
         }
+        if (streakBlocked(c, 'app', cmd)) return { result: FailStreak.REFUSAL, meta: 'stop rule', failed: true };
         // Launching an app runs code: it asks exactly like run_command would.
         if (needsApproval('command', cmd)) {
           const ok = await row.requestApproval({ kind: 'command', question: 'Launch this app to test it?', command: `${cmd}${pa.actions.length ? `\n# then: ${pa.actions.map(GuiTest.describeAction).join('; ')}` : ''}`, dangerous: DANGEROUS_COMMAND.test(cmd) });
@@ -570,8 +576,9 @@ async function executeTool(c, call, row) {
         row.setBody(text);
         if (r.shot) row.setImage?.(`data:image/png;base64,${r.shot.png}`);
         const failed = !!r.error || !r.windowFound || !r.alive || !!r.actionError;
+        const streak = streakAfter(c, 'app', cmd, !failed, text);
         return {
-          result: truncate(text),
+          result: truncate(text) + (streak ? `\n${streak}` : ''),
           meta: r.error ? 'error' : !r.windowFound ? (r.exitCode != null ? 'crashed' : 'no window') : !r.alive ? 'exited' : 'ran',
           failed,
           images: r.shot && vision ? [{ mime: 'image/png', data: r.shot.png, note: `Screenshot from test_app: the "${r.windowTitle}" window (${r.shot.width}×${r.shot.height} px).` }] : null
@@ -882,6 +889,8 @@ async function send() {
     c.goal.checks = 0;
     renderGoalBar();
   }
+  c.failStreaks = new Map(); // the stop rule counts failures per task
+  c.consultedDuringStreak = false;
   c.skillsUsed = new Set(); // the skills-used line covers this task only
   c.taskUsedSkill = false;
   c.rescuedAtStart = c.rescued || 0;
@@ -900,11 +909,27 @@ async function send() {
     c.memoryLoaded = true;
   }
 
+  // "/<skill> <arguments>" runs that skill: its instructions ride along with the message.
+  let invoked = null;
+  if (text.startsWith('/')) {
+    const cmd = SkillRun.parseSkillCommand(text, await api.skillsList().catch(() => c.skills || []));
+    if (cmd) {
+      const r = await api.skillsRead(cmd.skill.id).catch(() => null);
+      if (r) invoked = { ...cmd, r };
+    }
+  }
   const att = await buildAttachments();
   const images = await takePastedImages();
   renderChips();
   addUserMessage(c, text, [...att.names, ...images.map((_, i) => `Screenshot ${i + 1}`)]);
   let content = text;
+  if (invoked) {
+    content = SkillRun.invocationPrompt(text, invoked.skill, invoked.args, invoked.r.content, invoked.r.folder, invoked.r.files);
+    c.skillsUsed.add(invoked.skill.name);
+    c.taskUsedSkill = true;
+    api.skillsUsed?.(invoked.skill.id).catch(() => {});
+    DebugLog.add(c, 'notice', { text: `skill invoked: /${invoked.skill.name}${invoked.args ? ` ${invoked.args.slice(0, 120)}` : ''}` });
+  }
   if (c.notes.length) {
     content = `(Note: ${c.notes.join(' ')})\n\n${content}`;
     c.notes = [];
@@ -946,14 +971,107 @@ async function send() {
 // and only their final summaries return to the parent. Children are ordinary conversations
 // (listed in the sidebar, approvals work as usual — the card below links to any that wait), and
 // their file changes join the parent's change list so Review/Revert and the checks gate cover them.
+// Where each subtask runs, by its tier (subagents.js): strong → the ⚡ node, else the planner;
+// light → a smaller sibling of the everyday model on its node; mid → the everyday model on its
+// node (or the main provider when that is not Ollama). A tier that cannot be met falls back to
+// mid with a note the agent sees. Paid cloud runs ask first unless "Agent consults freely" is on.
+async function subagentTargets(parent, tasks) {
+  const ollama = state.settings.provider === 'ollama';
+  let health = {};
+  let mids = null;
+  if (ollama) {
+    await refreshNodeHealth();
+    health = state.nodeHealth.byId;
+    mids = Subagents.assignNodes(Nodes.normalizeNodes(state.settings), health, state.settings.model, tasks.length, Nodes.sameModel);
+  }
+  const midTarget = (i, note = '') => {
+    if (!ollama) return { tier: 'mid', key: 'main', override: null, label: state.settings.model, note };
+    if (!mids) return null;
+    return { tier: 'mid', key: `node:${mids[i].id}`, pinNodeId: mids[i].id, override: null, label: mids[i].name, note };
+  };
+  let strong;
+  const targets = [];
+  for (let i = 0; i < tasks.length; i++) {
+    const tier = tasks[i].tier || 'mid';
+    if (tier === 'strong') {
+      if (strong === undefined) {
+        const hp = highPerfConfigured() ? await pickHighPerfTarget(state.settings.model).catch(() => null) : null;
+        const heavy = heavyOverride();
+        strong = hp
+          ? { key: `node:${hp.nodeId}`, pinNodeId: hp.nodeId, override: hp.override, label: hp.label, paid: false }
+          : heavy
+            ? { key: ['ollama', 'lmstudio'].includes(heavy.provider) ? `local:${heavy.baseUrl}` : null, override: heavy, label: heavyLabel(), paid: !['ollama', 'lmstudio'].includes(heavy.provider) }
+            : null;
+      }
+      if (strong) {
+        targets.push({ ...strong, tier, key: strong.key || `cloud:${i}` }); // cloud runs side by side
+        continue;
+      }
+      targets.push(midTarget(i, 'asked for "strong", but no ⚡ node or planner model is set up — it ran on the everyday model'));
+      continue;
+    }
+    if (tier === 'light' && ollama && mids) {
+      const node = mids[i];
+      const lm = Subagents.lighterModel(state.settings.model, health[node.id]?.models || []);
+      if (lm) {
+        targets.push({ tier, key: `node:${node.id}`, pinNodeId: node.id, override: Nodes.nodeOverride(node, health[node.id], lm) || { provider: 'ollama', baseUrl: node.baseUrl, apiKey: '', model: lm, keepAlive: node.keepAlive }, label: `${lm} on ${node.name}` });
+        continue;
+      }
+      targets.push(midTarget(i, `asked for "light", but ${node.name} has no smaller ${String(state.settings.model).split(':')[0]} installed — it ran on ${state.settings.model}`));
+      continue;
+    }
+    targets.push(midTarget(i));
+  }
+  if (targets.some((t) => !t)) return { error: 'Error: no Ollama node is answering right now, so nothing was delegated. Do the subtasks yourself, one at a time.' };
+  const paid = targets.filter((t) => t.paid);
+  if (paid.length) {
+    let ok = true;
+    if (!parent.capApproved && Costs.capReached(state.settings.spend, state.settings.prices, state.settings.monthlyCapUSD)) {
+      ok = await askBudgetCard(parent);
+      if (ok) parent.capApproved = true;
+    }
+    if (ok && !state.settings.consultFreely) ok = await askStrongCard(parent, paid[0].label, paid.length);
+    if (!ok) {
+      targets.forEach((t, i) => {
+        if (t.paid) targets[i] = midTarget(i, 'the user kept it off the paid planner — it ran on the everyday model');
+      });
+      if (targets.some((t) => !t)) return { error: 'Error: the user kept these subtasks off the paid planner and no Ollama node is answering. Do them yourself.' };
+    }
+  }
+  return { targets };
+}
+
+// Running subtasks on the paid planner costs money, so it asks — unless the user turned on
+// "Agent consults freely", which already lets the agent use the planner whenever it likes.
+function askStrongCard(c, label, n) {
+  return new Promise((resolve) => {
+    let timer = null;
+    const done = (node, v) => {
+      clearInterval(timer);
+      node.remove();
+      resolve(v);
+    };
+    const node = el('div', { class: 'msg escalate-card strong-subagent-card' }, iconEl('server'),
+      el('div', {},
+        el('div', { text: `The agent wants ${n === 1 ? 'a subtask' : `${n} subtasks`} done by ${label} (cloud — this uses your paid API).` }),
+        el('div', { class: 'stop-actions' },
+          el('button', { class: 'primary', onclick: () => done(node, true) }, `Use ${label}`),
+          el('button', { class: 'ghost', onclick: () => done(node, false) }, 'Keep it local'))));
+    timer = setInterval(() => {
+      if (c.stopRequested) done(node, false);
+    }, 400);
+    c.container.append(node);
+    scrollChat(c, true);
+  });
+}
+
 async function runSubagents(parent, tasks) {
-  await refreshNodeHealth();
-  const nodes = Nodes.normalizeNodes(state.settings);
-  const assigned = Subagents.assignNodes(nodes, state.nodeHealth.byId, state.settings.model, tasks.length, Nodes.sameModel);
-  if (!assigned) return { text: 'Error: no Ollama node is answering right now, so nothing was delegated. Do the subtasks yourself, one at a time.', failed: true, meta: 'no nodes' };
+  const plan = await subagentTargets(parent, tasks);
+  if (plan.error) return { text: plan.error, failed: true, meta: 'no nodes' };
+  const targets = plan.targets;
   const children = tasks.map((t, i) => {
     const ch = createConv();
-    Object.assign(ch, { parentId: parent.id, isSubagent: true, mode: 'agent', pinNodeId: assigned[i].id, title: `↳ ${t.task.slice(0, 60)}`, workspace: parent.workspace });
+    Object.assign(ch, { parentId: parent.id, isSubagent: true, mode: 'agent', pinNodeId: targets[i].pinNodeId || null, fixedOverride: targets[i].override || null, title: `↳ ${t.task.slice(0, 60)}`, workspace: parent.workspace });
     ch.memory = parent.memory;
     ch.skills = parent.skills;
     ch.memoryLoaded = true;
@@ -965,33 +1083,39 @@ async function runSubagents(parent, tasks) {
   });
   parent.subagents = children;
   renderHistory();
-  const card = subagentCard(parent, children, assigned);
-  DebugLog.add(parent, 'notice', { text: `delegated ${tasks.length} subtasks: ${children.map((ch, i) => `${ch.id}@${assigned[i].name}`).join(', ')}` });
-  let results;
+  const card = subagentCard(parent, children, targets);
+  DebugLog.add(parent, 'notice', { text: `delegated ${tasks.length} subtasks: ${children.map((ch, i) => `${ch.id}@${targets[i].label} (${targets[i].tier})`).join(', ')}` });
+  const runChild = async (i) => {
+    const ch = children[i];
+    if (parent.stopRequested) ch.stopRequested = true;
+    setBusy(ch, true);
+    let failed = false;
+    try {
+      if (!ch.stopRequested) failed = await runConversation(ch);
+    } catch (e) {
+      failed = true;
+      addError(ch, `Something went wrong: ${cleanError(e)}`);
+    } finally {
+      ch.status = ch.stopRequested ? 'stopped' : failed ? 'error' : 'done';
+      setBusy(ch, false);
+      saveConv(ch, true);
+      card.update();
+    }
+    for (const [p, chg] of ch.changes) {
+      if (!parent.changes.has(p)) parent.changes.set(p, chg);
+      if (parent.taskBefore) {
+        if (!parent.taskBefore.has(p)) parent.taskBefore.set(p, chg.original);
+        parent.taskWrote.set(p, chg.deleted ? null : await api.read(p).catch(() => null));
+      }
+    }
+    const last = [...ch.history].reverse().find((m) => m.role === 'assistant' && String(m.content || '').trim());
+    return { task: tasks[i].task, node: targets[i].label, tier: targets[i].tier, note: targets[i].note, status: ch.status, summary: stripThink(last?.content || ''), files: [...ch.changes.keys()] };
+  };
+  const results = new Array(tasks.length);
   try {
-    results = await Promise.all(children.map(async (ch, i) => {
-      setBusy(ch, true);
-      let failed = false;
-      try {
-        failed = await runConversation(ch);
-      } catch (e) {
-        failed = true;
-        addError(ch, `Something went wrong: ${cleanError(e)}`);
-      } finally {
-        ch.status = ch.stopRequested ? 'stopped' : failed ? 'error' : 'done';
-        setBusy(ch, false);
-        saveConv(ch, true);
-        card.update();
-      }
-      for (const [p, chg] of ch.changes) {
-        if (!parent.changes.has(p)) parent.changes.set(p, chg);
-        if (parent.taskBefore) {
-          if (!parent.taskBefore.has(p)) parent.taskBefore.set(p, chg.original);
-          parent.taskWrote.set(p, chg.deleted ? null : await api.read(p).catch(() => null));
-        }
-      }
-      const last = [...ch.history].reverse().find((m) => m.role === 'assistant' && String(m.content || '').trim());
-      return { task: tasks[i].task, node: assigned[i].name, status: ch.status, summary: stripThink(last?.content || ''), files: [...ch.changes.keys()] };
+    // One machine runs its subtasks one after another; different machines run at the same time.
+    await Promise.all(Subagents.groupByKey(targets.map((t) => t.key)).map(async (group) => {
+      for (const i of group) results[i] = await runChild(i);
     }));
   } finally {
     parent.subagents = null;
@@ -1005,21 +1129,21 @@ async function runSubagents(parent, tasks) {
 
 // A live status card in the parent: one line per subagent, with Open to watch it (or to answer
 // an approval it is waiting on).
-function subagentCard(parent, children, assigned) {
+function subagentCard(parent, children, targets) {
   const rows = children.map((ch, i) => {
     const status = el('span', { class: 'sa-status' });
     const row = el('div', { class: 'sa-row' },
       el('span', { class: 'sa-task', text: ch.title.replace(/^↳ /, ''), title: ch.history[0]?.content || '' }),
-      el('span', { class: 'sa-node', text: assigned[i].name }),
+      el('span', { class: 'sa-node', text: `${targets[i].label}${targets[i].tier !== 'mid' ? ` · ${targets[i].tier}` : ''}` }),
       status,
       el('button', { class: 'ghost', onclick: () => switchConv(ch) }, 'Open'));
     return { ch, row, status };
   });
   const node = el('div', { class: 'msg escalate-card subagent-card' }, iconEl('server'),
-    el('div', { class: 'grow' }, el('div', {}, el('b', { text: `${children.length} subagents working in parallel` })), ...rows.map((r) => r.row)));
+    el('div', { class: 'grow' }, el('div', {}, el('b', { text: children.length === 1 ? '1 subagent working' : `${children.length} subagents working` })), ...rows.map((r) => r.row)));
   parent.container.append(node);
   scrollChat(parent, true);
-  const TEXT = { running: 'working…', waiting: 'needs your approval', done: 'done', error: 'failed', stopped: 'stopped', idle: 'starting…' };
+  const TEXT = { running: 'working…', waiting: 'needs your approval', done: 'done', error: 'failed', stopped: 'stopped', idle: 'queued…' };
   const timer = setInterval(() => update(), 700);
   function update(final) {
     for (const r of rows) {
@@ -1031,6 +1155,32 @@ function subagentCard(parent, children, assigned) {
   }
   update();
   return { update };
+}
+
+// ---------- Stop rule (from fpapleux/sdd-skill: stop, analyze, think, plan, execute) ----------
+// The same command failing the same way: first the model must name the root cause, after two
+// failed fixes it stops and reports (or asks the planner once), and a third rerun is refused.
+const stopRuleOn = (c) => state.settings.stopRule !== false && c.mode === 'agent';
+const streakOpts = (c) => ({ canConsult: !!(state.settings.consultFreely && heavyOverride()), consulted: !!c.consultedDuringStreak });
+
+function streakBlocked(c, kind, cmd) {
+  if (!stopRuleOn(c) || !c.failStreaks) return false;
+  const sig = FailStreak.signature(kind, cmd);
+  if (!FailStreak.blocked(c.failStreaks, sig, streakOpts(c))) return false;
+  DebugLog.add(c, 'notice', { text: `stop rule: refused to rerun ${cmd.slice(0, 160)}` });
+  return true;
+}
+
+// Records the run; returns the note for the model ('' when none).
+function streakAfter(c, kind, cmd, ok, output) {
+  if (!stopRuleOn(c)) return '';
+  c.failStreaks = c.failStreaks || new Map();
+  if (!ok && FailStreak.isProbe(cmd, output)) return '';
+  const st = FailStreak.record(c.failStreaks, FailStreak.signature(kind, cmd), ok, output, streakOpts(c));
+  if (st.level === 'stop' || st.level === 'consult') {
+    pushNotice(c, `Stop rule: \`${cmd.length > 80 ? cmd.slice(0, 77) + '…' : cmd}\` failed the same way ${st.fails} times — Qwen was told to ${st.level === 'consult' ? 'ask the planner before one last fix' : 'stop and report instead of trying another fix'}.`);
+  }
+  return st.note;
 }
 
 // ---------- Checks gate (an idea from Strata's test-gated attempts) ----------
@@ -1094,25 +1244,39 @@ async function checksBaseline(c) {
   return { checks: file.checks, before };
 }
 
-// Returns whether the task should count as failed.
+// Returns whether the task should count as failed. A test that passed before and fails now is a
+// regression (one fix try, then the rollback card); a test this task added that does not pass yet
+// is pending (one try to finish it, never a rollback — nothing that worked broke).
 async function checksAfter(c, gate) {
   if (!c.taskBefore?.size) return false; // the task changed no files: nothing to judge
+  const isNew = Checks.newTestMatcher(c.taskBefore, c.taskWrote); // reads the live maps
+  const names = (list, key) => list.flatMap((r) => r[key] || []).slice(0, 6).join(', ');
   let after = await runChecks(c, gate.checks, 'Checks after the task');
   if (c.stopRequested) return false;
-  let cmp = Checks.compareRuns(gate.before, after);
-  if (cmp.verdict === 'worse') {
-    pushNotice(c, `Checks got worse: ${cmp.regressed.map((r) => r.name).join(', ')} passed before this task and ${cmp.regressed.length === 1 ? 'fails' : 'fail'} now — giving the agent one try to fix it.`);
-    c.history.push({ role: 'user', content: Checks.fixPrompt(cmp.regressed) });
+  let cmp = Checks.compareRuns(gate.before, after, isNew);
+  if (cmp.verdict === 'worse' || cmp.verdict === 'pending') {
+    let prompt;
+    if (cmp.verdict === 'worse') {
+      const broke = names(cmp.regressed, 'broke');
+      pushNotice(c, `Checks got worse: ${cmp.regressed.map((r) => r.name).join(', ')} ${broke ? `(${broke}) ` : ''}passed before this task and ${cmp.regressed.length === 1 ? 'fails' : 'fail'} now — giving the agent one try to fix it.`);
+      prompt = Checks.fixPrompt(cmp.regressed);
+    } else {
+      pushNotice(c, `New tests from this task don't pass yet (${names(cmp.pending, 'newTests')}) — nothing that passed before broke. Giving the agent one try to finish them.`);
+      prompt = Checks.pendingPrompt(cmp.pending);
+    }
+    c.history.push({ role: 'user', content: prompt });
     saveConv(c, true);
     const failed = await runConversation(c);
     if (c.stopRequested) return failed;
     after = await runChecks(c, gate.checks, 'Checks after the fix');
     if (c.stopRequested) return failed;
-    cmp = Checks.compareRuns(gate.before, after);
+    cmp = Checks.compareRuns(gate.before, after, isNew);
   }
   if (cmp.verdict === 'worse') {
     pushNotice(c, `Still failing after the fix attempt: ${Checks.statusLine(after)}.`);
     rollbackCard(c, cmp, new Map(c.taskBefore), new Map(c.taskWrote));
+  } else if (cmp.verdict === 'pending') {
+    pushNotice(c, `The task's new tests still don't pass (${names(cmp.pending, 'newTests')}). Nothing that passed before broke, so its changes stay — but the task may be unfinished.`);
   } else if (cmp.verdict === 'better') {
     pushNotice(c, `Checks improved: ${cmp.fixed.map((r) => r.name).join(', ')} now ${cmp.fixed.length === 1 ? 'passes' : 'pass'} — changes kept (${Checks.statusLine(after)}).`);
   } else {
@@ -1803,6 +1967,7 @@ async function runConversation(c) {
       text = `${reason} — ${hpOn ? 'escalating the next step' : `handing off to ${heavyLabel()}`}.`;
     }
     if (text) {
+      c.failStreaks = new Map(); // a stronger model takes over: the stop rule starts fresh for it
       const item = { t: 'notice', text };
       c.display.push(item);
       renderNotice(c, item);

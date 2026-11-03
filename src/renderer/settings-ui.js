@@ -465,6 +465,7 @@ function openSettings() {
   renderSearchFields();
   $('#s-planWith').value = ['node', 'planner', 'auto'].includes(s.planWith) ? s.planWith : 'node';
   for (const k of ['agentMode', 'planFirst', 'includeCurrentFile', 'followAgent', 'autoCheckUpdates', 'branchPerTask', 'lessonsEnabled', 'skillWriter', 'checksGate', 'subagents', 'reviewPass', 'consultFreely']) $(`#s-${k}`).checked = !!s[k];
+  $('#s-stopRule').checked = s.stopRule !== false;
   $('#about-version').textContent = state.appInfo?.version || '';
   $('#about-kind').textContent = KIND_TEXT[state.appInfo?.kind] || '';
   renderUpdateUi();
@@ -528,6 +529,7 @@ async function saveSettingsFromUi() {
   patch.allowedCommands = $('#s-allowedCommands').value.split(',').map((x) => x.trim()).filter(Boolean);
   patch.maxSteps = Math.min(1000, Math.max(10, parseInt($('#s-maxSteps').value, 10) || DEFAULT_MAX_STEPS));
   for (const k of ['agentMode', 'planFirst', 'includeCurrentFile', 'followAgent', 'autoCheckUpdates', 'branchPerTask', 'lessonsEnabled', 'skillWriter', 'checksGate', 'subagents', 'reviewPass', 'consultFreely']) patch[k] = $(`#s-${k}`).checked;
+  patch.stopRule = $('#s-stopRule').checked;
   patch.planWith = $('#s-planWith').value;
   patch.heavy = {
     enabled: $('#s-heavy-enabled').checked,

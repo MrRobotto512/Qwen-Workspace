@@ -55,6 +55,7 @@ const DEFAULT_SETTINGS = {
   checksApproved: {}, // project root -> the exact checks.json text the user allowed to run
   skillWriter: true, // after a long task that worked, propose a reusable skill (approval card)
   reviewPass: false, // planner reviews each task's diff and hands fixes back (2 rounds max) // after a task that ran commands, propose lessons for QWEN.md (always behind the diff card)
+  stopRule: true, // the same command failing the same way: name the cause; after two failed fixes, stop and report
   consultFreely: false, // the agent may call consult_planner whenever unsure (more cloud cost; the budget cap applies)
   planWith: 'node', // who writes the plan-first plan: 'node' (⚡, free), 'planner' (cloud), 'auto' (⚡, else planner)
   planFirst: false, // a conversation's first turn runs on the ⚡ node's strongest model, restricted to planning (todo_write)
@@ -356,11 +357,37 @@ ipcMain.handle('fs:search', async (_e, query, opts = {}) => {
 ipcMain.handle('shell:reveal', (_e, rel) => shell.showItemInFolder(resolveInWorkspace(rel)));
 
 // ---------- IPC: commands ----------
-ipcMain.handle('cmd:run', (_e, command, timeoutMs = 120_000) => {
+// `python3` on Windows is usually missing or the Store stub: such commands run with the Python
+// that works there (src/pyshim.js). Looked up once per project folder for 5 minutes.
+const PyShim = require('./pyshim.js');
+const pyChoice = new Map(); // root → { python, at }
+async function windowsPython(root) {
+  const hit = pyChoice.get(root);
+  if (hit && Date.now() - hit.at < 5 * 60_000) return hit.python;
+  const venv = ['.venv', 'venv', 'env'].map((v) => path.join(root, v, 'Scripts', 'python.exe')).find((p) => fs.existsSync(p)) || null;
+  const where = async (name) => {
+    const r = await runQuiet('where', [name], 5000);
+    return r.code === 0 ? r.out : '';
+  };
+  const [wherePython3, wherePy, wherePython] = await Promise.all([where('python3'), where('py'), where('python')]);
+  const python = PyShim.choosePython({ venv, wherePython3, wherePy, wherePython });
+  pyChoice.set(root, { python, at: Date.now() });
+  return python;
+}
+
+async function shimPython3(command, cwd) {
+  if (process.platform !== 'win32' || !/python3|pip3/i.test(command)) return { command, note: '' };
+  const python = await windowsPython(cwd).catch(() => null);
+  const r = PyShim.rewritePython3(command, python);
+  return r.changed ? { command: r.command, note: `[QWS ran python3 as ${python}: python3 is not a working Python on this PC]\n` } : { command, note: '' };
+}
+
+ipcMain.handle('cmd:run', async (_e, rawCommand, timeoutMs = 120_000) => {
   const cwd = resolveInWorkspace('.');
+  const { command, note } = await shimPython3(rawCommand, cwd);
   return new Promise((resolve) => {
     const child = spawn(command, { cwd, shell: true, windowsHide: true, env: commandEnv() });
-    let output = '';
+    let output = note;
     const append = (d) => {
       output += d.toString();
       mainWindow?.webContents.send('cmd:output', d.toString());
@@ -556,8 +583,9 @@ ipcMain.handle('gui:testPage', async (_e, opts) => {
 });
 
 ipcMain.handle('gui:test', async (_e, opts) => {
-  const command = String(opts?.command || '').trim();
-  if (!command) return { error: 'empty command' };
+  const rawCommand = String(opts?.command || '').trim();
+  if (!rawCommand) return { error: 'empty command' };
+  const { command } = await shimPython3(rawCommand, resolveInWorkspace('.'));
   const parsed = GuiTest.parseActions(opts.actions);
   if (parsed.error) return { error: parsed.error };
   const waitSeconds = Math.min(60, Math.max(1, Number(opts.waitSeconds) || 8));
@@ -1776,7 +1804,11 @@ ipcMain.handle('skills:read', async (_e, id, file) => {
   const st = await fsp.stat(target);
   if (st.size > 200 * 1024) throw new Error('Skill file is too large');
   const text = await fsp.readFile(target, 'utf8');
-  return { content: file ? text : parseSkill(text, dirName).body, files: await listSkillFiles(base) };
+  // Where the skill lives, so "run <skill folder>/scripts/x.py" can work: project-relative when
+  // it is inside the project, else absolute; forward slashes either way.
+  const inProject = workspaceRoot && !path.relative(workspaceRoot, base).startsWith('..') && !path.isAbsolute(path.relative(workspaceRoot, base));
+  const folder = (inProject ? path.relative(workspaceRoot, base) : base).split(path.sep).join('/');
+  return { content: file ? text : parseSkill(text, dirName).body, files: await listSkillFiles(base), folder };
 });
 
 // Skills QWS wrote itself (self-written skills) are tracked in a sidecar index next to them:
@@ -1900,13 +1932,13 @@ ipcMain.handle('skills:install', async (_e, url) => {
 
   const files = []; // { rel, url }
   async function walk(p, rel, depth) {
-    if (depth > 3 || files.length >= 40) return;
+    if (depth > 3 || files.length >= 80) return;
     const res = await gh(p);
     if (!res.ok) throw new Error(`GitHub answered HTTP ${res.status} for ${p || 'the repository root'}${res.status === 404 ? ' — check the link (and the branch name)' : ''}.`);
     const list = await res.json();
     if (!Array.isArray(list)) throw new Error('That link points to a file. Link to the folder that contains SKILL.md.');
     for (const e of list) {
-      if (files.length >= 40) break;
+      if (files.length >= 80) break;
       // Only plain names: no traversal, no hidden/exotic entries.
       if (e.name === '..' || !/^[\w][\w.\- ]*$/.test(e.name)) continue;
       const childRel = rel ? `${rel}/${e.name}` : e.name;

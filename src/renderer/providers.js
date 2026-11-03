@@ -43,6 +43,7 @@ function escalationTargetLabel() {
 // The model the user picked for this conversation, resolved to a per-request override at send
 // time — stored as a reference ('heavy', or an installed Ollama model), never as credentials.
 function conversationOverride(c) {
+  if (c?.fixedOverride) return c.fixedOverride; // a subagent given a tier's model
   const ch = c?.modelChoice;
   if (!ch || ch === 'default') return null;
   if (ch === 'heavy') return heavyOverride();

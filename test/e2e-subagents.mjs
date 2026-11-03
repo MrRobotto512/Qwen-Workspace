@@ -148,7 +148,7 @@ try {
   }));
   if (JSON.stringify(st.changes) !== '["a.txt","b.txt"]') fail(`parent change list: ${JSON.stringify(st.changes)}`);
   if (st.kids.length !== 2 || st.kids.some((s) => s !== 'done')) fail(`children: ${JSON.stringify(st.kids)}`);
-  if (!/2 subagents working in parallel/.test(st.card) || (st.card.match(/done/g) || []).length < 2) fail(`status card: ${st.card}`);
+  if (!/2 subagents working/.test(st.card) || (st.card.match(/done/g) || []).length < 2) fail(`status card: ${st.card}`);
 } catch (e) {
   fail(String(e).split('\n')[0]);
 } finally {
