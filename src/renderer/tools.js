@@ -182,16 +182,16 @@ const CORE_TOOLS = [
     type: 'function',
     function: {
       name: 'test_app',
-      description: 'Test a desktop GUI app you built: launch it, wait for its window, and get back whether it started or crashed, its console output and (for models that can see images) a screenshot of the window; then it is closed. Optionally click, type and press keys in it first, like a user, to check that it works. Use it before telling the user a GUI app is done.',
+      description: 'Test an app you built before saying it is done. A desktop GUI app: give its launch command — it is started, its window screenshotted, and you learn whether it started or crashed plus its console output; then it is closed. A web page or browser game: give its .html file (or a localhost URL) — it loads in a hidden browser window and you get its console errors (undefined functions, typos, missing files) and a screenshot. Either way you can click, type and press keys first, like a user (games: arrow keys, space, letters).',
       parameters: {
         type: 'object',
         properties: {
-          command: { type: 'string', description: 'How to start the app from the project root, e.g. "python main.py", "npm start" or "dist\\Calculator.exe".' },
+          command: { type: 'string', description: 'How to start the app from the project root, e.g. "python main.py", "npm start", "dist\\Calculator.exe" — or a web page: "game/index.html", "http://localhost:5173".' },
           wait_seconds: { type: 'number', description: 'How long to wait for the window, 1–60 (default 8).' },
           window_title: { type: 'string', description: 'Optional: part of the window title, when the app opens more than one window.' },
           actions: {
             type: 'array',
-            description: 'Optional, in order: {"click": [x, y]} with pixel coordinates from a previous test_app screenshot, {"type": "text"}, {"key": "Enter"} (also Tab, Escape, Backspace, arrows), {"wait": 1}.',
+            description: 'Optional, in order: {"click": [x, y]} with pixel coordinates from a previous test_app screenshot, {"type": "text"}, {"key": "Enter"} (also Tab, Escape, Backspace, Space, Left/Right/Up/Down, or one letter/digit), {"wait": 1}.',
             items: { type: 'object' }
           }
         },

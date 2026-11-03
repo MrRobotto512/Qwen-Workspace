@@ -56,6 +56,7 @@ function systemPrompt(c) {
         : null,
       "- Save what future work will need (toolchain, install steps, build commands, key links) to QWEN.md in the project root.",
       '- Long files come back a page at a time; read the next page only when you need it, instead of re-reading the whole file.',
+      '- To run or check a web page or browser game you built, call test_app with its .html file (or a localhost URL): it reports console errors and a screenshot, and can click and press keys. For a desktop app, give test_app its launch command.',
       '- Before using an import, class or method you are not certain of, confirm it with check_api; after an ImportError or AttributeError, check_api shows where the name really lives. Never guess API names.',
       '- For tasks with 3 or more steps, keep a plan with todo_write and update it as you finish each step.',
       '- When a task looks like earlier work (a recurring error, a toolchain or app type you set up before), search_history finds how it was done. When the user states a lasting fact about themselves or their setup (their machines, OS, preferred stacks), save it with remember.',
@@ -151,6 +152,15 @@ function modelSeesImages(c) {
   return VISION_MODEL.test(String(conversationOverride(c)?.model || c.model || state.settings.model || ''));
 }
 
+// A write that put another script inside code identifiers ("MeshStandard材料") gets a warning
+// in its result, so the model fixes the glitch on its next step instead of shipping it.
+function withGlitchWarning(p, before, after, out) {
+  if (out?.rejected || /^Error/.test(String(out?.result || ''))) return out;
+  const w = EditMatch.glitchWarning(EditMatch.glitchIdentifiers(p, before, after));
+  if (w) out.result += w;
+  return out;
+}
+
 async function executeTool(c, call, row) {
   const name = call.function.name;
   let args;
@@ -229,7 +239,7 @@ async function executeTool(c, call, row) {
         const original = exists ? findTab(p)?.model.getValue() ?? (await api.read(p)) : '';
         if (exists && original === content) return { result: 'File already has exactly this content; nothing changed.', meta: 'no change' };
         row.setVerb(exists ? 'Rewrite' : 'Create');
-        return applyAgentEdit(c, row, p, exists ? original : null, content, exists ? `Rewrite ${p}` : `Create ${p}`);
+        return withGlitchWarning(p, original, content, await applyAgentEdit(c, row, p, exists ? original : null, content, exists ? `Rewrite ${p}` : `Create ${p}`));
       }
       case 'edit_file': {
         const p = normPath(args.path);
@@ -242,10 +252,20 @@ async function executeTool(c, call, row) {
           newText = newText.replace(/\r?\n/g, '\r\n');
         }
         const count = original.split(oldText).length - 1;
-        if (count === 0) return { result: `Error: old_text was not found in ${p}. Read the file again and copy the exact text, including whitespace.` };
+        if (count === 0) {
+          // Small models often get the indentation wrong; one unambiguous match ignoring it is safe.
+          const loose = EditMatch.looseEdit(original, oldText, newText);
+          if (loose.modified) {
+            const out = withGlitchWarning(p, original, loose.modified, await applyAgentEdit(c, row, p, original, loose.modified, `Edit ${p}`));
+            if (!out.rejected && !/^Error/.test(out.result)) out.result += ` (${loose.note}.)`;
+            return out;
+          }
+          if (loose.count > 1) return { result: `Error: old_text was not found exactly in ${p}, and ignoring indentation it matches ${loose.count} places. Read the file again and include more surrounding lines.` };
+          return { result: `Error: old_text was not found in ${p}. Read the file again and copy the exact text, including whitespace.` };
+        }
         if (count > 1) return { result: `Error: old_text matches ${count} places in ${p}. Include more surrounding lines so it is unique.` };
         const modified = original.replace(oldText, () => newText);
-        return applyAgentEdit(c, row, p, original, modified, `Edit ${p}`);
+        return withGlitchWarning(p, original, modified, await applyAgentEdit(c, row, p, original, modified, `Edit ${p}`));
       }
       case 'delete_file': {
         const p = normPath(args.path);
@@ -462,6 +482,24 @@ async function executeTool(c, call, row) {
         if (!cmd) return { result: 'Error: empty command.' };
         const pa = GuiTest.parseActions(args.actions);
         if (pa.error) return { result: `Error: ${pa.error}`, failed: true };
+        // A web page or browser game: load it in a hidden, sandboxed QWS window (like a browser
+        // tab — nothing runs on the OS, so no approval) and report console errors + a screenshot.
+        const web = GuiTest.webTarget(cmd);
+        if (web) {
+          setActivity(c, `Testing ${web.url || web.file}`);
+          const r = await api.guiTestPage({ file: web.file ? normPath(web.file) : undefined, url: web.url, actions: pa.actions, waitSeconds: args.wait_seconds });
+          const vision = modelSeesImages(c);
+          const text = GuiTest.summarizePage(r, !!(r.shot && vision));
+          row.setBody(text);
+          if (r.shot) row.setImage?.(`data:image/png;base64,${r.shot.png}`);
+          const errs = (r.errors || []).length;
+          return {
+            result: truncate(text),
+            meta: r.error ? 'error' : !r.loaded ? 'not loaded' : errs ? `${errs} console error${errs === 1 ? '' : 's'}` : 'no errors',
+            failed: !!r.error || !r.loaded || !!r.crashed || errs > 0,
+            images: r.shot && vision ? [{ mime: 'image/png', data: r.shot.png, note: `Screenshot of the page "${r.title || web.file || web.url}" (${r.shot.width}×${r.shot.height} px).` }] : null
+          };
+        }
         // Launching an app runs code: it asks exactly like run_command would.
         if (needsApproval('command', cmd)) {
           const ok = await row.requestApproval({ kind: 'command', question: 'Launch this app to test it?', command: `${cmd}${pa.actions.length ? `\n# then: ${pa.actions.map(GuiTest.describeAction).join('; ')}` : ''}`, dangerous: DANGEROUS_COMMAND.test(cmd) });
@@ -2243,8 +2281,21 @@ async function runOrSkip(c, call, row, seen, step) {
     return { result: `You already ran this exact call at step ${seen.get(sig) + 1}; the result has not changed. Do not repeat it. Move on to the next step, or finish and reply to the user.`, meta: 'repeat', failed: true, progress: false };
   }
   seen.set(sig, step);
+  // A file that was just edited (or whose edit failed and says "read the file again") must be
+  // readable again: forget earlier reads of it. The repeat guard used to refuse that re-read.
+  let callPath = null;
+  try {
+    callPath = normPath(JSON.parse(call.function.arguments || '{}').path || '');
+  } catch {
+    callPath = null;
+  }
+  if (callPath && name === 'read_file') (seen.readsByPath ||= new Map()).set(callPath, [...(seen.readsByPath?.get(callPath) || []), sig]);
   const t0 = Date.now();
   const out = await executeTool(c, call, row);
+  if (callPath && ['edit_file', 'write_file', 'delete_file', 'move_file'].includes(name)) {
+    for (const s of seen.readsByPath?.get(callPath) || []) seen.delete(s);
+    seen.readsByPath?.delete(callPath);
+  }
   DebugLog.add(c, 'tool', { name, meta: out.meta, failed: !!out.failed, rejected: !!out.rejected, ms: Date.now() - t0 });
   // "Progress" = a change or command or a first-time read; pure repeats and errors don't count.
   out.progress = !out.failed && !out.rejected;

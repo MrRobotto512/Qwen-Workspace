@@ -66,3 +66,18 @@ test('summarize reports crashes, missing windows and successful runs', () => {
   assert.match(G.summarize({ windowFound: true, windowTitle: 'C', windowAfterMs: 1, alive: true, shot: { width: 1, height: 1 } }, false), /does not look able to see images/);
   assert.equal(G.summarize({ error: 'empty command' }), 'Error: empty command');
 });
+
+test('webTarget spots web pages behind start/open, and single-letter keys parse', () => {
+  assert.deepEqual(G.webTarget('start D:/GAme Test with QWS/subwaysurfer/index.html'), { file: 'D:/GAme Test with QWS/subwaysurfer/index.html' });
+  assert.deepEqual(G.webTarget('start "" "game/index.html"'), { file: 'game/index.html' });
+  assert.deepEqual(G.webTarget('open index.htm'), { file: 'index.htm' });
+  assert.deepEqual(G.webTarget('http://localhost:5173/'), { url: 'http://localhost:5173/' });
+  assert.equal(G.webTarget('python main.py'), null);
+  assert.equal(G.webTarget('cat a.html | more'), null);
+  assert.deepEqual(G.parseActions([{ key: 'ArrowLeft' }, { key: 'W' }, { key: '7' }]).actions, [{ key: 'left' }, { key: 'w' }, { key: '7' }]);
+  assert.equal(G.electronKey('left'), 'Left');
+  assert.equal(G.electronKey('w'), 'w');
+  assert.deepEqual(G.xdotoolSteps([{ key: 'w' }], 5, null, null).at(-1), ['key', 'w']);
+  assert.match(G.summarizePage({ loaded: true, title: 'G', errors: ['Uncaught ReferenceError: animate is not defined (main.js:5)'], logs: ['ready'], shot: { width: 1024, height: 768 } }, true), /Page "G" loaded\.\nConsole errors \(1\) — fix these first:\n- Uncaught ReferenceError[\s\S]*Console output \(last 1\):\n  ready[\s\S]*attached \(1024×768 px\)/);
+  assert.match(G.summarizePage({ loaded: false, loadError: 'ERR_FILE_NOT_FOUND' }, false), /did not load: ERR_FILE_NOT_FOUND/);
+});
