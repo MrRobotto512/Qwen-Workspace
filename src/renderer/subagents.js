@@ -9,19 +9,61 @@
 const MAX_SUBTASKS = 4;
 const SUMMARY_CAP = 3000;
 
-// The tool arguments → { tasks } or { error }. Accepts strings or { task, context } objects.
+// Model per job (an idea from fpapleux/sdd-skill's role tiers): each subtask may ask for a tier.
+// strong → the ⚡ node or the planner model (spec writing and review, design, hard debugging,
+// independent verification); mid → the everyday model (the default); light → a smaller sibling
+// of the everyday model (simple mechanical work). Common aliases are accepted, so a skill written
+// for Claude Code ("opus", "sonnet", "haiku") maps onto the same three tiers.
+const TIER_ALIASES = {
+  strong: 'strong', opus: 'strong', high: 'strong', heavy: 'strong', planner: 'strong', best: 'strong',
+  mid: 'mid', medium: 'mid', sonnet: 'mid', standard: 'mid', default: 'mid', normal: 'mid',
+  light: 'light', low: 'light', haiku: 'light', small: 'light', fast: 'light', cheap: 'light'
+};
+const normTier = (v) => TIER_ALIASES[String(v || '').trim().toLowerCase()] || 'mid';
+
+// The tool arguments → { tasks } or { error }. Accepts strings or { task, context, tier } objects.
 function parseTasks(args) {
   const raw = Array.isArray(args?.tasks) ? args.tasks : null;
-  if (!raw || !raw.length) return { error: 'Give "tasks": a list of 2 to 4 independent subtasks, each { "task": "...", "context": "..." }.' };
+  if (!raw || !raw.length) return { error: 'Give "tasks": a list of 1 to 4 subtasks, each { "task": "...", "context": "...", "tier": "strong" | "mid" | "light" }.' };
   const tasks = [];
   for (const t of raw) {
     const task = String(typeof t === 'string' ? t : t?.task || '').trim();
     const context = typeof t === 'object' && t ? String(t.context || '').trim() : '';
-    if (task) tasks.push({ task: task.slice(0, 2000), context: context.slice(0, 6000) });
+    const tier = normTier(typeof t === 'object' && t ? t.tier || t.model : '');
+    if (task) tasks.push({ task: task.slice(0, 2000), context: context.slice(0, 6000), tier });
   }
   if (!tasks.length) return { error: 'Every subtask was empty.' };
   if (tasks.length > MAX_SUBTASKS) return { error: `At most ${MAX_SUBTASKS} subtasks at once; you gave ${tasks.length}. Group them, or delegate the rest after these finish.` };
   return { tasks };
+}
+
+// A smaller model of the same family that is installed: "qwen3:8b" with qwen3:4b and qwen3:1.7b
+// installed → qwen3:4b (one step down keeps the quality closest). Null when there is none.
+function sizeOf(name) {
+  const m = /^(.+?):(\d+(?:\.\d+)?)b\b(.*)$/i.exec(String(name || '').trim());
+  return m ? { base: m[1].toLowerCase(), size: Number(m[2]) } : null;
+}
+function lighterModel(model, available) {
+  const cur = sizeOf(model);
+  if (!cur) return null;
+  let best = null;
+  for (const name of available || []) {
+    const s = sizeOf(name);
+    if (!s || s.base !== cur.base || !(s.size < cur.size) || s.size < 1) continue;
+    if (!best || s.size > best.size) best = { name, size: s.size };
+  }
+  return best ? best.name : null;
+}
+
+// Subtasks that share a target (the same machine) run one after another; different targets run
+// at the same time. Keys → groups of task indexes, in order of first appearance.
+function groupByKey(keys) {
+  const groups = new Map();
+  (keys || []).forEach((k, i) => {
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(i);
+  });
+  return [...groups.values()];
 }
 
 const hasModel = (h, model, sameModel) => !!h && h.up === true && (h.models || []).some((m) => sameModel(m, model));
@@ -53,17 +95,17 @@ function childPrompt(t) {
 // The tool result: one section per subtask, in the order given.
 function formatResults(results) {
   const parts = results.map((r, i) => {
-    const head = `### Subtask ${i + 1}${r.node ? ` (on ${r.node})` : ''}: ${r.task.slice(0, 160)}`;
+    const head = `### Subtask ${i + 1}${r.node ? ` (on ${r.node}${r.tier && r.tier !== 'mid' ? `, ${r.tier}` : ''})` : ''}: ${r.task.slice(0, 160)}`;
     const status = r.status === 'done' ? 'finished' : r.status === 'stopped' ? 'stopped before finishing' : 'failed';
     const files = r.files?.length ? `\nFiles changed: ${r.files.join(', ')}` : '\nNo files changed.';
     let summary = String(r.summary || '').trim() || '(no summary)';
     if (summary.length > SUMMARY_CAP) summary = summary.slice(0, SUMMARY_CAP) + '…';
-    return `${head}\nStatus: ${status}${files}\n${summary}`;
+    return `${head}\nStatus: ${status}${r.note ? ` (${r.note})` : ''}${files}\n${summary}`;
   });
   const ok = results.filter((r) => r.status === 'done').length;
   return `${ok} of ${results.length} subtasks finished.\n\n${parts.join('\n\n')}`;
 }
 
-const SubagentsExports = { MAX_SUBTASKS, SUBAGENT_INSTRUCTIONS, parseTasks, assignNodes, childPrompt, formatResults };
+const SubagentsExports = { MAX_SUBTASKS, SUBAGENT_INSTRUCTIONS, TIER_ALIASES, normTier, parseTasks, lighterModel, groupByKey, assignNodes, childPrompt, formatResults };
 if (typeof module !== 'undefined' && module.exports) module.exports = SubagentsExports;
 if (typeof window !== 'undefined') window.Subagents = SubagentsExports;

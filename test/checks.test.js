@@ -66,3 +66,38 @@ test('rollbackPlan restores, removes created files, and skips anything edited si
   assert.deepEqual(plan.remove, ['new.js']);
   assert.deepEqual(plan.skipped, ['b.js']);
 });
+
+test('failingTests reads pytest, unittest, TAP, spec, go and cargo output', () => {
+  assert.deepEqual([...C.failingTests('FAILED tests/test_a.py::test_x - AssertionError\n1 failed')], ['tests/test_a.py::test_x']);
+  assert.deepEqual([...C.failingTests('FAIL: test_y (pkg.test_m.T)\n----')], ['pkg.test_m.T.test_y']);
+  assert.deepEqual([...C.failingTests("    not ok 2 - subtracts\n      ---\n      failureType: 'testCodeFailure'\nnot ok 1 - math\n  ---\n  type: 'suite'\n  failureType: 'subtestsFailed'")], ['subtracts'], 'a suite failing only through its tests is skipped');
+  assert.deepEqual([...C.failingTests('▶ math\n  ✔ adds (0.6ms)\n  ✖ subtracts (0.6ms)\n✖ math (2.8ms)\n\n✖ failing tests:\n\n✖ subtracts (0.6ms)')], ['subtracts']);
+  assert.deepEqual([...C.failingTests('--- FAIL: TestSum (0.00s)\ntest util::tests::adds ... FAILED')], ['TestSum', 'util::tests::adds']);
+  assert.equal(C.failingTests('all good').size, 0);
+  assert.equal(C.testKey('tests/a.py::C::test_x[1]'), 'test_x');
+  assert.equal(C.testKey('pkg.T.test_y'), 'test_y');
+  assert.equal(C.testKey('TestSum/case_1'), 'TestSum');
+  assert.equal(C.testKey('adds two numbers'), 'adds two numbers');
+});
+
+test('compareRuns with isNew: the task\'s own new tests are pending, broken old ones regress', () => {
+  const before = new Map([['tests/test_calc.py', 'def test_add():\n    assert add(1, 2) == 3\n']]);
+  const wrote = new Map([['tests/test_calc.py', 'def test_add():\n    assert add(1, 2) == 3\ndef test_total_lines():\n    assert total([]) == 0\n'], ['calc.py', 'def add(a, b): return a + b\n']]);
+  const isNew = C.newTestMatcher(before, wrote);
+  assert.equal(isNew('tests/test_calc.py::test_total_lines'), true);
+  assert.equal(isNew('tests/test_calc.py::test_add'), false);
+  const base = [{ name: 'tests', ok: true, output: '1 passed' }];
+  const pending = C.compareRuns(base, [{ name: 'tests', ok: false, output: 'FAILED tests/test_calc.py::test_total_lines - NameError\n1 failed, 1 passed' }], isNew);
+  assert.equal(pending.verdict, 'pending');
+  assert.deepEqual(pending.pending[0].newTests, ['tests/test_calc.py::test_total_lines']);
+  const worse = C.compareRuns(base, [{ name: 'tests', ok: false, output: 'FAILED tests/test_calc.py::test_add - x\nFAILED tests/test_calc.py::test_total_lines - y' }], isNew);
+  assert.equal(worse.verdict, 'worse');
+  assert.deepEqual(worse.regressed[0].broke, ['tests/test_calc.py::test_add']);
+  assert.match(C.fixPrompt(worse.regressed), /has tests that passed before this task and fail now: tests\/test_calc.py::test_add/);
+  assert.equal(C.compareRuns(base, [{ name: 'tests', ok: false, output: 'Segmentation fault' }], isNew).verdict, 'worse', 'unrecognized output is still a regression');
+  // Already failing before: more broken existing tests regress; the old failure alone does not.
+  const failing = [{ name: 'tests', ok: false, output: 'FAILED tests/test_calc.py::test_old - x' }];
+  assert.equal(C.compareRuns(failing, [{ name: 'tests', ok: false, output: 'FAILED tests/test_calc.py::test_old - x' }], isNew).verdict, 'same');
+  assert.equal(C.compareRuns(failing, [{ name: 'tests', ok: false, output: 'FAILED tests/test_calc.py::test_old - x\nFAILED tests/test_calc.py::test_add - y' }], isNew).verdict, 'worse');
+  assert.match(C.pendingPrompt(pending.pending), /tests you added in this task do not pass yet[\s\S]*test_total_lines/);
+});
