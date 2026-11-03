@@ -1551,6 +1551,7 @@ async function pickHighPerfTarget(currentModel) {
   const pick = Nodes.pickHighPerf(nodes, health, currentModel, MODEL_CATALOG);
   if (!pick) return null;
   return {
+    nodeId: pick.node.id,
     override: pick.kind === 'lmstudio'
       ? Nodes.nodeOverride(pick.node, health[pick.node.id], pick.model)
       : { provider: 'ollama', baseUrl: pick.node.baseUrl, apiKey: '', model: pick.model, keepAlive: pick.node.keepAlive },
@@ -1564,6 +1565,7 @@ async function pickHighPerfTarget(currentModel) {
 const spillChecked = new Set();
 const spillSeen = new Map(); // model -> spill info, for the slow hint on the status line
 const predictedSpill = new Set(); // models warned about before loading
+const moeModels = new Set(); // mixture-of-experts models seen by the fit check (spill hurts them less)
 const fitPredicted = new Set(); // baseUrl|model|ctx already estimated this session
 
 // Before a model's first request, estimate whether it fits the GPU at the configured context
@@ -1587,10 +1589,13 @@ async function predictGpuFit(c, baseUrl, model, isThisPc) {
   if (!p || p.fits) return;
   predictedSpill.add(model);
   const where = isThisPc ? "this PC's GPU" : 'that node\'s GPU';
-  const advice = p.fitCtx
-    ? `Fit to GPU sets "Context window" to ${p.fitCtx} so all of it fits; or pick a smaller model.`
-    : 'Even a 4K context window would not fit it — pick a smaller model (for example the 8B size of the same family).';
-  const text = `Heads-up: ${model} with a ${ctx}-token context window needs about ${p.neededGB} GB, but ${where} has about ${p.vramGB} GB — part of it will run on the CPU, several times slower. ${advice}`;
+  const moe = Nodes.isMoE(facts?.modelInfo);
+  if (moe) moeModels.add(model);
+  const text = moe
+    ? `Heads-up: ${model} with a ${ctx}-token context window needs about ${p.neededGB} GB, but ${where} has about ${p.vramGB} GB, so part of it runs on the CPU. It is a mixture-of-experts model (only a few of its experts work per token), so that costs far less speed than usual — fine to keep using.${p.fitCtx ? ` Fit to GPU (${p.fitCtx}) would still make it a bit faster.` : ''}`
+    : `Heads-up: ${model} with a ${ctx}-token context window needs about ${p.neededGB} GB, but ${where} has about ${p.vramGB} GB — part of it will run on the CPU, several times slower. ${p.fitCtx
+      ? `Fit to GPU sets "Context window" to ${p.fitCtx} so all of it fits; or pick a smaller model.`
+      : 'Even a 4K context window would not fit it — pick a smaller model (for example the 8B size of the same family).'}`;
   const item = { t: 'notice', text };
   c.display.push(item);
   renderNotice(c, item);
@@ -1627,7 +1632,9 @@ async function checkGpuSpill(c, baseUrl, model) {
     : fit?.tooSmall
       ? `Even a 4K context window would not fit it on this GPU — pick a smaller model (for example the 8B size of the same family).`
       : 'Lower "Context window" in Settings → Model, or pick a smaller model.';
-  const text = `${model} is running partly on the CPU: only ${sp.gpuGB} of ${sp.totalGB} GB (${sp.pct}%) fits in GPU memory on ${host}, which makes it several times slower. ${advice}`;
+  const text = moeModels.has(model)
+    ? `${model} is running partly on the CPU: ${sp.gpuGB} of ${sp.totalGB} GB (${sp.pct}%) fits in GPU memory on ${host}. As a mixture-of-experts model it stays usable this way.${fit?.ctx ? ` Fit to GPU (${fit.ctx}) would make it a bit faster.` : ''}`
+    : `${model} is running partly on the CPU: only ${sp.gpuGB} of ${sp.totalGB} GB (${sp.pct}%) fits in GPU memory on ${host}, which makes it several times slower. ${advice}`;
   const item = { t: 'notice', text };
   c.display.push(item);
   renderNotice(c, item);
@@ -1698,7 +1705,14 @@ async function runConversation(c) {
     if (Date.now() - lhCache.at > 30_000) {
       lhCache = { at: Date.now(), pick: await pickHighPerfTarget(conversationOverride(c)?.model || state.settings.model) };
     }
-    return lhCache.pick;
+    // ⚡ on the same PC as the everyday model: every handoff swaps two models on one GPU (a field
+    // report shows 7–18 s reloads each way). Say so once, with the better setups.
+    const lhp = lhCache.pick;
+    if (lhp && lhp.nodeId === Nodes.THIS_PC_ID && !c.sameGpuWarned && state.settings.provider === 'ollama' && (lastNodeId || Nodes.THIS_PC_ID) === Nodes.THIS_PC_ID) {
+      c.sameGpuWarned = true;
+      note(`Your ⚡ node is this same PC, so each hand-off swaps ${lhp.override.model} and ${state.settings.model} on one GPU (a reload of several seconds each way). Faster: mark a different PC as ⚡ under Settings → Ollama nodes, or set Plan with → Planner model.`);
+    }
+    return lhp;
   };
 
   // Record an intervention. The ladder: the first one escalates the next turn (a high-perf
@@ -1957,7 +1971,7 @@ async function runConversation(c) {
     c.chatId = null;
     DebugLog.add(c, 'response', res.ok
       ? (res.aborted
-        ? { ok: true, aborted: true }
+        ? { ok: true, aborted: true, by: loopCaught ? 'loop' : c.stopRequested ? 'user' : 'app', thinkTail: loopCaught ? thinkBuf.slice(-1200) : undefined }
         : {
             ok: true, finishReason: res.finishReason, chars: (res.content || '').length, toolCalls: (res.toolCalls || []).length,
             promptTokens: res.usage?.promptTokens, completionTokens: res.usage?.completionTokens || (prog.tokens || undefined),

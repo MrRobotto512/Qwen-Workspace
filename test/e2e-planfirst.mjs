@@ -139,7 +139,7 @@ try {
   }
   if (!hpBodies[1].includes('not executable')) fail('the vague-plan corrective reminder never reached the rewrite turn');
   if (localRequests !== 2) fail(`expected 2 everyday-model requests (execute + final), saw ${localRequests}`);
-  if (!localBodies[0]?.includes('written by the high-performance node')) fail('the back-to-everyday reminder is missing from the execution request');
+  if (!localBodies[0]?.includes('written by the planning model')) fail('the back-to-everyday reminder is missing from the execution request');
   if (!fs.existsSync(madeFile)) fail('the everyday model never wrote the file the plan named');
   const todos = await win.evaluate(() => (state.conv?.todos || []).map((t) => t.content));
   if (todos.length !== 2 || !todos[0].includes('calc.py')) fail(`the plan never landed as todos: ${JSON.stringify(todos)}`);
