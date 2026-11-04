@@ -41,6 +41,19 @@ function readJsonObject(text, from) {
   return null;
 }
 
+// Tool calls written as text get the same repair as real ones (argrepair.js): a raw line break
+// inside a file's content otherwise made the whole call vanish.
+const ArgRepairLib = typeof ArgRepair !== 'undefined' ? ArgRepair : typeof require !== 'undefined' ? require('./argrepair.js') : null;
+function looseParse(text) {
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    const r = ArgRepairLib?.parseArgs(text);
+    if (r?.ok) return r.value;
+    throw e;
+  }
+}
+
 function extractTextToolCalls(content, names) {
   const start = textToolCallStart(content, names);
   if (start < 0) return { calls: [], cleaned: content.trim() };
@@ -75,9 +88,9 @@ function extractTextToolCalls(content, names) {
       if (!json) break;
       re.lastIndex = m.index + json.length;
       try {
-        const obj = JSON.parse(json);
+        const obj = looseParse(json);
         const args = obj.arguments ?? obj.parameters;
-        if (known.has(obj.name) && args !== undefined) add(obj.name, typeof args === 'string' ? JSON.parse(args) : args);
+        if (known.has(obj.name) && args !== undefined) add(obj.name, typeof args === 'string' ? looseParse(args) : args);
       } catch {
         /* not a tool call */
       }
@@ -87,8 +100,8 @@ function extractTextToolCalls(content, names) {
     let m;
     while ((m = re.exec(tail)) && m[0]) {
       try {
-        const obj = JSON.parse(m[1]);
-        if (obj.name) add(obj.name, typeof obj.arguments === 'string' ? JSON.parse(obj.arguments) : obj.arguments);
+        const obj = looseParse(m[1]);
+        if (obj.name) add(obj.name, typeof obj.arguments === 'string' ? looseParse(obj.arguments) : obj.arguments);
       } catch {
         /* not JSON; ignore */
       }

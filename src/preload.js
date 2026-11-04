@@ -18,6 +18,9 @@ contextBridge.exposeInMainWorld('api', {
   reveal: (rel) => ipcRenderer.invoke('shell:reveal', rel),
 
   runCommand: (command, timeoutMs, owner) => ipcRenderer.invoke('cmd:run', command, timeoutMs, owner),
+  syntaxCheck: (rel, before) => ipcRenderer.invoke('syntax:check', rel, before),
+  saveOutput: (label, text) => ipcRenderer.invoke('output:save', label, text),
+  restoreSecrets: (text) => ipcRenderer.invoke('secrets:restore', text),
   backgroundList: () => ipcRenderer.invoke('cmd:background'),
   stopBackground: (id) => ipcRenderer.invoke('cmd:stopBackground', id),
   onBackground: (fn) => {
