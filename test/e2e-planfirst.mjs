@@ -117,6 +117,9 @@ try {
     settingsNodes.push({ id: 'node-hp', name: 'Big PC', baseUrl: hp, enabled: true, highPerf: true });
     return document.querySelector('#s-save').onclick();
   }, [localBase, hpBase]);
+  // This test counts the everyday model's requests; its executor writes calc.py and finishes
+  // without running it, which v0.57's test-before-done reminder would (rightly) push back on.
+  await win.evaluate(async () => { state.settings = await api.setSettings({ testBeforeDone: false }); });
 
   await win.evaluate(async (dir) => {
     await openWorkspace(dir);
@@ -161,7 +164,7 @@ try {
   if (errors.length) fail(`renderer errors: ${errors.join(' || ').slice(0, 500)}`);
   // Leave settings pristine for whatever suite runs next.
   await win.evaluate(async () => {
-    state.settings = await api.setSettings({ ollamaNodes: [], planFirst: false });
+    state.settings = await api.setSettings({ ollamaNodes: [], planFirst: false, testBeforeDone: true });
     syncNodeRouting();
   }).catch(() => {});
   const watchdog = setTimeout(() => {
