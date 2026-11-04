@@ -455,6 +455,8 @@ async function executeTool(c, call, row) {
     // free, acting asks once per website, code/uploads/cookies ask every time.
     const browser = BrowserCtl.isBrowserTool(raw);
     c.browserUrl = c.browserUrl || {};
+    const toTestApp = browser && BrowserCtl.localFileRedirect(raw, args, state.ws?.root);
+    if (toTestApp) return { result: toTestApp, meta: 'use test_app' };
     if (browser) {
       const cls = BrowserCtl.classify(raw, args, mcpToolReadOnly(name));
       const site = BrowserCtl.actionSite(raw, args, c.browserUrl[label]);
@@ -769,7 +771,7 @@ async function executeTool(c, call, row) {
         showTerminal(true, false);
         termWrite(`\n❯ ${cmd}  (Qwen)\n`, 'term-cmd');
         setActivity(c, `Running ${cmd}`);
-        const r = await api.runCommand(cmd, timeoutMs);
+        const r = await api.runCommand(cmd, timeoutMs, c.id);
         termWrite(`[exit code ${r.code}]\n`, 'term-exit');
         row.setBody(r.output || '(no output)');
         state.fileIndex = null;

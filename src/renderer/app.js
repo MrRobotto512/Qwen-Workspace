@@ -1919,6 +1919,17 @@ function termWrite(text, cls) {
 }
 api.onCommandOutput((t) => termWrite(t));
 
+// Programs commands left running (servers): "● 1 running · Stop" in the terminal header.
+function renderBackground(list) {
+  const b = $('#btn-term-bg');
+  if (!b) return;
+  state.background = list || [];
+  b.classList.toggle('hidden', !state.background.length);
+  b.textContent = `● ${state.background.length} running · Stop`;
+  b.title = `Left running by commands:\n${state.background.map((x) => `${x.command}${x.pids?.length ? ` (process ${x.pids.join(', ')})` : ''}`).join('\n')}\n\nClick to stop ${state.background.length === 1 ? 'it' : 'them'}.`;
+}
+api.onBackground?.(renderBackground);
+
 async function runTerminalCommand(cmd) {
   if (!requireWorkspace()) return;
   termWrite(`\n❯ ${cmd}\n`, 'term-cmd');
@@ -2484,6 +2495,10 @@ function bindUi() {
 
   $('#btn-term-close').onclick = () => showTerminal(false);
   $('#btn-term-clear').onclick = () => $('#term-out').replaceChildren();
+  $('#btn-term-bg').onclick = async () => {
+    const n = await api.stopBackground();
+    termWrite(`[stopped ${n} program${n === 1 ? '' : 's'} left running in the background]\n`, 'term-exit');
+  };
   $('#term-in').onkeydown = (e) => {
     if (e.key === 'Enter' && e.target.value.trim()) {
       const cmd = e.target.value.trim();

@@ -17,7 +17,14 @@ contextBridge.exposeInMainWorld('api', {
   search: (query, opts) => ipcRenderer.invoke('fs:search', query, opts),
   reveal: (rel) => ipcRenderer.invoke('shell:reveal', rel),
 
-  runCommand: (command, timeoutMs) => ipcRenderer.invoke('cmd:run', command, timeoutMs),
+  runCommand: (command, timeoutMs, owner) => ipcRenderer.invoke('cmd:run', command, timeoutMs, owner),
+  backgroundList: () => ipcRenderer.invoke('cmd:background'),
+  stopBackground: (id) => ipcRenderer.invoke('cmd:stopBackground', id),
+  onBackground: (fn) => {
+    const h = (_e, list) => fn(list);
+    ipcRenderer.on('cmd:background', h);
+    return () => ipcRenderer.removeListener('cmd:background', h);
+  },
   guiTest: (opts) => ipcRenderer.invoke('gui:test', opts),
   guiTestPage: (opts) => ipcRenderer.invoke('gui:testPage', opts),
   guiSelfTest: (opts) => ipcRenderer.invoke('gui:selfTest', opts),

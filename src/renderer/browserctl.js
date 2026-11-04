@@ -141,7 +141,32 @@ function isPlaywrightServer(cfg) {
   return [cfg?.command, ...(Array.isArray(cfg?.args) ? cfg.args : [])].some((a) => /@playwright\/mcp/.test(String(a || '')));
 }
 
-const BrowserCtlExports = { isBrowserTool, classify, siteOf, isLocalSite, pageUrlFrom, actionSite, decide, describeAction, wrapUntrusted, SYSTEM_LINE, PLAYWRIGHT_MCP_VERSION, MODES, BROWSERS, serverConfig, isPlaywrightServer };
+// A page on this PC opened with the browser tools (a benchmark run: Opus tried
+// browser_navigate file:///C:/…/counter.html, which Playwright MCP refuses): the project's own
+// pages are test_app's job — it loads them in a hidden window, runs window.selfTest(), and
+// returns console errors and a screenshot. The answer names the file as test_app wants it:
+// relative to the project when it is inside it.
+function localFileRedirect(raw, args, root) {
+  if (raw !== 'browser_navigate' && raw !== 'browser_tabs') return null;
+  const url = String(args?.url || '').trim();
+  let file = null;
+  if (/^file:/i.test(url)) {
+    try {
+      file = decodeURIComponent(url.replace(/^file:\/*/i, '').replace(/[?#].*$/, ''));
+    } catch {
+      file = url.replace(/^file:\/*/i, '');
+    }
+    if (!/^[a-z]:/i.test(file)) file = `/${file}`;
+  } else if (/^[a-z]:[\\/]/i.test(url) || /^[\w./\\ -]+\.html?$/i.test(url)) file = url;
+  if (!file) return null;
+  const norm = (p) => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const f = norm(file);
+  const r = norm(root);
+  const rel = r && f.toLowerCase().startsWith(`${r.toLowerCase()}/`) ? f.slice(r.length + 1) : f;
+  return `Not run: the browser tools do not open files on this PC (file: URLs are blocked). To check a page from the project, call test_app with {"command": ${JSON.stringify(rel)}}: it loads the page in a hidden window, runs its scripts (and window.selfTest() when there is one), and returns console errors and a screenshot; add "actions" to click, type and press keys. No server is needed.`;
+}
+
+const BrowserCtlExports = { localFileRedirect, isBrowserTool, classify, siteOf, isLocalSite, pageUrlFrom, actionSite, decide, describeAction, wrapUntrusted, SYSTEM_LINE, PLAYWRIGHT_MCP_VERSION, MODES, BROWSERS, serverConfig, isPlaywrightServer };
 if (typeof module !== 'undefined' && module.exports) module.exports = BrowserCtlExports;
 if (typeof window !== 'undefined') window.BrowserCtl = BrowserCtlExports;
 })();

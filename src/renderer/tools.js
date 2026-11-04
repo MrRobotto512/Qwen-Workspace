@@ -153,7 +153,7 @@ const CORE_TOOLS = [
     type: 'function',
     function: {
       name: 'run_command',
-      description: 'Run a shell command in the project root and return its output (non-interactive). Use it to build, test, install packages or run scripts, instead of for reading or searching files. The default timeout is 2 minutes — for anything long (compiling a project, cloning a big repo, an installer) pass timeout_seconds, up to 3600. A command killed by the timeout says so at the end of its output; rerun it with a larger timeout_seconds instead of assuming it failed.',
+      description: 'Run a shell command in the project root and return its output (non-interactive). Use it to build, test, install packages or run scripts, instead of for reading or searching files. The default timeout is 2 minutes — for anything long (compiling a project, cloning a big repo, an installer) pass timeout_seconds, up to 3600. A command killed by the timeout says so at the end of its output; rerun it with a larger timeout_seconds instead of assuming it failed. A server (npm run dev, python -m http.server) is fine to start: once it is up the command returns and the server keeps running in the background — start it once, not again. To check a web page, use test_app with the .html file instead: no server is needed.',
       parameters: {
         type: 'object',
         properties: {

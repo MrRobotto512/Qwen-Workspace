@@ -63,6 +63,7 @@ jobs:
       - run: xvfb-run -a npm run test:e2e:lmstudio
       - run: xvfb-run -a npm run test:e2e:checkapi
       - run: xvfb-run -a npm run test:e2e:runnerfixes
+      - run: xvfb-run -a npm run test:e2e:bgserver
       - run: xvfb-run -a npm run test:e2e:steer
       - run: xvfb-run -a npm run test:e2e:goal
       - run: xvfb-run -a npm run test:e2e:hardening
