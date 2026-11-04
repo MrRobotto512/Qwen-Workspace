@@ -624,6 +624,10 @@ async function executeTool(c, call, row) {
         }
         const count = original.split(oldText).length - 1;
         if (count === 0) {
+          // A model re-sending an edit that already landed: say so, not "not found".
+          if (EditMatch.alreadyApplied(original, oldText, newText)) {
+            return { result: `This change is already in ${p}: new_text is in the file and old_text is not. Nothing was changed — move on to the next step.`, meta: 'already applied', progress: false };
+          }
           // Small models often get the indentation wrong; one unambiguous match ignoring it is safe.
           const loose = EditMatch.looseEdit(original, oldText, newText);
           if (loose.modified === original) return unchangedEdit(p);
@@ -633,6 +637,17 @@ async function executeTool(c, call, row) {
             return afterWrite(c, p, original, out);
           }
           if (loose.count > 1) return { result: `Error: old_text was not found exactly in ${p}, and ignoring indentation it matches ${loose.count} places. Read the file again and include more surrounding lines.` };
+          // More ways a model's old_text drifts from the file (Hermes Agent's fuzzy_match.py):
+          // literal "\n" escapes, then curly quotes and long dashes.
+          for (const tier of [EditMatch.escapeEdit, EditMatch.unicodeEdit]) {
+            const t = tier(original, oldText, newText);
+            if (t.modified === original) return unchangedEdit(p);
+            if (t.modified) {
+              const out = withGlitchWarning(p, original, t.modified, await applyAgentEdit(c, row, p, original, t.modified, `Edit ${p}`));
+              if (!out.rejected && !/^Error/.test(out.result)) out.result += ` (${t.note}.)`;
+              return afterWrite(c, p, original, out);
+            }
+          }
           // Last resort: the same text with different spacing and line breaks (a one-line file
           // edited as if it were pretty-printed), when it matches exactly one place.
           const blind = EditMatch.blindEdit(original, oldText, newText);
@@ -640,6 +655,15 @@ async function executeTool(c, call, row) {
           if (blind.modified) {
             const out = withGlitchWarning(p, original, blind.modified, await applyAgentEdit(c, row, p, original, blind.modified, `Edit ${p}`));
             if (!out.rejected && !/^Error/.test(out.result)) out.result += ` (${blind.note}.)`;
+            return afterWrite(c, p, original, out);
+          }
+          // Last: a block remembered slightly wrong — anchored on its first and last lines, or
+          // every line mostly alike — when that points at exactly one place.
+          const similar = EditMatch.similarEdit(original, oldText, newText);
+          if (similar.modified === original) return unchangedEdit(p);
+          if (similar.modified) {
+            const out = withGlitchWarning(p, original, similar.modified, await applyAgentEdit(c, row, p, original, similar.modified, `Edit ${p}`));
+            if (!out.rejected && !/^Error/.test(out.result)) out.result += ` (${similar.note}.)`;
             return afterWrite(c, p, original, out);
           }
           return { result: editMissMessage(c, p, original, oldText), failed: true };
@@ -3241,6 +3265,54 @@ async function runOrSkip(c, call, row, seen, step) {
   DebugLog.add(c, 'tool', { name, meta: out.meta, failed: !!out.failed, rejected: !!out.rejected, ms: Date.now() - t0 });
   // "Progress" = a change or command or a first-time read; pure repeats and errors don't count.
   out.progress = !out.failed && !out.rejected && out.progress !== false;
+  // A cycle of 2-4 calls repeating with the same results (loopguard.js, from Hermes Agent).
+  const cycle = LoopGuard.observe((c.callCycle ||= []), sig, out.result, name);
+  if (cycle) {
+    out.result += LoopGuard.notice(cycle);
+    out.progress = false;
+    DebugLog.add(c, 'notice', { text: `loop: the same ${cycle.period} calls (${cycle.names.join(', ')}) repeated ${cycle.laps} times with the same results` });
+  }
+  // The first touch of a subfolder shows its own AGENTS.md / CLAUDE.md / QWEN.md (folderhints.js).
+  if (!out.failed && !out.rejected) out.result += await folderHintsFor(c, name, call.function.arguments);
+  return out;
+}
+
+// A subfolder's instruction file, the first time this conversation touches that folder. Text that
+// tries to steer the agent (ignore your rules, hide this from the user) is not passed on.
+async function folderHintsFor(c, name, argText) {
+  if (!state.ws || state.settings.folderHints === false) return '';
+  let args;
+  try {
+    args = JSON.parse(argText || '{}');
+  } catch {
+    return '';
+  }
+  const targets = FolderHints.pathsOf(name, args);
+  if (!targets.length) return '';
+  c.hintDirs ||= {};
+  const seen = new Set(Object.keys(c.hintDirs));
+  let out = '';
+  for (const t of targets) {
+    const p = normPath(t.path);
+    for (const d of FolderHints.foldersFor(p, t.dir, seen)) {
+      seen.add(d);
+      c.hintDirs[d] = true;
+      for (const n of FolderHints.NAMES) {
+        const rel = `${d}/${n}`;
+        if (rel === p) break; // the agent is reading it right now
+        let text = null;
+        try {
+          text = await api.read(rel);
+        } catch {
+          continue;
+        }
+        const bad = SkillScan.injectionFindings(text, rel);
+        out += bad.length ? FolderHints.suspicious(rel, bad) : FolderHints.block(rel, text);
+        DebugLog.add(c, 'notice', { text: bad.length ? `folder instructions: ${rel} not passed on (${bad.map((f) => f.id).join(', ')})` : `folder instructions: showed ${rel}` });
+        break;
+      }
+    }
+  }
   return out;
 }
 
