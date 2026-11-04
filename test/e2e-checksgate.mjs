@@ -101,6 +101,8 @@ try {
     settingsNodes = settingsNodes.filter((n) => n.id === 'this-pc').map((n) => ({ ...n, enabled: true, highPerf: false }));
     return document.querySelector('#s-save').onclick();
   }, base);
+  // This test's model rewrites files without reading them; the checks gate is what is tested here.
+  await win.evaluate(async () => { state.settings = await api.setSettings({ readBeforeWrite: false }); });
   await win.evaluate(async (dir) => { await openWorkspace(dir); newChat(); }, ws);
 
   // --- 1. /checks → setup card → Save
@@ -154,7 +156,7 @@ try {
   fail(String(e).split('\n')[0]);
 } finally {
   if (errors.length) fail(`renderer errors: ${errors.join(' || ').slice(0, 500)}`);
-  await win.evaluate(async () => { state.settings = await api.setSettings({ checksApproved: {}, skillWriter: true }); }).catch(() => {});
+  await win.evaluate(async () => { state.settings = await api.setSettings({ checksApproved: {}, skillWriter: true, readBeforeWrite: true }); }).catch(() => {});
   const watchdog = setTimeout(() => {
     console.error('app.close() hung; forcing exit with the recorded result');
     process.exit(process.exitCode || 0);

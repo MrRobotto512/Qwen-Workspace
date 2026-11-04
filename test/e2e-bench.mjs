@@ -45,10 +45,18 @@ const server = http.createServer((req, res) => {
   req.on('end', () => {
     const b = JSON.parse(body);
     const ask = String(b.messages.find((m) => m.role === 'user')?.content || '');
-    const done = b.messages.some((m) => m.role === 'tool');
-    if (done) return sse(res, [{ choices: [{ delta: { content: 'Done.' }, finish_reason: null }] }, { choices: [{ delta: {}, finish_reason: 'stop' }] }]);
     const set = phase === 1 ? RIGHT : WRONG;
     const [p, content] = /counter\.html/.test(ask) ? set.counter : /index\.html shows nothing/.test(ask) ? set.hello : set.stats;
+    // A file the task seeded is read before it is rewritten (v0.54's read-before-overwrite rule).
+    const results = b.messages.filter((m) => m.role === 'tool').length;
+    const seeded = p !== set.counter[0];
+    if (seeded && results === 0) {
+      return sse(res, [
+        { choices: [{ delta: { tool_calls: [{ index: 0, id: 'r1', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: p }) } }] }, finish_reason: null }] },
+        { choices: [{ delta: {}, finish_reason: 'tool_calls' }] }
+      ]);
+    }
+    if (results >= (seeded ? 2 : 1)) return sse(res, [{ choices: [{ delta: { content: 'Done.' }, finish_reason: null }] }, { choices: [{ delta: {}, finish_reason: 'stop' }] }]);
     sse(res, [
       { choices: [{ delta: { tool_calls: [{ index: 0, id: 'w1', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: p, content }) } }] }, finish_reason: null }] },
       { choices: [{ delta: {}, finish_reason: 'tool_calls' }] }
