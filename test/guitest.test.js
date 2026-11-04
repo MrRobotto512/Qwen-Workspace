@@ -107,3 +107,11 @@ test('pixel check flags a flat screenshot', () => {
   assert.equal(G.pixelNote(G.pixelStats(busy, 100, 100)), '');
   assert.equal(G.pixelNote(null), '');
 });
+
+test('pixel check: a plain web page is mostly background by design', () => {
+  const counterPage = { topShare: 0.98, colours: 40, top: '#ffffff' };
+  assert.strictEqual(G.pixelNote(counterPage, { page: true, canvas: false }), '');
+  assert.match(G.pixelNote({ topShare: 1, colours: 1, top: '#ffffff' }, { page: true }), /the page looks empty/);
+  assert.match(G.pixelNote(counterPage, { page: true, canvas: true }), /looks empty or is not drawing/);
+  assert.match(G.pixelNote(counterPage), /looks empty or is not drawing/, 'a desktop window keeps the old rule');
+});

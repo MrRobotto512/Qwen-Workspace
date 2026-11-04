@@ -113,13 +113,26 @@ const ARCHITECT_REPLY_TOKENS = 32000; // a whole first version of a file or two
 // Architect mode: the files a from-scratch task will create — the ones the user named or the
 // plan names that do not exist yet (at most three). Empty when the task edits existing files.
 async function architectTargets(c) {
-  const names = Escalation.namedFiles([...Honesty.userWords(c.history, { max: 6, clip: 4000 }), ...(c.todos || []).map((t) => t.content)]).filter((f) => !/[*?<>|]/.test(f)).slice(0, 6);
+  const userNamed = new Set(userNamedFiles(c).map((f) => f.toLowerCase()));
+  const names = Escalation.namedFiles([...Honesty.userWords(c.history, { max: 6, clip: 4000 }), ...(c.todos || []).map((t) => t.content)])
+    .filter((f) => !/[*?<>|]/.test(f))
+    // Notes are not what the planner should spend a big call on (a field report: the architect
+    // wrote QWEN.md because the plan mentioned it) — unless the user asked for that very file.
+    .filter((f) => !Escalation.isNotesFile(f) || userNamed.has(f.toLowerCase()))
+    .slice(0, 6);
   const missing = [];
   for (const f of names) {
     const exists = await api.read(normPath(f)).then(() => true, () => false);
     if (!exists) missing.push(f);
   }
   return missing.length && missing.length <= 3 ? missing : [];
+}
+
+// An edit whose new text is the text already there (a field report: qwen3:8b "edited" the CSS
+// of a page the architect had just written, +0 −0, and it counted as a step done). Nothing is
+// written and it is not progress.
+function unchangedEdit(p) {
+  return { result: `Nothing changed: new_text is the same as the text already in ${p}, so the file is as it was. If ${p} already does what this step needs, test it and mark the step done; otherwise write the change you meant.`, meta: 'no change', progress: false };
 }
 
 // The files the user named in this conversation, in their own words.
@@ -248,6 +261,11 @@ async function screenshotPixels(png) {
 // ---------- prove-it checks for test_app (from storytold/craft-anything) ----------
 const BLANK_LINE = 'Blank screen: the screenshot is one flat colour, so nothing was drawn. This counts as a failed test — make sure the page or window draws its first frames (check the render loop, the camera and that objects are added to the scene) and test again.';
 
+// A page that is a game: it draws on a <canvas> and the user asked for a game.
+function pageIsGame(c, r) {
+  return !!r.hasCanvas && SelfTest.looksLikeGame(Honesty.userWords(c.history, { max: 6, clip: 2000 }).join('\n'));
+}
+
 // The game's own self-test report, judged: { text, failed } or null when there was none.
 function selfTestLines(c, r, web) {
   if (web && r.selfTest) {
@@ -258,10 +276,12 @@ function selfTestLines(c, r, web) {
       parsed = null;
     }
     if (parsed && parsed.error && !parsed.steps) return { text: `window.selfTest() failed: ${parsed.error}`, failed: true };
-    const j = SelfTest.judge(parsed);
+    // The game contract (move, act, hud) is for games; a counter page or a form is judged by
+    // its own steps.
+    const j = SelfTest.judge(parsed, { game: pageIsGame(c, r) });
     return { text: j.text, failed: !j.passed };
   }
-  if (web && r.hasCanvas && !r.hasSelfTest) {
+  if (web && pageIsGame(c, r) && !r.hasSelfTest) {
     const first = !c.selfTestAsked;
     c.selfTestAsked = true;
     return { text: first ? SelfTest.MISSING_WEB : 'Still no window.selfTest() on this canvas page — add the self-test described earlier before calling the game done.', failed: false };
@@ -308,9 +328,9 @@ async function likenessLines(c, args, web, shot) {
 
 // The lines a text-only model gets after a test_app screenshot: the blind-model rule, the
 // pixel check, and a vision model's description when one is available.
-async function describeForBlindModel(c, shot) {
+async function describeForBlindModel(c, shot, where = {}) {
   const lines = [Honesty.BLIND_NOTE];
-  const px = GuiTest.pixelNote(await screenshotPixels(shot.png));
+  const px = GuiTest.pixelNote(await screenshotPixels(shot.png), where);
   if (px) lines.push(px);
   if (state.settings.describeScreens === false) return lines.join('\n');
   c.lookCache = c.lookCache || new Map();
@@ -550,6 +570,7 @@ async function executeTool(c, call, row) {
         if (count === 0) {
           // Small models often get the indentation wrong; one unambiguous match ignoring it is safe.
           const loose = EditMatch.looseEdit(original, oldText, newText);
+          if (loose.modified === original) return unchangedEdit(p);
           if (loose.modified) {
             const out = withGlitchWarning(p, original, loose.modified, await applyAgentEdit(c, row, p, original, loose.modified, `Edit ${p}`));
             if (!out.rejected && !/^Error/.test(out.result)) out.result += ` (${loose.note}.)`;
@@ -559,6 +580,7 @@ async function executeTool(c, call, row) {
           // Last resort: the same text with different spacing and line breaks (a one-line file
           // edited as if it were pretty-printed), when it matches exactly one place.
           const blind = EditMatch.blindEdit(original, oldText, newText);
+          if (blind.modified === original) return unchangedEdit(p);
           if (blind.modified) {
             const out = withGlitchWarning(p, original, blind.modified, await applyAgentEdit(c, row, p, original, blind.modified, `Edit ${p}`));
             if (!out.rejected && !/^Error/.test(out.result)) out.result += ` (${blind.note}.)`;
@@ -568,6 +590,7 @@ async function executeTool(c, call, row) {
         }
         if (count > 1) return { result: `Error: old_text matches ${count} places in ${p}. Include more surrounding lines so it is unique.` };
         const modified = original.replace(oldText, () => newText);
+        if (modified === original) return unchangedEdit(p);
         return withGlitchWarning(p, original, modified, await applyAgentEdit(c, row, p, original, modified, `Edit ${p}`));
       }
       case 'delete_file': {
@@ -811,7 +834,7 @@ async function executeTool(c, call, row) {
           if (st) text += `\n${st.text}`;
           const like = r.loaded ? await likenessLines(c, args, web, r.shot) : [];
           if (like.length) text += `\n${like.join('\n')}`;
-          if (r.shot && !vision && r.loaded) text += `\n${await describeForBlindModel(c, r.shot)}`;
+          if (r.shot && !vision && r.loaded) text += `\n${await describeForBlindModel(c, r.shot, { page: true, canvas: !!r.hasCanvas })}`;
           row.setBody(text);
           if (r.shot) row.setImage?.(`data:image/png;base64,${r.shot.png}`);
           const errs = (r.errors || []).length;
@@ -3141,7 +3164,7 @@ async function runOrSkip(c, call, row, seen, step) {
   }
   DebugLog.add(c, 'tool', { name, meta: out.meta, failed: !!out.failed, rejected: !!out.rejected, ms: Date.now() - t0 });
   // "Progress" = a change or command or a first-time read; pure repeats and errors don't count.
-  out.progress = !out.failed && !out.rejected;
+  out.progress = !out.failed && !out.rejected && out.progress !== false;
   return out;
 }
 

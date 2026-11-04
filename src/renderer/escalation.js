@@ -61,6 +61,10 @@ function planFiles(todos) {
 // The files the user named in their own words ("make subwaysurfer.html"), in their spelling,
 // so the plan and the work use exactly those names (a field report's 8B model built index.html
 // and script.js instead). Library names ("Three.js") and URLs are not files to create.
+// Notes and agent instructions, not things to build: QWEN.md, AGENTS.md, CLAUDE.md, README,
+// CHANGELOG, NOTES, TODO (any folder, .md or .txt).
+const isNotesFile = (f) => /(^|[\\/])(qwen|agents|claude|user|readme|changelog|notes|todo)(\.(md|txt))?$/i.test(String(f || '').trim());
+
 const LIBRARY_NAMES = /^(three|node|vue|next|nuxt|react|express|chart|d3|p5|babylon|pixi|socket\.io|anime|matter|cannon|tone|howler|phaser|alpine|jquery|moment|lodash)\.js$/i;
 function namedFiles(texts) {
   const out = [];
@@ -178,6 +182,6 @@ function planMissingReminder() {
   return 'You did not write a plan. Do not execute any step yourself. Reply now with ONE todo_write call holding the complete todo list (3-8 steps); every step must contain an exact file path (with extension) or an exact command.';
 }
 
-const EscalationExports = { architectTools, isArchitectTool, ARCHITECT_REFUSAL, architectReminder, architectHandoff, namedFiles, commandRuns, commandFailStreak, planFiles, PLAN_FIRST_REMINDER, planningTools, isPlanningTool, PLAN_ONLY_REFUSAL, MIN_DETAILS, planProblems, vaguePlanSteps, planRetryReminder, planMissingReminder };
+const EscalationExports = { isNotesFile, architectTools, isArchitectTool, ARCHITECT_REFUSAL, architectReminder, architectHandoff, namedFiles, commandRuns, commandFailStreak, planFiles, PLAN_FIRST_REMINDER, planningTools, isPlanningTool, PLAN_ONLY_REFUSAL, MIN_DETAILS, planProblems, vaguePlanSteps, planRetryReminder, planMissingReminder };
 if (typeof module !== 'undefined' && module.exports) module.exports = EscalationExports;
 if (typeof window !== 'undefined') window.Escalation = EscalationExports;

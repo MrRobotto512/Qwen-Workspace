@@ -24,9 +24,31 @@ const DESKTOP_CONTRACT = `Give every desktop game a --self-test <file.json> opti
 
 const SYSTEM_LINE = '- When you build a game, give it a self-test (window.selfTest() in a browser game, a --self-test <file.json> option in a desktop game) that plays the core loop with scripted input and measures the game\'s own state; test_app runs it. A game is not done until every self-test step passes — "no console errors" is not enough.';
 
+// A request for a game (so a canvas page from it gets the game contract), not a chart or a
+// drawing tool that happens to use a <canvas>.
+const GAME_WORDS = /\b(game|games|player|players|level|levels|enemy|enemies|jump|jumps|shooter|runner|platformer|arcade|snake|tetris|pong|breakout|asteroids|flappy|racing|racer|lives|high ?score|surfers?|minecraft|mario|zelda|puzzle|maze)\b/i;
+const looksLikeGame = (text) => GAME_WORDS.test(String(text || ''));
+
+// One step of a report, read in the shape QWS asks for ({step, passed, detail}) or the shapes
+// models write anyway: {name|id|title|test, pass|ok|success, details|message|info}. A field
+// report: the planner gave a counter page a `{pass, steps: [{name, pass, detail}]}` self-test,
+// QWS looked only for {step, passed} and called a working page "3 of 3 steps failed".
+function readStep(x) {
+  if (!x || typeof x !== 'object') return null;
+  const name = [x.step, x.name, x.id, x.title, x.test, x.check].find((v) => typeof v === 'string' && v.trim());
+  if (!name) return null;
+  const flag = [x.passed, x.pass, x.ok, x.success].find((v) => typeof v === 'boolean');
+  const st = typeof x.status === 'string' ? x.status.toLowerCase() : '';
+  const passed = flag === true || (flag === undefined && /^(pass|passed|ok|success)$/.test(st));
+  const detail = [x.detail, x.details, x.message, x.info, x.reason].find((v) => v != null && String(v).trim());
+  return { step: name.trim().slice(0, 40), passed, detail: detail == null ? '' : String(typeof detail === 'object' ? JSON.stringify(detail) : detail).trim().slice(0, 200) };
+}
+
 // Judge a report (an object, or JSON text). { ok, passed, steps, text }: `ok` false when the
-// report can't be read; `passed` only when every core step and every added step passed.
-function judge(report) {
+// report can't be read; `passed` only when every step passed. A game (`game: true`, or a report
+// that names a core step) must also have passed "move", "act" and "hud"; any other page is judged
+// by its own steps.
+function judge(report, { game = true } = {}) {
   let r = report;
   if (typeof r === 'string') {
     try {
@@ -35,29 +57,34 @@ function judge(report) {
       return { ok: false, passed: false, steps: [], text: `The self-test report can't be read (${e.message}). ${REPORT}` };
     }
   }
-  if (!r || typeof r !== 'object' || !Array.isArray(r.steps)) return { ok: false, passed: false, steps: [], text: `The self-test returned no steps. It must return ${REPORT}` };
-  if (Number(r.version) > VERSION) return { ok: false, passed: false, steps: [], text: `The self-test says version ${r.version}; QWS reads version ${VERSION}.` };
+  const raw = Array.isArray(r) ? r : r && typeof r === 'object' ? r.steps || r.results || r.checks || r.tests : null;
+  if (!Array.isArray(raw)) return { ok: false, passed: false, steps: [], text: `The self-test returned no steps. It must return ${REPORT}` };
+  if (!Array.isArray(r) && Number(r.version) > VERSION) return { ok: false, passed: false, steps: [], text: `The self-test says version ${r.version}; QWS reads version ${VERSION}.` };
+  const given = raw.slice(0, 20).map(readStep).filter(Boolean);
   const norm = (s) => String(s || '').trim().toLowerCase();
+  const isCore = (s) => CORE.some(([c]) => c === norm(s.step));
+  const asGame = game || given.some(isCore);
+  if (!asGame && !given.length) return { ok: false, passed: false, steps: [], text: 'The self-test returned no steps with a name, so it shows nothing. Each step needs a name and a measured true/false: {"step": "plus adds one", "passed": true, "detail": "0 → 1"}.' };
   const steps = [];
-  for (const [step, shows] of CORE) {
-    const s = r.steps.find((x) => norm(x?.step) === step);
-    steps.push(s ? { step, passed: s.passed === true, detail: String(s.detail || '').trim().slice(0, 200) || (s.passed === true ? shows : 'failed') } : { step, passed: false, detail: `not tested (${shows})` });
+  if (asGame) {
+    for (const [step, shows] of CORE) {
+      const s = given.find((x) => norm(x.step) === step);
+      steps.push(s ? { step, passed: s.passed, detail: s.detail || (s.passed ? shows : 'failed') } : { step, passed: false, detail: `not tested (${shows})` });
+    }
   }
-  for (const s of r.steps.slice(0, 20)) {
-    if (CORE.some(([c]) => c === norm(s?.step)) || !norm(s?.step)) continue;
-    steps.push({ step: String(s.step).trim().slice(0, 40), passed: s.passed === true, detail: String(s.detail || '').trim().slice(0, 200) });
-  }
+  for (const s of given) if (!(asGame && isCore(s))) steps.push({ ...s, detail: s.detail || (s.passed ? 'passed' : 'failed') });
   const passed = steps.every((s) => s.passed);
   const lines = steps.map((s) => `${s.passed ? '✓' : '✗'} ${s.step}: ${s.detail}`);
   const failed = steps.filter((s) => !s.passed).map((s) => s.step);
-  return { ok: true, passed, steps, text: `Self-test (measured by the game itself): ${passed ? 'every step passed' : `${failed.length} of ${steps.length} steps failed (${failed.join(', ')}) — the game is not done`}.\n${lines.join('\n')}` };
+  const who = asGame ? 'the game' : 'the page';
+  return { ok: true, passed, steps, text: `Self-test (measured by ${who} itself): ${passed ? `every step passed (${steps.length})` : `${failed.length} of ${steps.length} steps failed (${failed.join(', ')}) — ${asGame ? 'the game' : 'it'} is not done`}.\n${lines.join('\n')}` };
 }
 
 // The line test_app adds for a page that looks like a game (it draws on a <canvas>) but has no
 // self-test, so the model adds one before calling it done.
 const MISSING_WEB = `This page draws on a <canvas> but has no window.selfTest(). ${WEB_CONTRACT}`;
 
-const SelfTestExports = { VERSION, CORE, REPORT, WEB_CONTRACT, DESKTOP_CONTRACT, SYSTEM_LINE, MISSING_WEB, judge };
+const SelfTestExports = { VERSION, CORE, REPORT, WEB_CONTRACT, DESKTOP_CONTRACT, SYSTEM_LINE, MISSING_WEB, judge, readStep, looksLikeGame };
 if (typeof module !== 'undefined' && module.exports) module.exports = SelfTestExports;
 if (typeof window !== 'undefined') window.SelfTest = SelfTestExports;
 })();

@@ -189,3 +189,8 @@ test('architect mode: write tools only, a reminder naming the files, a handoff t
   assert.match(E.architectReminder(['a.html']), /Do not run or test anything/);
   assert.match(E.architectHandoff(['a.html'], 'claude-opus-5-5'), /Do not rewrite these files: test them with test_app/);
 });
+
+test('notes files are not architect work', () => {
+  for (const f of ['QWEN.md', 'docs/README.md', 'AGENTS.md', 'CLAUDE.md', 'NOTES.txt', 'TODO.md', 'CHANGELOG.md']) assert.ok(E.isNotesFile(f), f);
+  for (const f of ['counter.html', 'notes.js', 'todo.html', 'src/readme.html', 'game.py']) assert.ok(!E.isNotesFile(f), f);
+});
