@@ -526,6 +526,7 @@ function openSettings() {
   $('#s-stopRule').checked = s.stopRule !== false;
   $('#s-describeScreens').checked = s.describeScreens !== false;
   $('#s-readBeforeWrite').checked = s.readBeforeWrite !== false;
+  $('#s-testBeforeDone').checked = s.testBeforeDone !== false;
   $('#s-syntaxCheck').checked = s.syntaxCheck !== false;
   $('#s-redactSecrets').checked = s.redactSecrets !== false;
   $('#s-folderHints').checked = s.folderHints !== false;
@@ -599,6 +600,7 @@ async function saveSettingsFromUi() {
   patch.stopRule = $('#s-stopRule').checked;
   patch.describeScreens = $('#s-describeScreens').checked;
   patch.readBeforeWrite = $('#s-readBeforeWrite').checked;
+  patch.testBeforeDone = $('#s-testBeforeDone').checked;
   patch.syntaxCheck = $('#s-syntaxCheck').checked;
   patch.redactSecrets = $('#s-redactSecrets').checked;
   patch.folderHints = $('#s-folderHints').checked;

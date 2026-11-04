@@ -2285,6 +2285,8 @@ async function runConversation(c) {
   let stall = 0; // consecutive rounds with no real progress
   let escalateNext = false; // run the next turn on the heavy model to break an impasse
   let autoNudges = 0; // times this run we pushed back on an announce-then-stop reply
+  let testNudges = 0; // times this run we asked for a test of changed code before finishing (testgate.js)
+  c.untested = {}; // code files changed this run and not run since: path -> true
   let ranTools = false; // whether any tool has run in this task yet
   let failStreak = 0; // consecutive rounds containing a failed call
   let interventions = 0; // how often the app has had to push back this task
@@ -3041,6 +3043,29 @@ async function runConversation(c) {
           continue;
         }
       }
+      // Test before done (testgate.js): code changed since the last run gets a test first.
+      if (useTools && state.settings.testBeforeDone !== false && Object.keys(c.untested || {}).length) {
+        const files = [];
+        for (const p of Object.keys(c.untested)) {
+          let content = null;
+          try {
+            content = findTab(p)?.model.getValue() ?? (await api.read(p));
+          } catch {
+            delete c.untested[p];
+            continue;
+          }
+          files.push({ path: p, kind: TestGate.kindOf(p, content) });
+        }
+        const userWords = Honesty.userWords(c.history, { max: 6, clip: 2000 });
+        if (files.length && testNudges < 2 && !TestGate.userSaidNoTest(userWords)) {
+          testNudges++;
+          note(`${files.map((f) => f.path).join(', ')} changed but not run yet — asking Qwen to test before finishing.`);
+          DebugLog.add(c, 'notice', { text: `test before done #${testNudges}: ${files.map((f) => `${f.path} (${f.kind})`).join(', ')}` });
+          c.history.push({ role: 'user', content: `<system-reminder>\n${TestGate.nudgeText(files, state.ws?.platform)}\n</system-reminder>` });
+          continue;
+        }
+        if (files.length && testNudges >= 2) note(`Finished without running the changes to ${files.map((f) => f.path).join(', ')} — they are untested.`);
+      }
       // Which skills shaped this answer (an idea from Strata) — once, at the clean end.
       if (c.skillsUsed?.size) {
         note(`Skills used: ${[...c.skillsUsed].join(', ')}.`);
@@ -3295,6 +3320,7 @@ async function runOrSkip(c, call, row, seen, step) {
   DebugLog.add(c, 'tool', { name, meta: out.meta, failed: !!out.failed, rejected: !!out.rejected, ms: Date.now() - t0 });
   // "Progress" = a change or command or a first-time read; pure repeats and errors don't count.
   out.progress = !out.failed && !out.rejected && out.progress !== false;
+  trackTesting(c, name, call, out);
   // A cycle of 2-4 calls repeating with the same results (loopguard.js, from Hermes Agent).
   const cycle = LoopGuard.observe((c.callCycle ||= []), sig, out.result, name);
   if (cycle) {
@@ -3305,6 +3331,26 @@ async function runOrSkip(c, call, row, seen, step) {
   // The first touch of a subfolder shows its own AGENTS.md / CLAUDE.md / QWEN.md (folderhints.js).
   if (!out.failed && !out.rejected) out.result += await folderHintsFor(c, name, call.function.arguments);
   return out;
+}
+
+// Which changed code is still untested (testgate.js): a write or edit adds the file; a real
+// command (not a listing or a file read), a program or a test_app run counts as a test of what
+// changed — a failing run too, since the model saw what happened.
+function trackTesting(c, name, call, out) {
+  if (out.rejected) return;
+  let args;
+  try {
+    args = JSON.parse(call.function.arguments || '{}');
+  } catch {
+    return;
+  }
+  c.untested ||= {};
+  if ((name === 'write_file' || name === 'edit_file') && !out.failed && out.progress !== false && TestGate.isCode(args.path)) c.untested[normPath(args.path)] = true;
+  else if (name === 'move_file' && c.untested[normPath(args.from)]) {
+    delete c.untested[normPath(args.from)];
+    c.untested[normPath(args.to)] = true;
+  } else if (name === 'delete_file') delete c.untested[normPath(args.path)];
+  else if (name === 'test_app' || name === 'run_program' || (name === 'run_command' && !isReadOnlyCommand(String(args.command || '')))) c.untested = {};
 }
 
 // A subfolder's instruction file, the first time this conversation touches that folder. Text that

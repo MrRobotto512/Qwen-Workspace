@@ -58,6 +58,7 @@ const DEFAULT_SETTINGS = {
   architect: true, // after a plan for new files, the planner writes the first version; the local model tests and fixes it
   promptCache: true, // Anthropic prompt caching: repeated prompt prefixes billed at about a tenth
   describeScreens: true, // a text-only model's test_app screenshots are described by a vision model
+  testBeforeDone: true, // finishing with changed code not yet run asks the model to test it first (up to twice per task)
   readBeforeWrite: true, // write_file may not overwrite a file the task has not read in full (or that changed since)
   syntaxCheck: true, // every write is syntax-checked (JSON, JavaScript, a page's inline scripts, Python); new errors are reported
   redactSecrets: true, // API keys, tokens and passwords are hidden from cloud models (not from this PC's own models)

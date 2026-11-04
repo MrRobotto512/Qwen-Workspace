@@ -250,6 +250,7 @@
       <label class="check"><input type="checkbox" id="s-branchPerTask" /> Branch per task: when a task first edits a file in a git repo, work on a new qwen/&lt;task&gt; branch</label>
       <label class="check"><input type="checkbox" id="s-lessonsEnabled" /> Lessons: after a task that ran commands, propose up to 3 durable notes for QWEN.md (you approve the diff)</label>
       <label class="check"><input type="checkbox" id="s-subagents" /> Subagents: the agent can hand subtasks to fresh agents (only their summaries come back) — at the same time on your other machines with Ollama on 2+ nodes, and on the ⚡ node or planner for "strong" work such as reviewing a spec (paid planner runs ask first unless consult freely is on)</label>
+      <label class="check"><input type="checkbox" id="s-testBeforeDone" /> Test before done: when the agent is about to finish but has not run code it changed, it is asked to test it first (test_app for a page or game, a run on an example for a script or module)</label>
       <label class="check"><input type="checkbox" id="s-readBeforeWrite" /> Read before overwrite: the agent may only rewrite a whole existing file after reading all of it in this task, and not if it changed since (edits are not affected)</label>
       <label class="check"><input type="checkbox" id="s-syntaxCheck" /> Syntax-check every write (JSON, JavaScript, a page's inline scripts, Python): an error the change introduced is reported at once, so the model fixes it next</label>
       <label class="check"><input type="checkbox" id="s-redactSecrets" /> Hide secrets from cloud models: API keys, tokens and passwords in files and command output are replaced by placeholders before anything goes to the planner or another cloud model (this PC's models see everything; files keep the real values)</label>
@@ -541,6 +542,7 @@
   <script src="loopguard.js"></script>
   <script src="skillscan.js"></script>
   <script src="folderhints.js"></script>
+  <script src="testgate.js"></script>
   <script src="cloudladder.js"></script>
   <script src="escalation.js"></script>
   <script src="costs.js"></script>
