@@ -96,6 +96,7 @@ try {
     document.querySelector('#s-contextLength').value = '32768';
     document.querySelector('#s-agentMode').checked = true;
     document.querySelector('#s-planFirst').checked = true;
+    document.querySelector('#s-planWith').value = 'node'; // not left over from another test
     document.querySelector('#s-approvalMode').value = 'auto';
     document.querySelector('#s-heavy-enabled').checked = false;
     document.querySelector('#s-reviewPass').checked = false;

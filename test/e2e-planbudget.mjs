@@ -85,6 +85,7 @@ const win = await app.firstWindow();
 const errors = [];
 win.on('pageerror', (e) => errors.push(String(e)));
 win.on('dialog', (d) => d.accept().catch(() => {}));
+let saved = null;
 const toolResults = (b) => (b?.messages || []).filter((m) => m.role === 'tool').map((m) => String(m.content));
 
 try {
@@ -104,6 +105,7 @@ try {
     settingsNodes = settingsNodes.filter((n) => n.id === 'this-pc').map((n) => ({ ...n, enabled: true, highPerf: false }));
     return document.querySelector('#s-save').onclick();
   }, base);
+  saved = await win.evaluate(() => ({ heavy: state.settings.heavy, planFirst: state.settings.planFirst, planWith: state.settings.planWith, consultFreely: state.settings.consultFreely, maxResponseTokens: state.settings.maxResponseTokens }));
   await win.evaluate(async (b) => {
     state.settings = await api.setSettings({ heavy: { enabled: true, provider: 'openai', baseUrl: b, apiKey: 'k', model: 'planner-mock' }, planFirst: true, planWith: 'planner', consultFreely: false, maxResponseTokens: 4096 });
   }, base);
@@ -152,7 +154,8 @@ try {
   if (process.env.DEBUG_E2E) console.log(JSON.stringify(await win.evaluate(() => ({ notes: state.conv.display.filter((d) => d.t === 'notice' || d.t === 'error').map((d) => d.text), last: state.conv.history.slice(-3) })).catch((x) => String(x))).slice(0, 3000), planBodies.map((p) => p.phase), execBodies.map((p) => p.phase));
 } finally {
   if (errors.length) fail(`renderer errors: ${errors.join(' || ').slice(0, 500)}`);
-  await win.evaluate(async () => { state.settings = await api.setSettings({ heavy: { enabled: false, provider: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKey: '', model: 'gemini-2.5-flash' }, planFirst: false, skillWriter: true, lessonsEnabled: true }); }).catch(() => {});
+  // Put back every setting this test changed: later tests share this settings file.
+  await win.evaluate(async (old) => { state.settings = await api.setSettings({ ...(old || {}), skillWriter: true, lessonsEnabled: true }); }, saved).catch(() => {});
   const watchdog = setTimeout(() => {
     console.error('app.close() hung; forcing exit with the recorded result');
     process.exit(process.exitCode || 0);
