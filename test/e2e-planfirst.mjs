@@ -110,6 +110,7 @@ try {
     document.querySelector('#s-model').value = 'local-mock';
     document.querySelector('#s-agentMode').checked = true;
     document.querySelector('#s-planFirst').checked = true;
+    document.querySelector('#s-planWith').value = 'node'; // not left over from another test
     document.querySelector('#s-approvalMode').value = 'auto';
     if (document.querySelector('#s-lessonsEnabled')) document.querySelector('#s-lessonsEnabled').checked = false;
     settingsNodes = settingsNodes.filter((n) => n.id === 'this-pc').map((n) => ({ ...n, enabled: true, highPerf: false }));

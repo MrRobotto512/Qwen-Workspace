@@ -31,3 +31,21 @@ test('glitchIdentifiers flags other scripts inside code, only in code files and 
   assert.match(E.glitchWarning(['high身']), /`high身`.*generation glitch/);
   assert.equal(E.glitchWarning([]), '');
 });
+
+test('blindEdit: the same text with different spacing and line breaks, matched once', () => {
+  const E = require('../src/renderer/editmatch.js');
+  // The field report: a one-line HTML file, edited with a pretty-printed old_text.
+  const file = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Runner</title><style>body{margin:0}canvas{display:block}</style></head><body></body></html>';
+  const old = '<!DOCTYPE html>\n<html>\n<head>\n  <meta charset="UTF-8">\n  <title>Runner</title>\n  <style>\n    body{margin:0}canvas{display:block}\n  </style>\n</head>\n<body>\n  \n</body>\n</html>';
+  const r = E.blindEdit(file, old, '<!DOCTYPE html>\n<html><body><script src="game.js"></script></body></html>');
+  assert.equal(r.modified, '<!DOCTYPE html>\n<html><body><script src="game.js"></script></body></html>');
+  assert.match(r.note, /ignoring all spaces and line breaks/);
+  // Only the matched span changes.
+  assert.equal(E.blindEdit('a();\nfunction  goFaster ( ) { return 1 }\nb();', 'function goFaster() {\n  return 1\n}', 'function goFaster() { return 2 }').modified, 'a();\nfunction goFaster() { return 2 }\nb();');
+  // Twice in the file, too short, or absent: not applied.
+  assert.equal(E.blindEdit('let counter = 1;\nlet counter = 1;\nlet total = 2;', 'let counter =\n 1; let total = 2;', 'z').modified, 'let counter = 1;\nz');
+  assert.equal(E.blindEdit('let alpha = 1; let alpha = 1;', 'let alpha = 1;', 'z').count, 0, 'under the minimum length');
+  assert.deepEqual(E.blindEdit('one two three four five six seven', 'nine ten eleven twelve thirteen', 'z'), { count: 0 });
+  assert.equal(E.blindEdit('const longName = 1; const longName = 1;', 'const longName=1;const longName=1;', 'z').modified, 'z');
+  assert.equal(E.blindEdit('const longName = 1;\nconst longName = 1;\nconst longName = 1;', 'const longName=1;const longName=1;', 'z').count, 2);
+});

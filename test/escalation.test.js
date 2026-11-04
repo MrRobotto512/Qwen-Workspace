@@ -171,3 +171,11 @@ test('every step needs details: how to do it, not a heading', () => {
   assert.match(E.PLAN_FIRST_REMINDER, /explain in detail how you would complete the request/);
   assert.match(E.PLAN_FIRST_REMINDER, /give EVERY todo a `details` field/);
 });
+
+test('namedFiles: the files the user named, not libraries or URLs', () => {
+  const E = require('../src/renderer/escalation.js');
+  const ask = 'make subwaysurfer.html\nBuild a playable 3D endless runner game in the browser using HTML, CSS, JavaScript, and Three.js. Load it from https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.module.js and keep scores in src/Score.ts';
+  assert.deepStrictEqual(E.namedFiles([ask]), ['subwaysurfer.html', 'src/Score.ts']);
+  assert.deepStrictEqual(E.namedFiles(['fix it', 'continue']), []);
+  assert.deepStrictEqual(E.namedFiles(['edit main.py', 'and MAIN.PY again']), ['main.py']);
+});
