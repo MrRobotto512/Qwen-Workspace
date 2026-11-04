@@ -58,6 +58,23 @@ function planFiles(todos) {
   return [...out];
 }
 
+// The files the user named in their own words ("make subwaysurfer.html"), in their spelling,
+// so the plan and the work use exactly those names (a field report's 8B model built index.html
+// and script.js instead). Library names ("Three.js") and URLs are not files to create.
+const LIBRARY_NAMES = /^(three|node|vue|next|nuxt|react|express|chart|d3|p5|babylon|pixi|socket\.io|anime|matter|cannon|tone|howler|phaser|alpine|jquery|moment|lodash)\.js$/i;
+function namedFiles(texts) {
+  const out = [];
+  for (const t of [].concat(texts || [])) {
+    FILE_EXT.lastIndex = 0;
+    for (const m of String(t || '').matchAll(FILE_EXT)) {
+      const f = m[1].replace(/^\.?[\\/]+/, '');
+      if (!f || /\/\/|^https?/i.test(f) || LIBRARY_NAMES.test(f.split(/[\\/]/).pop()) || /^\d/.test(f)) continue;
+      if (!out.some((x) => x.toLowerCase() === f.toLowerCase())) out.push(f);
+    }
+  }
+  return out.slice(0, 8);
+}
+
 // Plan-first mode: the instruction the high-performance node gets for the one planning turn
 // that opens a task. It must produce a plan a smaller model can follow mechanically — files
 // and commands by name, simplest stack, recorded as todos — and must not start executing.
@@ -139,6 +156,6 @@ function planMissingReminder() {
   return 'You did not write a plan. Do not execute any step yourself. Reply now with ONE todo_write call holding the complete todo list (3-8 steps); every step must contain an exact file path (with extension) or an exact command.';
 }
 
-const EscalationExports = { commandRuns, commandFailStreak, planFiles, PLAN_FIRST_REMINDER, planningTools, isPlanningTool, PLAN_ONLY_REFUSAL, MIN_DETAILS, planProblems, vaguePlanSteps, planRetryReminder, planMissingReminder };
+const EscalationExports = { namedFiles, commandRuns, commandFailStreak, planFiles, PLAN_FIRST_REMINDER, planningTools, isPlanningTool, PLAN_ONLY_REFUSAL, MIN_DETAILS, planProblems, vaguePlanSteps, planRetryReminder, planMissingReminder };
 if (typeof module !== 'undefined' && module.exports) module.exports = EscalationExports;
 if (typeof window !== 'undefined') window.Escalation = EscalationExports;

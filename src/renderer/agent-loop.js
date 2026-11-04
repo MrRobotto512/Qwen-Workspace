@@ -105,8 +105,19 @@ function planText(todos) {
   return todos.map((t) => `${todoLines([t])}${t.details ? `\n${t.details.split('\n').map((l) => `    ${l}`).join('\n')}` : ''}`).join('\n');
 }
 
+// The reply budget for a planning turn and for a retry after a reply that was cut off: the
+// detailed plan (an explanation plus every step's details) does not fit in 4,096 tokens.
+const PLAN_REPLY_TOKENS = 16000;
+
+// The files the user named in this conversation, in their own words.
+function userNamedFiles(c) {
+  return Escalation.namedFiles(Honesty.userWords(c.history, { max: 6, clip: 4000 }));
+}
+
 function turnReminder(c) {
   const lines = [];
+  const named = userNamedFiles(c);
+  if (named.length) lines.push(`Files the user named: ${named.join(', ')} — create and edit exactly these names; do not put the work in other files instead.`);
   if (c.todos?.length) {
     lines.push(`Plan (update it with todo_write as you go):\n${todoLines(c.todos)}`);
     // The planner's detailed instructions for the step being worked on, and its overview, come
@@ -530,7 +541,15 @@ async function executeTool(c, call, row) {
             return out;
           }
           if (loose.count > 1) return { result: `Error: old_text was not found exactly in ${p}, and ignoring indentation it matches ${loose.count} places. Read the file again and include more surrounding lines.` };
-          return { result: `Error: old_text was not found in ${p}. Read the file again and copy the exact text, including whitespace.` };
+          // Last resort: the same text with different spacing and line breaks (a one-line file
+          // edited as if it were pretty-printed), when it matches exactly one place.
+          const blind = EditMatch.blindEdit(original, oldText, newText);
+          if (blind.modified) {
+            const out = withGlitchWarning(p, original, blind.modified, await applyAgentEdit(c, row, p, original, blind.modified, `Edit ${p}`));
+            if (!out.rejected && !/^Error/.test(out.result)) out.result += ` (${blind.note}.)`;
+            return out;
+          }
+          return { result: editMissMessage(c, p, original, oldText), failed: true };
         }
         if (count > 1) return { result: `Error: old_text matches ${count} places in ${p}. Include more surrounding lines so it is unique.` };
         const modified = original.replace(oldText, () => newText);
@@ -2152,6 +2171,8 @@ async function runConversation(c) {
   const deadNodes = new Set(); // Ollama nodes given up on for the rest of this task
   let lastNodeId = c.pinNodeId || null; // which node the previous step ran on (a subagent starts on its assigned one)
   let capBlocked = false; // the user declined to pass the monthly budget; stay local this task
+  let lengthRetries = 0; // replies cut off at the length limit before they said anything
+  let bigBudgetNext = false; // the next cloud request gets PLAN_REPLY_TOKENS to answer in
   let runnerCrashes = 0; // Ollama model-runner crashes this task (CUDA errors, a runner that died)
   let rateWaits = 0; // per-minute rate-limit waits this task (OpenRouter free models, Groq free tier)
   let toolUseRetries = 0; // tool calls a provider refused as malformed (Groq's tool_use_failed)
@@ -2328,7 +2349,8 @@ async function runConversation(c) {
         planTurn = true;
         override = target.override;
         if (!retry) {
-          c.history.push({ role: 'user', content: `<system-reminder>\n${Escalation.PLAN_FIRST_REMINDER}\n</system-reminder>` });
+          const named = userNamedFiles(c);
+          c.history.push({ role: 'user', content: `<system-reminder>\n${Escalation.PLAN_FIRST_REMINDER}${named.length ? `\n- The user named ${named.join(', ')}: the plan uses exactly these file names.` : ''}\n</system-reminder>` });
           note(`Planning on ${target.label}.`);
         }
         DebugLog.add(c, 'escalate', { reason: retry ? 'plan-first: vague plan sent back for a rewrite' : `plan-first: ${target.who} writes the plan`, interventions, takeover: false });
@@ -2406,6 +2428,12 @@ async function runConversation(c) {
         }
       }
     }
+    // A planning turn, or a retry after a reply cut off at the limit, gets room to answer.
+    const stepProv = override?.provider || state.settings.provider;
+    if ((planTurn || bigBudgetNext) && !['ollama', 'lmstudio'].includes(stepProv)) {
+      override = { ...(override || {}), maxResponseTokens: Math.max(PLAN_REPLY_TOKENS, Number(state.settings.maxResponseTokens) || 0) };
+    }
+    bigBudgetNext = false;
     const view = addAssistantMessage(c, null, override?.model || null);
     c.display[c.display.length - 1].hAt = c.history.length; // where this turn starts, for Escalate
     const id = `r${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
@@ -2734,6 +2762,22 @@ async function runConversation(c) {
         return { ...tc, function: { ...tc.function, name: fixed } };
       });
     }
+    // Cut off at the length limit before it said anything (a field report: a planner's whole
+    // 4,096-token reply went to a plan it never finished, and the small model was then told
+    // "the plan above is approved"). Retry with room; a planning turn is asked to be briefer.
+    if (res.finishReason === 'length' && !stripThink(content).trim() && !calls.length && lengthRetries < 2) {
+      lengthRetries++;
+      view.finish(false);
+      dropEmptyTurn();
+      const limitWas = res.usage?.completionTokens || Number(override?.maxResponseTokens || state.settings.maxResponseTokens) || 0;
+      note(`${override?.model || state.settings.model}'s reply was cut off at the length limit${limitWas ? ` (${limitWas} tokens)` : ''} before it finished — retrying with room for ${PLAN_REPLY_TOKENS.toLocaleString()} tokens.`);
+      bigBudgetNext = true;
+      if (planTurn) {
+        planAgain = true;
+        c.history.push({ role: 'user', content: '<system-reminder>\nYour previous reply was cut off before it finished. Keep the explanation under about 500 words and each step\'s details to 3-6 lines, and make sure the todo_write call is complete.\n</system-reminder>' });
+      }
+      continue;
+    }
     view.finish(calls.length > 0);
 
     const msg = { role: 'assistant', content: stripThink(content) };
@@ -2746,6 +2790,23 @@ async function runConversation(c) {
       // A prose-only plan from the planning turn is not a final answer: the plan text is in
       // history, so hand the task to the everyday model instead of ending it.
       if (planTurn) {
+        const said = String(msg.content || '').trim();
+        // Nothing usable came back: never call it an approved plan.
+        if (said.length < 200) {
+          if (!said) c.history.pop(); // an empty assistant turn is not history
+          c.planTries = (c.planTries || 0) + 1;
+          if (c.planTries < 3) {
+            planAgain = true;
+            planOnPlanner = c.planTries === 2 && !!heavyOverride();
+            c.history.push({ role: 'user', content: `<system-reminder>\n${Escalation.planMissingReminder()}\n</system-reminder>` });
+            note('The planner sent back no plan — asking again.');
+          } else {
+            note('No plan came back after three tries — Qwen plans and works on its own.');
+            c.history.push({ role: 'user', content: '<system-reminder>\nNo plan was written. You are the everyday model: make a short plan yourself with todo_write (one checked piece per step, using the file names the user gave), then carry it out.\n</system-reminder>' });
+          }
+          continue;
+        }
+        c.planOverview = said.slice(0, 4000);
         c.history.push({ role: 'user', content: '<system-reminder>\nThe plan above is approved. You are the everyday model now: record it with todo_write, then execute it step by step with real tool calls.\n</system-reminder>' });
         continue;
       }
@@ -2920,6 +2981,24 @@ async function runConversation(c) {
   }
   addStopNotice(c);
   return true; // unfinished: show the task as failed, not done
+}
+
+// The answer to an edit whose old_text is not in the file. The same failed edit again is
+// refused outright (a field report: ten identical tries on a one-line HTML file, and the stop
+// rule never saw them); a small file comes back whole so the model can copy from it, with
+// write_file suggested for a file that small.
+function editMissMessage(c, p, original, oldText) {
+  c.editMisses = c.editMisses || new Map();
+  const key = `${p}\u0000${String(oldText).replace(/\s+/g, ' ').trim()}`;
+  const n = (c.editMisses.get(key) || 0) + 1;
+  c.editMisses.set(key, n);
+  const lines = original.split(/\r?\n/);
+  const small = lines.length <= 60 && original.length <= 6000;
+  const text = small ? `\nThe file as it is now (${lines.length} line${lines.length === 1 ? '' : 's'}):\n${original}` : '';
+  const rewrite = small ? ` ${p} is small: rewrite it whole with write_file instead of editing it.` : ` Read the part you want to change with read_file (start_line/end_line) and copy old_text from it character for character.`;
+  if (n >= 3) return `Error: refused — this exact edit of ${p} has failed ${n - 1} times already and will not match. Do not send it again.${rewrite}${text}`;
+  if (n === 2) return `Error: old_text was not found in ${p} — the same edit failed before. Copy old_text exactly from the file below (spaces and line breaks included), or change approach.${rewrite}${text}`;
+  return `Error: old_text was not found in ${p}. Read the file again and copy the exact text, including whitespace.${small ? ` Here is the file:${text.slice(text.indexOf('\n'))}` : ''}`;
 }
 
 // 'print' for a command that only prints text, 'plan' for a todo_write that changes nothing,

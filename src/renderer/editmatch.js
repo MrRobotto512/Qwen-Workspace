@@ -39,6 +39,31 @@ function looseEdit(original, oldText, newText) {
   return { modified: out.join(eol), note: 'old_text matched once after ignoring indentation; new_text was re-indented to match the file' };
 }
 
+// The last resort, from a field report where qwen3:8b sent a nicely indented multi-line
+// old_text ten times for an HTML file that was one minified line: match with ALL whitespace
+// ignored (spaces, tabs, line breaks). Applied only when the stripped old_text is long enough to
+// mean something and occurs exactly once; the span from its first to its last character in the
+// file is replaced by new_text as written. { modified, note } or { count }.
+const MIN_BLIND = 24;
+function blindEdit(original, oldText, newText) {
+  const want = String(oldText).replace(/\s+/g, '');
+  if (want.length < MIN_BLIND) return { count: 0 };
+  const chars = [];
+  const at = [];
+  for (let i = 0; i < original.length; i++) {
+    if (/\s/.test(original[i])) continue;
+    chars.push(original[i]);
+    at.push(i);
+  }
+  const flat = chars.join('');
+  const first = flat.indexOf(want);
+  if (first < 0) return { count: 0 };
+  if (flat.indexOf(want, first + 1) >= 0) return { count: 2 };
+  const start = at[first];
+  const end = at[first + want.length - 1] + 1;
+  return { modified: original.slice(0, start) + String(newText) + original.slice(end), note: 'old_text matched once after ignoring all spaces and line breaks; that span was replaced with new_text' };
+}
+
 // Code files only: these are where a stray script inside an identifier breaks the program.
 const CODE_FILE = /\.(m?[jt]sx?|cjs|py|pyw|css|scss|less|html?|vue|svelte|java|kt|cs|c|cc|cpp|h|hpp|go|rs|rb|php|swift|lua|sh|ps1|json|ya?ml|toml|gd)$/i;
 const OTHER_SCRIPT = '\\u3040-\\u30ff\\u3400-\\u9fff\\uac00-\\ud7af\\u0400-\\u04ff';
@@ -66,6 +91,6 @@ function glitchWarning(list) {
   return `\nWarning: this write put characters from another language inside code: ${list.map((x) => `\`${x}\``).join(', ')}. That is a generation glitch, not valid code — fix each one now with edit_file (e.g. \`MeshStandard材料\` → \`MeshStandardMaterial\`).`;
 }
 
-const EditMatchExports = { looseEdit, glitchIdentifiers, glitchWarning };
+const EditMatchExports = { looseEdit, blindEdit, glitchIdentifiers, glitchWarning };
 if (typeof module !== 'undefined' && module.exports) module.exports = EditMatchExports;
 if (typeof window !== 'undefined') window.EditMatch = EditMatchExports;
