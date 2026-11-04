@@ -268,3 +268,15 @@ test('a crashed model runner is told apart, with advice', () => {
   assert.match(N.crashAdvice(cuda, 'qwen3-coder:30b'), /update the server .* GPU driver/);
   assert.match(N.crashAdvice('CUDA error: out of memory', 'm'), /ran out of memory/);
 });
+
+test('a damaged model file is told apart from a crash and from running out of memory', () => {
+  for (const m of [
+    "llama runner process has terminated: error loading model: tensor 'blk.0.attn_q.weight' data is not within the file bounds, model is corrupted or incomplete",
+    'llama runner process has terminated: error loading model: done_getting_tensors: wrong number of tensors; expected 399, got 398',
+    'gguf_init_from_file_impl: failed to read magic',
+    'HTTP 500: {"error":"unable to load model: C:\\\\Users\\\\r\\\\.ollama\\\\models\\\\blobs\\\\sha256-abc"}'
+  ]) assert.ok(N.isModelDamaged(m), m);
+  for (const m of ['CUDA error: an illegal memory access was encountered', 'llama runner process has terminated: error loading model: unable to allocate CUDA0 buffer', 'model requires more system memory (12 GiB) than is available', 'HTTP 404: model "x" not found, try pulling it first']) assert.ok(!N.isModelDamaged(m), m);
+  assert.match(N.damagedAdvice('qwen3:8b', 'This PC'), /"ollama rm qwen3:8b" and then "ollama pull qwen3:8b"/);
+  assert.match(N.damagedAdvice('qwen3', 'Hero', 'lmstudio'), /In LM Studio, delete the model/);
+});

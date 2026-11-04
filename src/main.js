@@ -647,7 +647,9 @@ ipcMain.handle('syntax:check', async (_e, rel, before) => {
       fs.rm(tmp, { force: true }, () => {});
     } else then = await syntaxErrorsOf(kind, before, rel);
   }
-  return { checked: true, errors: SyntaxCheck.newErrors(then, now), all: now };
+  // `before` broken too: the remaining errors are not this change's doing (fixing a broken file
+  // one error at a time shows the next error, worded differently).
+  return { checked: true, errors: then.length ? [] : SyntaxCheck.newErrors(then, now), all: now, brokenBefore: then.length > 0 };
 });
 
 // ---------- long command output saved for the model (src/renderer/toolbudget.js) ----------

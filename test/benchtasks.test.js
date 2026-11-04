@@ -52,3 +52,12 @@ test('summary and comparison with the last run', () => {
   assert.deepEqual(B.compare(now, { results: [{ id: 'a', passed: false }, { id: 'b', passed: true }] }), ['fixed', 'broke', '']);
   assert.deepEqual(B.compare(now, null), ['', '', '']);
 });
+
+test('a failed check shows the error, not the stack trace under it', () => {
+  const crash = "wc.js crashed:\nC:\\Users\\r\\bench\\wc.js:3\nconsole.log(t.lenght.toString());\n                  ^\n\nTypeError: Cannot read properties of undefined (reading 'toString')\n    at Object.<anonymous> (C:\\Users\\r\\bench\\wc.js:3:19)\n    at Module._compile (node:internal/modules/cjs/loader:1706:14)\n    at wrapModuleLoad (node:internal/modules/cjs/loader:261:19)\n    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:154:5)\n\nNode.js v22.22.0";
+  assert.strictEqual(B.failureLine(crash), "TypeError: Cannot read properties of undefined (reading 'toString') (wc.js:3)");
+  assert.strictEqual(B.failureLine('expected "3 7 34", got "4 7 34"'), 'expected "3 7 34", got "4 7 34"');
+  assert.match(B.failureLine('node:assert:90\n  throw new AssertionError(obj);\n  ^\n\nAssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n2 !== 2.5\n\n    at Object.<anonymous> (_bench_check.js:6:8)'), /^AssertionError \[ERR_ASSERTION\]: Expected values to be strictly equal:/);
+  assert.match(B.failureLine('Traceback (most recent call last):\n  File "calc.py", line 4, in div\nZeroDivisionError: division by zero'), /^ZeroDivisionError: division by zero \(calc\.py:4\)$/);
+  assert.strictEqual(B.failureLine('something odd\nsecond line'), 'something odd · second line');
+});

@@ -445,11 +445,20 @@ async function cloudChat(c, kind, payload) {
 }
 
 // After a write or edit landed: the syntax check (syntaxcheck.js in main, from Hermes Agent).
-// Only errors this change introduced are reported; one counts as a failed step, so the model
-// fixes it next instead of building on a broken file.
+// An error this change introduced counts as a failed step, so the model fixes it next instead of
+// building on a broken file. A file that was already broken is different (a benchmark run: the
+// "repair broken JSON" task was failed three times over and handed to the planner, because each
+// error fixed revealed the next one, worded differently): what is left is reported as
+// information, and the step is not failed.
 async function afterWrite(c, p, before, out) {
   if (!out || out.rejected || /^Error/.test(String(out.result || '')) || state.settings.syntaxCheck === false) return out;
   const sc = await api.syntaxCheck(p, before ?? null).catch(() => null);
+  if (sc?.brokenBefore && sc.all?.length) {
+    const e = sc.all[0];
+    out.result += `\nSyntax check: ${p} still has a syntax error${e.line ? ` at line ${e.line}` : ''}: ${e.message}${sc.all.length > 1 ? ` (and ${sc.all.length - 1} more)` : ''}. The file was already broken before this change; fix that next.`;
+    DebugLog.add(c, 'notice', { text: `syntax check: ${p} still broken${e.line ? ` at ${e.line}` : ''} (was broken before)` });
+    return out;
+  }
   if (!sc?.errors?.length) return out;
   const e = sc.errors[0];
   const more = sc.errors.length > 1 ? ` (and ${sc.errors.length - 1} more)` : '';
@@ -2726,6 +2735,27 @@ async function runConversation(c) {
       // that has the model, then to a stronger model; only then stop, with what helps.
       const stepProvider = override?.provider || state.settings.provider;
       const runner = stepProvider === 'ollama' ? "Ollama's model runner" : stepProvider === 'lmstudio' ? "LM Studio's model runner" : 'The model server';
+      // The model file itself is broken (a field report: every benchmark request failed within a
+      // second until the model was downloaded again): retrying cannot help. Another node with
+      // the model can; otherwise stop and say how to fix it.
+      if (Nodes.isModelDamaged(res.error)) {
+        const badModel = override?.model || state.settings.model;
+        const where = node ? node.name : escLocal ? escLabel : 'This PC';
+        dropEmptyTurn();
+        DebugLog.add(c, 'notice', { text: `model file damaged on ${where}: ${String(res.error).slice(0, 200)}` });
+        if (node && !escLocal) {
+          deadNodes.add(node.id);
+          const next = Nodes.nextNode(Nodes.normalizeNodes(state.settings), state.nodeHealth.byId, state.settings.model, deadNodes);
+          if (next) {
+            note(`${badModel} could not be loaded on ${node.name} (its model file looks damaged) — moving to ${next.name} for the rest of this task.`);
+            lastNodeId = next.id;
+            continue;
+          }
+        }
+        view.finish(false);
+        addError(c, `${res.error}\n\n${Nodes.damagedAdvice(badModel, where, stepProvider)}`, false);
+        return true;
+      }
       if (Nodes.isRunnerCrash(res.error)) {
         runnerCrashes++;
         const crashedModel = override?.model || state.settings.model;

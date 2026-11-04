@@ -344,6 +344,21 @@ function probeVerdict(promptText, toolMessage) {
 const RUNNER_CRASH = /CUDA error|illegal memory access|cudaMalloc|CUBLAS_STATUS|ROCm error|hipError|llama runner (process )?(has )?terminated|model runner has unexpectedly stopped|runner process (has )?(terminated|no longer running)|GGML_ASSERT|ggml_metal|exit status 0x?c0000409|signal: (killed|segmentation fault|aborted)/i;
 const OUT_OF_MEMORY = /out of memory|cudaMalloc failed|failed to allocate|insufficient memory|requires more system memory/i;
 
+// The model file on disk is damaged or incomplete (an interrupted download, a disk error):
+// llama.cpp cannot read it, so every request fails at once and a reload changes nothing.
+const MODEL_DAMAGED = /error loading model|unable to load model|failed to load model|model is corrupted|corrupted or incomplete|not within the file bounds|wrong number of tensors|failed to read (?:magic|header|tensor|key)|invalid (?:gguf )?magic|gguf_init_from_file\w*: (?:failed|invalid)|unexpected end of file|digest mismatch|missing tensor|tensor '[^']*' has wrong shape/i;
+function isModelDamaged(msg) {
+  const t = String(msg || '');
+  // "error loading model: unable to allocate CUDA buffer" is memory, not a damaged file.
+  return MODEL_DAMAGED.test(t) && !OUT_OF_MEMORY.test(t) && !/CUDA|cudaMalloc|allocate|VRAM|ROCm|Metal/i.test(t);
+}
+
+// What helps: download the model again (Ollama), or re-download it in LM Studio.
+function damagedAdvice(model, where = 'This PC', provider = 'ollama') {
+  if (provider === 'lmstudio') return `${model} could not be loaded on ${where}: its model file looks damaged or incomplete. In LM Studio, delete the model under My Models and download it again.`;
+  return `${model} could not be loaded on ${where}: its model file looks damaged or incomplete, so every request fails at once. Download it again on ${where}: in a terminal run "ollama rm ${model}" and then "ollama pull ${model}".`;
+}
+
 function isRunnerCrash(msg) {
   const t = String(msg || '');
   return RUNNER_CRASH.test(t) || OUT_OF_MEMORY.test(t);
@@ -356,6 +371,6 @@ function crashAdvice(msg, model, runner = "Ollama's GPU runner") {
   return `${runner} crashed while running ${model} (${(/CUDA error[^.\n]*|illegal memory access[^.\n]*|GGML_ASSERT[^.\n]*|runner[^.\n]*/i.exec(t) || [t.slice(0, 80)])[0].trim()}). This is usually a model-server or GPU-driver bug that shows up when a model does not fit fully in VRAM: update the server (Ollama, LM Studio) and the GPU driver, lower "Context window" in Settings → Model, or run this model on another node.`;
 }
 
-const NodesExports = { isRunnerCrash, crashAdvice, THIS_PC_ID, REMOTE_KEEP_DEFAULT, nodeId, normalizeNodes, multiNode, sameModel, nodeHasModel, pickNode, nextNode, pickHighPerf, spillInfo, fitContext, kvBytesPerToken, predictFit, isMoE, looseModelKey, looseSame, lmModelFor, ttlSeconds, suggestDraft, nodeOverride, probeVerdict, PROBE_PROMPT, PROBE_TOOL_PROMPT, PROBE_TOOL, isConnectionError, summarize };
+const NodesExports = { isModelDamaged, damagedAdvice, isRunnerCrash, crashAdvice, THIS_PC_ID, REMOTE_KEEP_DEFAULT, nodeId, normalizeNodes, multiNode, sameModel, nodeHasModel, pickNode, nextNode, pickHighPerf, spillInfo, fitContext, kvBytesPerToken, predictFit, isMoE, looseModelKey, looseSame, lmModelFor, ttlSeconds, suggestDraft, nodeOverride, probeVerdict, PROBE_PROMPT, PROBE_TOOL_PROMPT, PROBE_TOOL, isConnectionError, summarize };
 if (typeof module !== 'undefined' && module.exports) module.exports = NodesExports;
 if (typeof window !== 'undefined') window.Nodes = NodesExports;
