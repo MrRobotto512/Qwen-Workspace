@@ -67,6 +67,7 @@ jobs:
       - run: xvfb-run -a npm run test:e2e:pagetest
       - run: xvfb-run -a npm run test:e2e:hermes
       - run: xvfb-run -a npm run test:e2e:hermes2
+      - run: xvfb-run -a npm run test:e2e:modelfix
       - run: xvfb-run -a npm run test:e2e:steer
       - run: xvfb-run -a npm run test:e2e:goal
       - run: xvfb-run -a npm run test:e2e:hardening

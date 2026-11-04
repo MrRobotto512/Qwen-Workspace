@@ -17,7 +17,7 @@ async function benchCheck(check, platform) {
   if (check.type === 'command') {
     const cmd = typeof check.command === 'function' ? check.command(platform) : check.command;
     const r = await api.runCommand(cmd, 60_000);
-    return { name: cmd, passed: r.code === 0, detail: r.code === 0 ? 'exit 0' : `exit ${r.code}: ${String(r.output || '').trim().slice(-300)}` };
+    return { name: cmd, passed: r.code === 0, detail: r.code === 0 ? 'exit 0' : `exit ${r.code}: ${BenchTasks.failureLine(r.output)}` };
   }
   if (check.type === 'page') {
     const r = await api.guiTestPage({ file: check.file, probe: check.probe, selfTest: !!check.selfTest, waitSeconds: 2 });
@@ -94,10 +94,15 @@ async function benchRunTask(task, runId) {
     }
   }
   const log = c.log || [];
+  // A task that stopped on an error (a model that would not load, a server that went away)
+  // says so, so the table does not read like the model tried and failed.
+  const lastError = [...log].reverse().find((e) => e.kind === 'error')?.text || '';
+  const endedEarly = failed && !c.timedOut && !bench.stop && lastError ? String(lastError).split('\n')[0].slice(0, 200) : '';
   return {
     id: task.id,
     title: task.title,
     passed: !!checks.length && checks.every((x) => x.passed),
+    endedEarly,
     checks,
     minutes: Math.round(((Date.now() - t0) / 60_000) * 10) / 10,
     timedOut: !!c.timedOut,
@@ -167,7 +172,7 @@ function renderBenchmark() {
       el('tr', {}, ...['Task', 'Result', 'Min', 'Requests', 'Hand-offs', 'Cloud', ''].map((h) => el('th', { text: h }))),
       ...rows.map((r, i) => el('tr', { class: r.skipped ? 'skipped' : r.passed ? 'pass' : 'fail', title: (r.checks || []).map((x) => `${x.name}: ${x.detail}`).join('\n') || r.detail || '' },
         el('td', { text: r.title }),
-        el('td', { text: r.skipped ? `skipped — ${r.detail}` : r.passed ? 'pass' : `fail${r.timedOut ? ' (time limit)' : ''}: ${(r.checks || []).filter((x) => !x.passed).map((x) => x.detail).join('; ').slice(0, 140) || r.detail || ''}` }),
+        el('td', { text: r.skipped ? `skipped — ${r.detail}` : r.passed ? 'pass' : `fail${r.timedOut ? ' (time limit)' : ''}: ${r.endedEarly ? `ended early — ${r.endedEarly}` : (r.checks || []).filter((x) => !x.passed).map((x) => x.detail).join('; ').slice(0, 140) || r.detail || ''}` }),
         el('td', { text: r.skipped ? '' : String(r.minutes ?? '') }),
         el('td', { text: r.skipped ? '' : String(r.requests ?? '') }),
         el('td', { text: r.skipped ? '' : String(r.handoffs ?? '') }),

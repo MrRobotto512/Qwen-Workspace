@@ -78,7 +78,7 @@ const TASKS = [
     prompt: 'Create wc.js, run as `node wc.js <file>`: it prints the number of lines, words and characters in the file, separated by single spaces (for example "2 5 31"). Lines are the lines of text, words are runs of non-whitespace, characters are all characters including line breaks.',
     hidden: {
       'sample.txt': 'one two\nthree four five\nsix seven\n',
-      '_bench_wc.js': "const out = require('child_process').execFileSync(process.execPath, ['wc.js', 'sample.txt'], { encoding: 'utf8' }).trim();\nif (out !== '3 7 34') { console.error('expected \"3 7 34\", got ' + JSON.stringify(out)); process.exit(1); }\nconsole.log('ok');\n"
+      '_bench_wc.js': "let out;\ntry {\n  out = require('child_process').execFileSync(process.execPath, ['wc.js', 'sample.txt'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();\n} catch (e) {\n  console.error('wc.js crashed:\\n' + String(e.stderr || e.message));\n  process.exit(1);\n}\nif (out !== '3 7 34') { console.error('expected \"3 7 34\", got ' + JSON.stringify(out)); process.exit(1); }\nconsole.log('ok');\n"
     },
     checks: [{ type: 'command', command: 'node _bench_wc.js' }]
   },
@@ -90,6 +90,24 @@ const TASKS = [
     checks: [{ type: 'page', file: 'runner.html', selfTest: true, notBlank: true }]
   }
 ];
+
+// The line of a failed check's output that says what went wrong: the error itself (a crash
+// prints it above ten lines of Node's own stack trace, which the table showed instead — a field
+// report's "at wrapModuleLoad (node:internal/modules/cjs/loader…)"), an assertion, or the
+// check's own "expected … got …"; else the last lines.
+function failureLine(output, max = 300) {
+  const lines = String(output || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const useful = lines.filter((l) => !/^at\s|^node:internal|^Node\.js v\d|^\^+$|^throw err;?$|^Command failed:/.test(l));
+  const err = useful.find((l) => /^(?:[A-Z]\w*)?(?:Error|Exception)\b|^expected\b|^AssertionError|^FAIL|^E\s{2,}/.test(l)) || useful.find((l) => /\bError:/.test(l));
+  if (err) {
+    // A crash's location ("wc.js:3") sits a few lines above its message.
+    const i = useful.indexOf(err);
+    const where = useful.slice(Math.max(0, i - 3), i).reverse().find((l) => /^\S+\.(?:m?js|cjs|py):\d+$/.test(l) || /^File ".+", line \d+/.test(l));
+    const file = where ? (/([^\\/]+\.(?:m?js|cjs|py)):(\d+)$/.exec(where) || /File ".*?([^\\/"]+)", line (\d+)/.exec(where)) : null;
+    return `${err}${file ? ` (${file[1]}:${file[2]})` : ''}`.slice(0, max);
+  }
+  return useful.slice(-3).join(' · ').slice(-max);
+}
 
 function tasksFor(set) {
   return set === 'quick' ? TASKS.filter((t) => t.quick) : TASKS.slice();
@@ -116,7 +134,7 @@ function compare(results, previous) {
   });
 }
 
-const BenchTasksExports = { TASKS, tasksFor, summary, compare };
+const BenchTasksExports = { TASKS, tasksFor, summary, compare, failureLine };
 if (typeof module !== 'undefined' && module.exports) module.exports = BenchTasksExports;
 if (typeof window !== 'undefined') window.BenchTasks = BenchTasksExports;
 })();
