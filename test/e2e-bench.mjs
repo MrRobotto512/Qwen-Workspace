@@ -64,8 +64,21 @@ const errors = [];
 win.on('pageerror', (e) => errors.push(String(e)));
 win.on('dialog', (d) => d.accept().catch(() => {}));
 const runOnce = async () => {
-  await win.evaluate(() => { openSettings(); document.querySelector('#bench-set').value = 'quick'; document.querySelector('#bench-run-btn').click(); });
-  await win.waitForFunction(() => bench.running, null, { timeout: 10_000 }).catch(() => {});
+  const before = await win.evaluate(() => (window.__benchStarts = 0));
+  void before;
+  // Count starts, so a finished earlier run's results are never read as this run's.
+  await win.evaluate(() => {
+    if (!window.__benchWrapped) {
+      window.__benchWrapped = true;
+      const orig = renderBenchmark;
+      renderBenchmark = (...a) => { if (bench.running && bench.results.length === 0) window.__benchStarted = true; return orig(...a); };
+    }
+    window.__benchStarted = false;
+    openSettings();
+    document.querySelector('#bench-set').value = 'quick';
+    setTimeout(() => document.querySelector('#bench-run-btn').click(), 0);
+  });
+  await win.waitForFunction(() => window.__benchStarted === true, null, { timeout: 20_000 });
   await win.waitForFunction(() => !bench.running && bench.results.length === 3, null, { timeout: 120_000 });
   return win.evaluate(() => bench.results.map((r) => ({ id: r.id, passed: r.passed, skipped: !!r.skipped, checks: r.checks })));
 };
