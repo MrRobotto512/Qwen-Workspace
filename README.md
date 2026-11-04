@@ -264,6 +264,11 @@ src/
   web.js             Web search and page fetch for the web tools
   hardware.js        GPU / VRAM / RAM / CPU detection
   updater.js         Update checks against GitHub Releases (electron-updater for the installer)
+  apicheck.js        check_api: does a Python or JavaScript name exist in the project's installed packages
+  convsearch.js      Past-conversation search: term scoring, snippets, condensed reads
+  craftsetup.js      One-click Craft Anything setup: pinned CLI download, checksum check, MCP server entry
+  gimpsetup.js       One-click GIMP setup: pinned gimp-mcp download, plugin install, MCP server entry
+  pyshim.js          Windows python3 shim: runs python3/pip3 commands with a Python that works
   renderer/          Classic scripts sharing one global scope, loaded in index.html order
     index.html       Layout and script order
     styles.css       Dark theme
@@ -276,7 +281,22 @@ src/
     remote-ui.js     Remote sessions: host-side run handlers, device list, live viewer
     reviewpass.js    Review pass: diff packaging, findings parsing, fix-handover prompts
     claudecode.js    Claude Code launcher: env/command building, node + model picking
-  convsearch.js      Past-conversation search: term scoring, snippets, condensed reads
+    cloudladder.js   Cloud model ladder: Gemini/Claude families, rest times, quota parsing
+    freecloud.js     Free cloud models: OpenRouter/Groq catalogs, rate-limit messages, attribution
+    goal.js          Goal mode: /goal parsing, judge prompts, verdict parsing
+    failstreak.js    Stop rule: failure streaks per command, root-cause and stop prompts
+    honesty.js       Honest finish: print-only commands, repeated summaries, blind-model notes, compaction rules
+    checks.js        Checks gate: checks.json parsing and detection, run comparison, regressions vs new tests
+    subagents.js     Parallel subagents: task parsing, node assignment, tiers, result formatting
+    skillrun.js      /<skill> invocation: command parsing, skill folder notes, Windows python3 hints
+    skillwriter.js   Self-written skills: task digest, draft parsing, curator plan
+    editmatch.js     Forgiving edits: indentation-insensitive matching, mixed-script glitch check
+    progress.js      Live step progress: token estimates, phase and speed status lines
+    guitest.js       Test built apps: action parsing, window picking, platform input scripts, local page rules
+    selftest.js      Game self-test contract: window.selfTest and --self-test report judging
+    likeness.js      Picture checks without a model: blank detection, SSIM and layout likeness
+    browserctl.js    Browser control rules: tool classes, per-site approvals, untrusted page text
+    diagnose.js      Connection doctor: turns node probe results into a verdict
     escalation.js    Escalation triggers: command fail streaks, big-plan detection
     costs.js         Cloud cost meter: monthly spend record, price table math, budget cap
     approvals.js     Approval rules: dangerous-command detection, command chain splitting

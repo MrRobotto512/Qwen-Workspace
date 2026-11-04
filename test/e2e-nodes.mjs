@@ -57,6 +57,9 @@ function makeNode(name, onChat) {
 
 const ndjson = (res, lines) => {
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+  // A line that is not JSON first (a proxy's keep-alive comment): the app must skip it, as the
+  // OpenAI path always has, instead of failing the whole step on a parse error.
+  res.write(': keep-alive\n');
   for (const l of lines) res.write(JSON.stringify(l) + '\n');
   res.end();
 };
