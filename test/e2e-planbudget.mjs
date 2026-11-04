@@ -105,9 +105,9 @@ try {
     settingsNodes = settingsNodes.filter((n) => n.id === 'this-pc').map((n) => ({ ...n, enabled: true, highPerf: false }));
     return document.querySelector('#s-save').onclick();
   }, base);
-  saved = await win.evaluate(() => ({ heavy: state.settings.heavy, planFirst: state.settings.planFirst, planWith: state.settings.planWith, consultFreely: state.settings.consultFreely, maxResponseTokens: state.settings.maxResponseTokens }));
+  saved = await win.evaluate(() => ({ heavy: state.settings.heavy, architect: state.settings.architect, planFirst: state.settings.planFirst, planWith: state.settings.planWith, consultFreely: state.settings.consultFreely, maxResponseTokens: state.settings.maxResponseTokens }));
   await win.evaluate(async (b) => {
-    state.settings = await api.setSettings({ heavy: { enabled: true, provider: 'openai', baseUrl: b, apiKey: 'k', model: 'planner-mock' }, planFirst: true, planWith: 'planner', consultFreely: false, maxResponseTokens: 4096 });
+    state.settings = await api.setSettings({ heavy: { enabled: true, provider: 'openai', baseUrl: b, apiKey: 'k', model: 'planner-mock' }, planFirst: true, planWith: 'planner', architect: false, consultFreely: false, maxResponseTokens: 4096 });
   }, base);
   await win.evaluate(async (dir) => { await openWorkspace(dir); }, ws);
 

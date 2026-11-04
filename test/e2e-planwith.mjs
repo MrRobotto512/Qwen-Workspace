@@ -75,6 +75,7 @@ const configure = (planWith) => win.evaluate(([l, p, pw]) => {
   document.querySelector('#s-reviewPass').checked = false;
   document.querySelector('#s-lessonsEnabled').checked = false;
   document.querySelector('#s-skillWriter').checked = false;
+  document.querySelector('#s-architect').checked = false; // this test is about who plans
   settingsNodes = settingsNodes.filter((n) => n.id === 'this-pc').map((n) => ({ ...n, enabled: true, highPerf: false }));
   return document.querySelector('#s-save').onclick();
 }, [localBase, plannerBase, planWith]);
@@ -114,7 +115,7 @@ try {
   fail(String(e).split('\n')[0]);
 } finally {
   if (errors.length) fail(`renderer errors: ${errors.join(' || ').slice(0, 500)}`);
-  await win.evaluate(async () => { state.settings = await api.setSettings({ planFirst: false, planWith: 'node', heavy: { enabled: false }, skillWriter: true }); }).catch(() => {});
+  await win.evaluate(async () => { state.settings = await api.setSettings({ planFirst: false, planWith: 'node', architect: true, heavy: { enabled: false }, skillWriter: true }); }).catch(() => {});
   const watchdog = setTimeout(() => {
     console.error('app.close() hung; forcing exit with the recorded result');
     process.exit(process.exitCode || 0);

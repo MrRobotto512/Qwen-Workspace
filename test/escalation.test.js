@@ -179,3 +179,13 @@ test('namedFiles: the files the user named, not libraries or URLs', () => {
   assert.deepStrictEqual(E.namedFiles(['fix it', 'continue']), []);
   assert.deepStrictEqual(E.namedFiles(['edit main.py', 'and MAIN.PY again']), ['main.py']);
 });
+
+test('architect mode: write tools only, a reminder naming the files, a handoff that says test and fix', () => {
+  const E = require('../src/renderer/escalation.js');
+  const all = ['write_file', 'read_file', 'list_files', 'run_command', 'test_app', 'todo_write'].map((n) => ({ function: { name: n } }));
+  assert.deepStrictEqual(E.architectTools(all).map((t) => t.function.name), ['write_file', 'read_file', 'list_files']);
+  assert.equal(E.isArchitectTool('run_command'), false);
+  assert.match(E.architectReminder(['subwaysurfer.html']), /complete, working first version of subwaysurfer\.html/);
+  assert.match(E.architectReminder(['a.html']), /Do not run or test anything/);
+  assert.match(E.architectHandoff(['a.html'], 'claude-opus-5-5'), /Do not rewrite these files: test them with test_app/);
+});

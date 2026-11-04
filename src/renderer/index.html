@@ -297,7 +297,18 @@
         <button id="s-heavy-fetch" type="button">Fetch models</button>
         <div id="s-heavy-result" class="hint"></div>
       </div>
+      <label class="check"><input type="checkbox" id="s-architect" /> Architect: when a planned task builds new files, the planner writes their first complete version (one larger planner call, on the cost meter), and Qwen tests and fixes it — the part small models get wrong</label>
+      <label class="check"><input type="checkbox" id="s-promptCache" /> Prompt caching with Claude: repeated parts of each request (instructions, tools, the conversation so far) are billed at about a tenth</label>
       <label class="check"><input type="checkbox" id="s-consultFreely" /> Let Qwen consult the planner whenever it's unsure (design choices, errors it doesn't understand, failing fixes) instead of only for the hard parts — more cloud cost; your monthly budget still applies</label>
+
+      <div class="section-title">Benchmark</div>
+      <div class="hint">Measure how well this setup really does: QWS runs a set of real tasks (pages, a game, bug fixes, a CLI tool) with your current settings, each in a fresh folder with a time limit, and scores them with checks the agent never sees. Each run is compared with the last, so a change of model or setting shows what it fixed or broke.</div>
+      <div class="row">
+        <select id="bench-set" title="Which tasks"><option value="quick">Quick (3 tasks, ~20 min)</option><option value="all">All 8 tasks (~75 min)</option></select>
+        <button id="bench-run-btn" class="ghost" type="button"><span data-icon="play"></span>Run benchmark</button>
+        <button id="bench-stop-btn" class="ghost hidden" type="button">Stop</button>
+      </div>
+      <div id="bench-results"></div>
 
       <div class="section-title">Remote sessions</div>
       <div class="hint">See and drive this app's conversations from your other PCs (and theirs from here). Pair over your own network — e.g. Tailscale. <b>The pairing code is a password:</b> whoever has it can run this PC's agent with this PC's approval settings.</div>
@@ -516,6 +527,7 @@
   <script src="likeness.js"></script>
   <script src="selftest.js"></script>
   <script src="freecloud.js"></script>
+  <script src="benchtasks.js"></script>
   <script src="checks.js"></script>
   <script src="subagents.js"></script>
   <script src="guitest.js"></script>
@@ -529,6 +541,7 @@
   <script src="history.js"></script>
   <script src="agent-loop.js"></script>
   <script src="automations.js"></script>
+  <script src="bench.js"></script>
   <script src="settings-ui.js"></script>
   <script src="models-ui.js"></script>
   <script src="app.js"></script>

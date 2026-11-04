@@ -55,6 +55,8 @@ jobs:
       - run: xvfb-run -a npm run test:e2e:freecloud
       - run: xvfb-run -a npm run test:e2e:gpucrash
       - run: xvfb-run -a npm run test:e2e:planbudget
+      - run: xvfb-run -a npm run test:e2e:architect
+      - run: xvfb-run -a npm run test:e2e:bench
       - run: xvfb-run -a npm run test:e2e:progress
       - run: xvfb-run -a npm run test:e2e:gpufit
       - run: xvfb-run -a npm run test:e2e:mcpimages

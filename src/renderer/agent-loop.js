@@ -108,6 +108,19 @@ function planText(todos) {
 // The reply budget for a planning turn and for a retry after a reply that was cut off: the
 // detailed plan (an explanation plus every step's details) does not fit in 4,096 tokens.
 const PLAN_REPLY_TOKENS = 16000;
+const ARCHITECT_REPLY_TOKENS = 32000; // a whole first version of a file or two
+
+// Architect mode: the files a from-scratch task will create — the ones the user named or the
+// plan names that do not exist yet (at most three). Empty when the task edits existing files.
+async function architectTargets(c) {
+  const names = Escalation.namedFiles([...Honesty.userWords(c.history, { max: 6, clip: 4000 }), ...(c.todos || []).map((t) => t.content)]).filter((f) => !/[*?<>|]/.test(f)).slice(0, 6);
+  const missing = [];
+  for (const f of names) {
+    const exists = await api.read(normPath(f)).then(() => true, () => false);
+    if (!exists) missing.push(f);
+  }
+  return missing.length && missing.length <= 3 ? missing : [];
+}
 
 // The files the user named in this conversation, in their own words.
 function userNamedFiles(c) {
@@ -310,7 +323,7 @@ async function describeForBlindModel(c, shot) {
       const task = Honesty.userWords(c.history, { max: 1 })[0] || '';
       const payload = { override: who.override, messages: [{ role: 'user', content: Honesty.lookPrompt(task), images: [{ mime: 'image/png', data: shot.png }] }] };
       const res = who.cloud ? await cloudChat(c, 'look', payload) : await api.chatStream(`look${Date.now()}`, payload);
-      if (who.cloud && res.usage) recordSpend(c, res.model || who.override.model, res.usage.promptTokens || 0, res.usage.completionTokens || 0);
+      if (who.cloud && res.usage) recordSpend(c, res.model || who.override.model, (res.usage.billedPromptTokens ?? res.usage.promptTokens) || 0, res.usage.completionTokens || 0);
       const text = res.ok ? stripThink(res.content || '').trim().slice(0, 1200) : '';
       DebugLog.add(c, 'notice', { text: text ? `look: ${who.label} described the screenshot` : `look: ${who.label} failed — ${String(res.error || 'empty answer').slice(0, 160)}` });
       if (text) look = { by: res.model && who.cloud ? res.model : who.label, text };
@@ -650,7 +663,7 @@ async function executeTool(c, call, row) {
           ]
         });
         const answer = res.ok ? stripThink(res.content || '').trim() : '';
-        if (res.usage && !['ollama', 'lmstudio'].includes(override.provider)) recordSpend(c, res.model || override.model, res.usage.promptTokens || 0, res.usage.completionTokens || 0);
+        if (res.usage && !['ollama', 'lmstudio'].includes(override.provider)) recordSpend(c, res.model || override.model, (res.usage.billedPromptTokens ?? res.usage.promptTokens) || 0, res.usage.completionTokens || 0);
         if (!answer) return { result: `The planner model did not answer${res.error ? `: ${res.error}` : '.'}`, failed: true };
         row.setBody(answer);
         return { result: `<planner_advice model="${res.model || override.model}">\n${truncate(answer)}\n</planner_advice>\nUse this advice to continue the work yourself.`, meta: res.model || override.model };
@@ -1060,7 +1073,7 @@ async function maybeCheckGoal(c, failed) {
   const res = await cloudChat(c, 'goal', { override, messages: Goal.judgeMessages(g.text, lastReply, evidence) });
   setActivity(c, '');
   if (override && !['ollama', 'lmstudio'].includes(override.provider) && res.usage?.promptTokens) {
-    recordSpend(c, res.model || override.model, res.usage.promptTokens || 0, res.usage.completionTokens || 0);
+    recordSpend(c, res.model || override.model, (res.usage.billedPromptTokens ?? res.usage.promptTokens) || 0, res.usage.completionTokens || 0);
   }
   const say = (text) => {
     const item = { t: 'notice', text };
@@ -1710,7 +1723,7 @@ async function proposeLessons(c) {
     if (!res.ok) return;
     // A cloud teacher costs money like any other cloud call; the ⚡ node costs nothing.
     if (override && !['ollama', 'lmstudio'].includes(override.provider) && res.usage?.promptTokens) {
-      recordSpend(c, res.model || override.model, res.usage.promptTokens || 0, res.usage.completionTokens || 0);
+      recordSpend(c, res.model || override.model, (res.usage.billedPromptTokens ?? res.usage.promptTokens) || 0, res.usage.completionTokens || 0);
     }
     const bullets = Lessons.dedupeLessons(Lessons.parseLessons(stripThink(res.content || '')), md);
     if (!bullets.length) return;
@@ -1810,7 +1823,7 @@ async function proposeSkill(c, failed) {
     setActivity(c, '');
     if (!res.ok) return;
     if (override && !['ollama', 'lmstudio'].includes(override.provider) && res.usage?.promptTokens) {
-      recordSpend(c, res.model || override.model, res.usage.promptTokens || 0, res.usage.completionTokens || 0);
+      recordSpend(c, res.model || override.model, (res.usage.billedPromptTokens ?? res.usage.promptTokens) || 0, res.usage.completionTokens || 0);
     }
     const draft = SkillWriter.parseSkillDraft(stripThink(res.content || ''));
     if (!draft) return;
@@ -1908,7 +1921,7 @@ async function reviewChanges(c, { auto } = {}) {
         { role: 'user', content: ReviewPass.reviewRequest(files) }
       ]
     });
-    if (res.usage && !['ollama', 'lmstudio'].includes(planner.provider)) recordSpend(c, res.model || planner.model, res.usage.promptTokens || 0, res.usage.completionTokens || 0);
+    if (res.usage && !['ollama', 'lmstudio'].includes(planner.provider)) recordSpend(c, res.model || planner.model, (res.usage.billedPromptTokens ?? res.usage.promptTokens) || 0, res.usage.completionTokens || 0);
     if (!res.ok) {
       addError(c, `The review pass failed: ${res.error}`);
       return;
@@ -2171,6 +2184,8 @@ async function runConversation(c) {
   const deadNodes = new Set(); // Ollama nodes given up on for the rest of this task
   let lastNodeId = c.pinNodeId || null; // which node the previous step ran on (a subagent starts on its assigned one)
   let capBlocked = false; // the user declined to pass the monthly budget; stay local this task
+  let architectNext = false; // the next step is the architect's turn (after an accepted plan)
+  let architectFiles = []; // what the architect writes
   let lengthRetries = 0; // replies cut off at the length limit before they said anything
   let bigBudgetNext = false; // the next cloud request gets PLAN_REPLY_TOKENS to answer in
   let runnerCrashes = 0; // Ollama model-runner crashes this task (CUDA errors, a runner that died)
@@ -2321,6 +2336,7 @@ async function runConversation(c) {
     // plan written by something that plans well. Skipped silently when no ⚡ node can serve,
     // and never repeated — c.planned survives for the whole conversation.
     let planTurn = false;
+    let architectTurn = false;
     planRetrying = false;
     if (useTools && !override && state.settings.planFirst && planAgain && planOnPlanner && heavyOverride()) {
       // Last try for a usable plan: the planner (cloud) writes it.
@@ -2355,6 +2371,17 @@ async function runConversation(c) {
         }
         DebugLog.add(c, 'escalate', { reason: retry ? 'plan-first: vague plan sent back for a rewrite' : `plan-first: ${target.who} writes the plan`, interventions, takeover: false });
       }
+    }
+    // Architect mode: right after an accepted plan for new files, the planner writes them.
+    if (architectNext && useTools && !override && heavyOverride() && !capBlocked && !cloudDead) {
+      architectNext = false;
+      architectTurn = true;
+      override = heavyOverride();
+      note(`Architect: ${heavyLabel()} writes the first version of ${architectFiles.join(', ')}; ${state.settings.model} then tests and fixes it.`);
+      DebugLog.add(c, 'escalate', { reason: `architect: the planner writes ${architectFiles.join(', ')}`, interventions, takeover: false });
+    } else if (architectNext) {
+      architectNext = false;
+      c.history.push({ role: 'user', content: '<system-reminder>\nThe plan above was written by the planning model. You are the everyday model now: execute the todo list step by step, starting with the first item. Do not re-plan.\n</system-reminder>' });
     }
     // Local requests route across Ollama nodes when more than one is enabled: the first
     // healthy node that has the model gets the request, with its own keep_alive. A task STAYS
@@ -2430,8 +2457,8 @@ async function runConversation(c) {
     }
     // A planning turn, or a retry after a reply cut off at the limit, gets room to answer.
     const stepProv = override?.provider || state.settings.provider;
-    if ((planTurn || bigBudgetNext) && !['ollama', 'lmstudio'].includes(stepProv)) {
-      override = { ...(override || {}), maxResponseTokens: Math.max(PLAN_REPLY_TOKENS, Number(state.settings.maxResponseTokens) || 0) };
+    if ((planTurn || architectTurn || bigBudgetNext) && !['ollama', 'lmstudio'].includes(stepProv)) {
+      override = { ...(override || {}), maxResponseTokens: Math.max(architectTurn ? ARCHITECT_REPLY_TOKENS : PLAN_REPLY_TOKENS, Number(state.settings.maxResponseTokens) || 0) };
     }
     bigBudgetNext = false;
     const view = addAssistantMessage(c, null, override?.model || null);
@@ -2500,7 +2527,7 @@ async function runConversation(c) {
     try {
       res = await api.chatStream(id, {
         messages: reqMessages,
-        tools: useTools ? (planTurn ? Escalation.planningTools(toolsFor(c)) : toolsFor(c)) : undefined,
+        tools: useTools ? (planTurn ? Escalation.planningTools(toolsFor(c)) : architectTurn ? Escalation.architectTools(toolsFor(c)) : toolsFor(c)) : undefined,
         override: override || undefined
       });
     } finally {
@@ -2517,6 +2544,7 @@ async function runConversation(c) {
             ok: true, finishReason: res.finishReason, chars: (res.content || '').length, toolCalls: (res.toolCalls || []).length,
             promptTokens: res.usage?.promptTokens, completionTokens: res.usage?.completionTokens || (prog.tokens || undefined),
             promptMs: res.usage?.promptMs, loadMs: res.usage?.loadMs, genTokPerSec: res.usage?.genTokPerSec,
+            cacheRead: res.usage?.cacheRead || undefined, cacheWrite: res.usage?.cacheWrite || undefined,
             draftModel: res.usage?.draftModel, draftAccepted: res.usage?.draftAccepted,
             firstMs: prog.firstAt ? prog.firstAt - prog.startedAt : undefined, ms: Date.now() - prog.startedAt
           })
@@ -2539,7 +2567,7 @@ async function runConversation(c) {
     // (Ollama / LM Studio) are free and skipped.
     if (res.ok && res.usage) {
       const prov = override?.provider || state.settings.provider;
-      if (!['ollama', 'lmstudio'].includes(prov)) recordSpend(c, override?.model || state.settings.model, res.usage.promptTokens || 0, res.usage.completionTokens || 0);
+      if (!['ollama', 'lmstudio'].includes(prov)) recordSpend(c, override?.model || state.settings.model, (res.usage.billedPromptTokens ?? res.usage.promptTokens) || 0, res.usage.completionTokens || 0);
     }
     if (res.usage?.promptTokens && res.usage.contextLength) {
       c.usage = res.usage;
@@ -2772,6 +2800,10 @@ async function runConversation(c) {
       const limitWas = res.usage?.completionTokens || Number(override?.maxResponseTokens || state.settings.maxResponseTokens) || 0;
       note(`${override?.model || state.settings.model}'s reply was cut off at the length limit${limitWas ? ` (${limitWas} tokens)` : ''} before it finished — retrying with room for ${PLAN_REPLY_TOKENS.toLocaleString()} tokens.`);
       bigBudgetNext = true;
+      if (architectTurn) {
+        architectNext = true;
+        c.history.push({ role: 'user', content: '<system-reminder>\nYour previous reply was cut off before the files were complete. Write them again, more compactly (shorter comments, no repetition), one write_file call per file.\n</system-reminder>' });
+      }
       if (planTurn) {
         planAgain = true;
         c.history.push({ role: 'user', content: '<system-reminder>\nYour previous reply was cut off before it finished. Keep the explanation under about 500 words and each step\'s details to 3-6 lines, and make sure the todo_write call is complete.\n</system-reminder>' });
@@ -2789,6 +2821,13 @@ async function runConversation(c) {
     if (!calls.length) {
       // A prose-only plan from the planning turn is not a final answer: the plan text is in
       // history, so hand the task to the everyday model instead of ending it.
+      if (architectTurn) {
+        // The architect answered without writing anything: the everyday model builds it.
+        if (!String(msg.content || '').trim()) c.history.pop();
+        note('The architect wrote no files — the everyday model builds them from the plan.');
+        c.history.push({ role: 'user', content: '<system-reminder>\nThe plan above was written by the planning model. You are the everyday model now: execute the todo list step by step, starting with the first item. Do not re-plan.\n</system-reminder>' });
+        continue;
+      }
       if (planTurn) {
         const said = String(msg.content || '').trim();
         // Nothing usable came back: never call it an approved plan.
@@ -2891,7 +2930,11 @@ async function runConversation(c) {
       }
       const rows = batch.map((call) => view.addStep(call));
       setActivity(c, rows.length > 1 ? `Running ${rows.length} lookups` : `${rows[0].doing} ${rows[0].target}`);
-      const outs = await Promise.all(batch.map((call, i) => (planTurn && !Escalation.isPlanningTool(call.function.name) ? Promise.resolve({ result: Escalation.PLAN_ONLY_REFUSAL, failed: true }) : runOrSkip(c, call, rows[i], seen, step))));
+      const outs = await Promise.all(batch.map((call, i) => (planTurn && !Escalation.isPlanningTool(call.function.name)
+        ? Promise.resolve({ result: Escalation.PLAN_ONLY_REFUSAL, failed: true })
+        : architectTurn && !Escalation.isArchitectTool(call.function.name)
+          ? Promise.resolve({ result: Escalation.ARCHITECT_REFUSAL, failed: true })
+          : runOrSkip(c, call, rows[i], seen, step))));
       const shots = [];
       batch.forEach((call, i) => {
         rows[i].done(outs[i]);
@@ -2937,6 +2980,27 @@ async function runConversation(c) {
         note(wrote ? `The plan is too vague for the everyday model (${problems.slice(0, 3).map((p) => `step ${p.step} ${p.why}`).join('; ')}) — sending it back for a rewrite: one checked piece per step.` : 'No plan came back — asking again for the plan only.');
       } else {
         if (unusable) note('The plan is still vague — the everyday model takes over and works out each step as it goes.');
+        // Architect mode: a plan for new files goes to the planner to write the first version.
+        const targets = state.settings.architect !== false && heavyOverride() && !capBlocked && !cloudDead
+          && !Costs.capReached(state.settings.spend, state.settings.prices, state.settings.monthlyCapUSD)
+          ? await architectTargets(c) : [];
+        if (targets.length) {
+          architectNext = true;
+          architectFiles = targets;
+          c.history.push({ role: 'user', content: `<system-reminder>\n${Escalation.architectReminder(targets)}\n</system-reminder>` });
+        } else {
+          c.history.push({ role: 'user', content: '<system-reminder>\nThe plan above was written by the planning model. You are the everyday model now: execute the todo list step by step, starting with the first item. Do not re-plan.\n</system-reminder>' });
+        }
+      }
+    }
+    // After the architect's turn: the everyday model tests and fixes what it wrote.
+    if (architectTurn) {
+      const wrote = calls.filter((tc) => tc.function?.name === 'write_file').length;
+      if (wrote) {
+        c.architectWrote = architectFiles;
+        c.history.push({ role: 'user', content: `<system-reminder>\n${Escalation.architectHandoff(architectFiles, override?.model || heavyLabel())}\n</system-reminder>` });
+      } else {
+        note('The architect wrote no files — the everyday model builds them from the plan.');
         c.history.push({ role: 'user', content: '<system-reminder>\nThe plan above was written by the planning model. You are the everyday model now: execute the todo list step by step, starting with the first item. Do not re-plan.\n</system-reminder>' });
       }
     }
