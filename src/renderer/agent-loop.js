@@ -269,7 +269,8 @@ async function likenessLines(c, args, web, shot) {
   for (const w of widths) {
     setActivity(c, `Comparing at ${w}px wide`);
     const mine = await api.guiTestPage({ file: web.file ? normPath(web.file) : undefined, url: web.url, width: w, selfTest: false, waitSeconds: args.wait_seconds });
-    const theirs = picture ? null : await api.guiTestPage({ url: ref, width: w, selfTest: false, waitSeconds: Math.max(2, Number(args.wait_seconds) || 2) });
+    // The reference is pictured only (reference: true lets a public URL in, but never actions).
+    const theirs = picture ? null : await api.guiTestPage({ url: ref, width: w, selfTest: false, reference: true, waitSeconds: Math.max(2, Number(args.wait_seconds) || 2) });
     const a = mine.shot && (await decodePicture(mine.shot.png));
     const b = picture || (theirs?.shot && (await decodePicture(theirs.shot.png)));
     if (!a || !b) {
@@ -758,7 +759,12 @@ async function executeTool(c, call, row) {
         if (pa.error) return { result: `Error: ${pa.error}`, failed: true };
         // A web page or browser game: load it in a hidden, sandboxed QWS window (like a browser
         // tab — nothing runs on the OS, so no approval) and report console errors + a screenshot.
+        // Only pages from this PC: the window clicks and types with nobody asked, so a LAN
+        // device's page or a public site is off limits here (the browser tools ask per website).
         const web = GuiTest.webTarget(cmd);
+        if (web?.remote) {
+          return { result: `Error: test_app only loads pages from this PC — a file in the project, or a dev server on localhost. ${web.url} is somewhere else. For other websites use the browser tools (Settings → Tools & MCP servers → Set up browser control), which ask the user per website.`, meta: 'not local', failed: true };
+        }
         if (web) {
           setActivity(c, `Testing ${web.url || web.file}`);
           const r = await api.guiTestPage({ file: web.file ? normPath(web.file) : undefined, url: web.url, actions: pa.actions, waitSeconds: args.wait_seconds });

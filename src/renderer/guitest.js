@@ -203,13 +203,29 @@ function summarize(r, sent) {
   return lines.join('\n');
 }
 
+// An http(s) URL served by this PC (localhost, 127.x, ::1, 0.0.0.0): the only kind of URL
+// test_app loads as a page, since it clicks and types there with nobody asked. A LAN device's
+// admin page or a public site is the browser tools' job — those ask per website.
+function isLocalUrl(url) {
+  let u;
+  try {
+    u = new URL(String(url || ''));
+  } catch {
+    return false;
+  }
+  if (!/^https?:$/.test(u.protocol)) return false;
+  const h = u.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  return h === 'localhost' || h.endsWith('.localhost') || /^127\.\d+\.\d+\.\d+$/.test(h) || h === '::1' || h === '0.0.0.0';
+}
+
 // A web page instead of a desktop app: an .html file (optionally behind "start", "open" or
 // "xdg-open", quoted or not) or an http(s) URL. Those are tested in a hidden QWS window instead
-// of an OS process — `start index.html` returns at once, so there is no process to follow.
+// of an OS process — `start index.html` returns at once, so there is no process to follow. A URL
+// not served by this PC comes back marked `remote`, and test_app refuses it.
 function webTarget(command) {
   let t = String(command || '').trim();
   t = t.replace(/^(start(\s+"")?|open|xdg-open|explorer(\.exe)?)\s+/i, '').trim().replace(/^"(.*)"$/, '$1').replace(/^'(.*)'$/, '$1').trim();
-  if (/^https?:\/\/\S+$/i.test(t)) return { url: t };
+  if (/^https?:\/\/\S+$/i.test(t)) return isLocalUrl(t) ? { url: t } : { url: t, remote: true };
   if (/^file:\/\//i.test(t)) t = decodeURIComponent(t.replace(/^file:\/\/\/?/i, ''));
   if (/\.html?$/i.test(t) && !/[|&<>]/.test(t)) return { file: t };
   return null;
@@ -268,6 +284,6 @@ function pixelNote(st) {
   return '';
 }
 
-const GuiTestExports = { pixelStats, pixelNote, MAX_ACTIONS, SHOT_BOX, KEYS, parseActions, windowIdFromSource, pickWindow, scalePoint, xdotoolSteps, sendKeysEscape, windowsScript, macScript, describeAction, summarize, webTarget, electronKey, summarizePage };
+const GuiTestExports = { pixelStats, pixelNote, MAX_ACTIONS, SHOT_BOX, KEYS, parseActions, windowIdFromSource, pickWindow, scalePoint, xdotoolSteps, sendKeysEscape, windowsScript, macScript, describeAction, summarize, webTarget, isLocalUrl, electronKey, summarizePage };
 if (typeof module !== 'undefined' && module.exports) module.exports = GuiTestExports;
 if (typeof window !== 'undefined') window.GuiTest = GuiTestExports;

@@ -3,7 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const fsp = require('fs/promises');
 const { spawn, execFileSync } = require('child_process');
-const vm = require('node:vm');
+const { fileURLToPath } = require('node:url');
 const net = require('node:net');
 const updater = require('./updater');
 const { detectSpecs } = require('./hardware');
@@ -491,10 +491,48 @@ const PAGE_H = 768;
 ipcMain.handle('gui:testPage', async (_e, opts) => {
   const parsed = GuiTest.parseActions(opts?.actions);
   if (parsed.error) return { error: parsed.error };
+  // This window loads a page and can click and type in it with nobody asked, so the page must
+  // come from this PC: a project file, or a dev server on localhost. A LAN device's admin page
+  // or a public site belongs to the browser tools, which ask per website. The likeness check's
+  // reference page (pictured only, never acted on) may be public, but not on the local network
+  // unless the user allows private fetches — the same rule fetch_url follows.
+  const reference = !!opts?.reference;
+  const navAllowed = (url) => {
+    const u = String(url || '');
+    if (GuiTest.isLocalUrl(u)) return true;
+    if (!reference) {
+      // A project file may move to another project file (or a blank page), never elsewhere on
+      // disk — a screenshot of some other local file would reach the model.
+      if (opts?.url || !/^(about:blank$|file:)/i.test(u)) return false;
+      if (/^about:blank$/i.test(u)) return true;
+      try {
+        resolveInWorkspace(fileURLToPath(u));
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    let host = '';
+    try {
+      host = new URL(u).hostname;
+    } catch {
+      return false;
+    }
+    return /^https?:/i.test(u) && (!!loadSettings().allowPrivateFetch || !web.isPrivateHost(host));
+  };
   let target;
   try {
-    if (opts?.url) target = { url: String(opts.url) };
-    else {
+    if (opts?.url) {
+      const url = String(opts.url);
+      if (!/^https?:\/\//i.test(url)) return { error: `${url} is not an http(s) URL` };
+      if (!navAllowed(url)) {
+        return { error: reference
+          ? `${url} is on this PC's local network, and fetching private addresses is turned off (Settings → Research)`
+          : `test_app only loads pages from this PC (a project file or a localhost URL); ${url} is somewhere else — use the browser tools for other websites` };
+      }
+      if (reference && parsed.actions.length) return { error: 'a reference page is only pictured; it takes no actions' };
+      target = { url };
+    } else {
       const abs = resolveInWorkspace(String(opts?.file || ''));
       if (!fs.existsSync(abs)) return { error: `${opts.file} does not exist in the project` };
       target = { file: abs };
@@ -528,6 +566,18 @@ ipcMain.handle('gui:testPage', async (_e, opts) => {
   });
   wc.on('render-process-gone', (_ev, details) => { crashed = details?.reason || 'renderer gone'; });
   wc.on('did-fail-load', (_ev, code, desc, url, isMain) => { if (isMain) loadError = `${desc} (${code}) for ${url}`; });
+  // Top-level navigation stays within the rules above: a local page may not send the window to
+  // another host (a redirect to a LAN address, say), and no page opens further windows. A
+  // blocked hop is listed with the page's errors, so the model learns why the page went nowhere.
+  wc.setWindowOpenHandler(() => ({ action: 'deny' }));
+  const guardNav = (ev, url) => {
+    if (navAllowed(url)) return;
+    ev.preventDefault();
+    const text = `Blocked navigation to ${String(url).slice(0, 200)}: test_app only loads pages from this PC`;
+    errors.set(text, (errors.get(text) || 0) + 1);
+  };
+  wc.on('will-navigate', guardNav);
+  wc.on('will-redirect', guardNav);
   const capture = async () => {
     try {
       const img = await wc.capturePage();
@@ -2106,100 +2156,67 @@ async function listSkillFiles(base, rel = '', out = [], depth = 0) {
 }
 
 // ---------- tool programs (codemode) ----------
-// Runs a model-written mini-program in a hardened VM: no require/process/network in scope, no
-// dynamic code generation inside the sandbox (codeGeneration: strings:false), null-prototype
-// host bridges only, and string-only values across the boundary (promises and errors the
-// program sees are created in its own realm). Every tools.* call is executed by the renderer
-// through the normal tool pipeline — including approvals — and answered via program:answer.
-const programCalls = new Map(); // callId -> { resolve, reject } (sandbox-realm functions)
+// A model-written mini-program runs in a worker thread (src/program-worker.js) inside a hardened
+// VM: no require/process/network in scope, no dynamic code generation, null-prototype host
+// bridges only, string-only values across the boundary. The worker is what makes the time limit
+// real: vm's own timeout covers synchronous code only, and a program that looped after its first
+// `await` used to run on this process's event loop with nothing able to interrupt it, freezing
+// the whole app — worker.terminate() stops it anywhere. Every tools.* call is relayed to the
+// renderer (program:call), which runs it through the normal tool pipeline — approvals included —
+// and answers via program:answer.
+const { Worker } = require('node:worker_threads');
+const programWorkers = new Map(); // callId -> the worker waiting for that answer
+let programWorkerSource = null; // the worker's code, read once; eval mode also works from inside an asar
 
 ipcMain.handle('program:answer', (_e, callId, result, failed) => {
-  const pending = programCalls.get(callId);
-  programCalls.delete(callId);
-  if (pending) (failed ? pending.reject : pending.resolve)(String(result ?? ''));
+  const worker = programWorkers.get(callId);
+  programWorkers.delete(callId);
+  if (worker) worker.postMessage({ type: 'answer', callId, result: String(result ?? ''), failed: !!failed });
   return true;
 });
 
-ipcMain.handle('program:run', async (event, runId, code, toolNames, timeoutMs) => {
+ipcMain.handle('program:run', (event, runId, code, toolNames, timeoutMs) => {
   const limitMs = Math.min(Math.max(Number(timeoutMs) || 180_000, 10_000), 600_000);
   const logs = [];
   let calls = 0;
-  let dead = false;
-  const sandbox = Object.create(null);
-  const ctx = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
-  // Factories compiled inside the sandbox realm, so the program only ever sees its own realm's
-  // promises and functions; host intrinsics never cross the boundary.
-  const makeWrap = vm.runInContext('(hostCall) => (args) => new Promise((resolve, reject) => { hostCall(JSON.stringify(args ?? {}), resolve, reject); })', ctx);
-  const tools = vm.runInContext('Object.create(null)', ctx);
-  for (const name of (toolNames || []).slice(0, 64)) {
-    const hostCall = (argsJson, resolve, reject) => {
-      if (dead) return reject('The program has ended.');
-      if (++calls > 50) {
-        dead = true;
-        return reject('Too many tool calls (max 50 per program).');
-      }
-      const callId = `${runId}:${calls}`;
-      programCalls.set(callId, { resolve, reject });
-      let args = {};
-      try {
-        args = JSON.parse(argsJson);
-      } catch {
-        /* empty args */
-      }
-      if (event.sender.isDestroyed()) reject('The window is gone.');
-      else event.sender.send('program:call', { callId, name, args });
+  return new Promise((resolve) => {
+    let worker = null;
+    let timer = null;
+    let settled = false;
+    const finish = (r) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      for (const [id, w] of programWorkers) if (w === worker) programWorkers.delete(id);
+      worker?.terminate().catch(() => {});
+      resolve({ logs, calls, ...r });
     };
-    Object.setPrototypeOf(hostCall, null);
-    tools[name] = makeWrap(hostCall);
-  }
-  const hostLog = (line) => {
-    if (logs.length < 200) logs.push(String(line).slice(0, 2000));
-  };
-  Object.setPrototypeOf(hostLog, null);
-  const hostSleep = (argsJson, resolve) => {
-    let ms = 0;
     try {
-      ms = Number(JSON.parse(argsJson).ms) || 0;
-    } catch {
-      /* 0 */
+      programWorkerSource = programWorkerSource || fs.readFileSync(path.join(__dirname, 'program-worker.js'), 'utf8');
+      worker = new Worker(programWorkerSource, {
+        eval: true,
+        workerData: { runId: String(runId), code: String(code), toolNames: (Array.isArray(toolNames) ? toolNames : []).map(String).slice(0, 64) }
+      });
+    } catch (err) {
+      return finish({ ok: false, error: `Could not start the program: ${err.message}` });
     }
-    setTimeout(() => resolve(''), Math.min(Math.max(ms, 0), 30_000));
-  };
-  Object.setPrototypeOf(hostSleep, null);
-  const setup = vm.runInContext(`(tools, log, sleepTool) => {
-    globalThis.tools = tools;
-    const c = Object.create(null);
-    c.log = (...a) => log(a.map((x) => (typeof x === 'object' ? JSON.stringify(x) : String(x))).join(' '));
-    c.error = c.warn = c.info = c.log;
-    globalThis.console = c;
-    globalThis.sleep = (ms) => sleepTool({ ms });
-  }`, ctx);
-  setup(tools, hostLog, makeWrap(hostSleep));
-
-  try {
-    const script = new vm.Script(`(async () => {\n${String(code)}\n})()`, { filename: 'tool-program.js' });
-    const value = await Promise.race([
-      Promise.resolve(script.runInContext(ctx, { timeout: 30_000 })),
-      new Promise((_, rej) => setTimeout(() => rej(new Error(`The program ran longer than ${Math.round(limitMs / 1000)}s and was stopped.`)), limitMs))
-    ]);
-    let str = '';
-    try {
-      str = value === undefined || value === null ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value);
-    } catch {
-      str = String(value);
-    }
-    return { ok: true, logs, calls, value: String(str).slice(0, 8000) };
-  } catch (err) {
-    return { ok: false, logs, calls, error: String((err && err.message) || err).slice(0, 2000) };
-  } finally {
-    dead = true;
-    for (const [id, pending] of programCalls) {
-      if (id.startsWith(`${runId}:`)) {
-        pending.reject('The program has ended.');
-        programCalls.delete(id);
+    timer = setTimeout(() => finish({ ok: false, error: `The program ran longer than ${Math.round(limitMs / 1000)}s and was stopped.` }), limitMs);
+    worker.on('message', (m) => {
+      if (!m || settled) return;
+      if (m.type === 'log') {
+        if (logs.length < 200) logs.push(String(m.line));
+      } else if (m.type === 'call') {
+        calls++;
+        if (event.sender.isDestroyed()) return worker.postMessage({ type: 'answer', callId: m.callId, result: 'The window is gone.', failed: true });
+        programWorkers.set(m.callId, worker);
+        event.sender.send('program:call', { callId: m.callId, name: m.name, args: m.args });
+      } else if (m.type === 'done') {
+        finish(m.ok ? { ok: true, value: String(m.value ?? '') } : { ok: false, error: String(m.error || 'The program failed.') });
       }
-    }
-  }
+    });
+    worker.on('error', (err) => finish({ ok: false, error: String((err && err.message) || err).slice(0, 2000) }));
+    worker.on('exit', (exitCode) => finish({ ok: false, error: `The program stopped unexpectedly (exit code ${exitCode}).` }));
+  });
 });
 
 // ---------- semantic code index ----------
