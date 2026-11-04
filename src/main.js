@@ -248,6 +248,8 @@ ipcMain.handle('workspace:set', async (_e, dir) => {
   } catch {
     return null;
   }
+  // A server left running for the old folder would hold its port and serve the wrong files.
+  if (path.resolve(dir) !== workspaceRoot) stopBackground();
   workspaceRoot = path.resolve(dir);
   const s = loadSettings();
   s.lastWorkspace = workspaceRoot;
@@ -388,34 +390,167 @@ async function shimPython3(command, cwd) {
 
 const NON_INTERACTIVE_ENV = { GIT_PAGER: 'cat', PAGER: 'cat', GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', GIT_EDITOR: 'true', DEBIAN_FRONTEND: 'noninteractive', PIP_NO_INPUT: '1' };
 
-ipcMain.handle('cmd:run', async (_e, rawCommand, timeoutMs = 120_000) => {
+// Programs a command left running (a server started with `start /b` or `&`, or a foreground
+// server moved aside once it was up): kept until the user stops them, the project folder
+// changes or QWS quits. id → { id, owner, command, pids, pgid, at }.
+const CmdRun = require('./cmdrun.js');
+const background = new Map();
+let backgroundSeq = 0;
+function backgroundList() {
+  return [...background.values()].map(({ id, owner, command, pids, at }) => ({ id, owner, command: CmdRun.describe(command), pids, at }));
+}
+function backgroundChanged() {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('cmd:background', backgroundList());
+}
+function stopBackground(filter = () => true) {
+  let n = 0;
+  for (const b of [...background.values()]) {
+    if (!filter(b)) continue;
+    background.delete(b.id);
+    n++;
+    if (process.platform === 'win32') {
+      for (const pid of b.pids) spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true }).on('error', () => {});
+    } else {
+      try {
+        process.kill(-b.pgid, 'SIGKILL');
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+  if (n) backgroundChanged();
+  return n;
+}
+app.on('will-quit', () => stopBackground());
+
+// Windows: the processes a shell started, found by parent process id (still recorded after
+// the shell itself has exited).
+function windowsChildren(pid) {
+  return new Promise((resolve) => {
+    let out = '';
+    const ps = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter 'ParentProcessId=${Number(pid)}').ProcessId`], { windowsHide: true });
+    ps.stdout.on('data', (d) => (out += d));
+    ps.on('error', () => resolve([]));
+    ps.on('close', () => resolve(CmdRun.parsePids(out)));
+    setTimeout(() => killTree(ps), 10_000);
+  });
+}
+
+function posixGroupAlive(pgid) {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+ipcMain.handle('cmd:background', () => backgroundList());
+ipcMain.handle('cmd:stopBackground', (_e, id) => stopBackground((b) => id == null || b.id === id));
+
+ipcMain.handle('cmd:run', async (_e, rawCommand, timeoutMs = 120_000, owner = null) => {
   const cwd = resolveInWorkspace('.');
-  const { command, note } = await shimPython3(rawCommand, cwd);
+  const shimmed = await shimPython3(rawCommand, cwd);
+  let { command, note } = shimmed;
+  if (process.platform === 'win32') {
+    const w = CmdRun.rewriteWindowsWait(command);
+    if (w.changed) {
+      command = w.command;
+      note += '[QWS waited with ping instead of "timeout /t", which quits at once when there is no keyboard]\n';
+    }
+  }
+  const posix = process.platform !== 'win32';
+  const server = CmdRun.foregroundServer(command, process.platform);
   return new Promise((resolve) => {
     // Nothing the agent runs can wait for a person: input is closed at once (a "y/n" prompt or
     // `python -` reads end-of-file and stops instead of sitting until the timeout), and git, its
     // credential helper and pagers are told not to prompt or page (from Craft Anything's
-    // pitfalls: commands that waited for a terminal cost 10 minutes each).
-    const child = spawn(command, { cwd, shell: true, windowsHide: true, env: { ...commandEnv(), ...NON_INTERACTIVE_ENV } });
+    // pitfalls: commands that waited for a terminal cost 10 minutes each). On macOS and Linux
+    // the shell leads its own process group, so whatever it starts can be stopped together.
+    const child = spawn(command, { cwd, shell: true, windowsHide: true, detached: posix, env: { ...commandEnv(), ...NON_INTERACTIVE_ENV } });
     child.stdin?.on('error', () => {});
     child.stdin?.end();
     let output = note;
+    let done = false;
+    let lastOutputAt = Date.now();
+    let upAt = 0;
     const append = (d) => {
-      output += d.toString();
-      mainWindow?.webContents.send('cmd:output', d.toString());
+      const t = d.toString();
+      mainWindow?.webContents.send('cmd:output', t);
+      if (done) return; // a program left in the background still shows in the terminal
+      output += t;
+      lastOutputAt = Date.now();
+      if (server && !upAt && CmdRun.SERVER_UP.test(output)) upAt = Date.now();
       if (output.length > MAX_CMD_OUTPUT * 2) output = output.slice(-MAX_CMD_OUTPUT);
     };
     child.stdout.on('data', append);
     child.stderr.on('data', append);
-    const timer = setTimeout(() => {
-      append(`\n[timed out after ${timeoutMs / 1000}s — process killed. If it was waiting for input (a question, a sign-in, a pager), run it with its non-interactive flags instead (-y / --yes / --no-pager / --non-interactive).]\n`);
-      killTree(child);
-    }, timeoutMs);
-    child.on('error', (err) => append(`\n[error] ${err.message}\n`));
-    child.on('close', (code) => {
+    const finish = (code, extra = '') => {
+      if (done) return;
+      done = true;
       clearTimeout(timer);
+      clearInterval(watch);
+      clearTimeout(grace);
+      output += extra;
       if (output.length > MAX_CMD_OUTPUT) output = '[...output truncated...]\n' + output.slice(-MAX_CMD_OUTPUT);
       resolve({ code, output });
+    };
+    // Keep what is still running, then answer with the output so far. `pids` are what to stop
+    // later (macOS/Linux stop the shell's whole process group).
+    let bgId = null;
+    let moving = false;
+    const keep = (code, pids, foreground) => {
+      bgId = ++backgroundSeq;
+      background.set(bgId, { id: bgId, owner, command, pids, pgid: child.pid, at: Date.now() });
+      backgroundChanged();
+      finish(code ?? 0, CmdRun.backgroundNote({ pids, foreground, platform: process.platform }));
+    };
+    const toBackground = async (code, foreground) => {
+      if (done || moving) return;
+      moving = true;
+      const pids = posix || foreground ? [child.pid] : await windowsChildren(child.pid);
+      moving = false;
+      if (done) return;
+      // On macOS/Linux, the group being gone means the output is about to close by itself.
+      if (posix && !foreground && !posixGroupAlive(child.pid)) return finish(code);
+      keep(code, pids, foreground);
+    };
+    const timer = setTimeout(() => {
+      append(`\n[timed out after ${timeoutMs / 1000}s — process killed. If it was waiting for input (a question, a sign-in, a pager), run it with its non-interactive flags instead (-y / --yes / --no-pager / --non-interactive).]\n`);
+      if (posix) {
+        try {
+          process.kill(-child.pid, 'SIGKILL');
+        } catch {
+          killTree(child);
+        }
+      } else killTree(child);
+    }, timeoutMs);
+    // A server in the foreground: aside once it is up, or once it has gone quiet.
+    const watch = setInterval(() => {
+      if (!server || done) return;
+      const now = Date.now();
+      if ((upAt && now - upAt >= CmdRun.SERVER_UP_MS) || now - lastOutputAt >= CmdRun.SERVER_SETTLE_MS) toBackground(null, true);
+    }, 250);
+    // The shell is done but its output is still open: something it started holds it.
+    let grace = null;
+    child.on('exit', (code) => {
+      grace = setTimeout(() => toBackground(code, false), CmdRun.EXIT_GRACE_MS);
+    });
+    child.on('error', (err) => append(`\n[error] ${err.message}\n`));
+    child.on('close', async (code) => {
+      // A program in the background that ends by itself leaves the list.
+      if (bgId && background.delete(bgId)) backgroundChanged();
+      if (done || moving) return;
+      // An agent's command that started something with its output sent elsewhere
+      // (`server >/dev/null &`, `start /b server >nul`): the output closed, the program did not.
+      if (owner && posix && posixGroupAlive(child.pid)) return keep(code, [child.pid], false);
+      if (owner && !posix && /(^|[\s&|;(])start\s/i.test(command)) {
+        moving = true;
+        const pids = await windowsChildren(child.pid);
+        moving = false;
+        if (pids.length && !done) return keep(code, pids, false);
+      }
+      finish(code);
     });
   });
 });
@@ -2701,16 +2836,15 @@ function commandEnv() {
   const env = { ...process.env };
   const key = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') || 'PATH';
   const parts = [env[key] || ''];
-  const dir = gitDir();
-  if (dir) {
-    const root = path.dirname(dir); // the Git install root (parent of cmd/)
-    const extra = [dir, path.join(root, 'bin'), path.join(root, 'mingw64', 'bin'), path.join(root, 'usr', 'bin')].filter(safeExists);
-    if (extra.length) parts.unshift(extra.join(path.delimiter));
-  }
+  // Git's own folders first; its Unix tools (usr\bin) last, so Windows' timeout, find and sort
+  // are not replaced by Unix ones of the same name (src/cmdrun.js).
+  const g = CmdRun.gitPathParts(gitDir(), path.join, safeExists);
+  if (g.before.length) parts.unshift(g.before.join(path.delimiter));
   const reg = registryPath();
   if (reg) parts.push(reg);
   const login = loginShellPath();
   if (login) parts.push(login);
+  if (g.after.length) parts.push(g.after.join(path.delimiter));
   env[key] = parts.filter(Boolean).join(path.delimiter);
   return env;
 }
