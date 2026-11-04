@@ -591,8 +591,16 @@ function normPath(p) {
   return s.replace(/^\.\//, '').replace(/^\/+/, '') || '.';
 }
 
+// A long result keeps its start and its end (toolbudget.js): errors and test failures are at the end.
 function truncate(s) {
-  return s.length > MAX_TOOL_RESULT ? s.slice(0, MAX_TOOL_RESULT) + `\n... [truncated ${s.length - MAX_TOOL_RESULT} chars]` : s;
+  const max = Math.min(MAX_TOOL_RESULT, ToolBudget.budgetFor(state.settings?.contextLength));
+  return ToolBudget.headTail(String(s ?? ''), max).text;
+}
+
+// A tool's JSON schema (`parameters`) by name, for repairing and coercing its arguments.
+function toolSchemaFor(name) {
+  const all = [...ALL_TOOLS, PROGRAM_TOOL, SEM_TOOL, CONSULT_TOOL, DELEGATE_TOOL, ...mcpToolSpecs()];
+  return all.find((t) => t.function?.name === name)?.function?.parameters || null;
 }
 
 // Thin wrappers over the pure parser in toolparse.js, passing the current tool names (built-in

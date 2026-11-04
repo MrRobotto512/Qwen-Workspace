@@ -58,6 +58,9 @@ const DEFAULT_SETTINGS = {
   architect: true, // after a plan for new files, the planner writes the first version; the local model tests and fixes it
   promptCache: true, // Anthropic prompt caching: repeated prompt prefixes billed at about a tenth
   describeScreens: true, // a text-only model's test_app screenshots are described by a vision model
+  readBeforeWrite: true, // write_file may not overwrite a file the task has not read in full (or that changed since)
+  syntaxCheck: true, // every write is syntax-checked (JSON, JavaScript, a page's inline scripts, Python); new errors are reported
+  redactSecrets: true, // API keys, tokens and passwords are hidden from cloud models (not from this PC's own models)
   stopRule: true, // the same command failing the same way: name the cause; after two failed fixes, stop and report
   browserSites: [], // websites where browser tools may act without asking ("Allow on <site>")
   consultFreely: false, // the agent may call consult_planner whenever unsure (more cloud cost; the budget cap applies)
@@ -555,6 +558,111 @@ ipcMain.handle('cmd:run', async (_e, rawCommand, timeoutMs = 120_000, owner = nu
   });
 });
 
+// ---------- syntax check after a write (src/syntaxcheck.js) ----------
+const SyntaxCheck = require('./syntaxcheck.js');
+const looksLikeJsx = (code) => /<[A-Z][\w.]*[\s/>]|return\s*\(\s*</.test(code) || /<\/[a-z]+>\s*\)?;?\s*$/m.test(code) && /=>\s*\(?\s*</.test(code);
+
+// Compile JavaScript without running it, with Node's own parser (Electron runs as Node).
+// `line` is where the code starts in its file, so errors carry the file's line numbers.
+function jsErrors(code, line = 1, asModule = false) {
+  if (looksLikeJsx(code)) return Promise.resolve([]);
+  return new Promise((resolve) => {
+    const tmp = path.join(os.tmpdir(), `qws-check-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.${asModule ? 'mjs' : 'cjs'}`);
+    try {
+      fs.writeFileSync(tmp, '\n'.repeat(Math.max(0, line - 1)) + code);
+    } catch {
+      return resolve([]);
+    }
+    let out = '';
+    const child = spawn(process.execPath, ['--check', tmp], { windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } });
+    child.stderr.on('data', (d) => (out += d));
+    child.stdout.on('data', (d) => (out += d));
+    const timer = setTimeout(() => killTree(child), 5000);
+    const done = (code2) => {
+      clearTimeout(timer);
+      fs.rm(tmp, { force: true }, () => {});
+      const e = code2 === 0 ? null : SyntaxCheck.parseNodeError(out);
+      resolve(e ? [e] : []);
+    };
+    child.on('error', () => done(0));
+    child.on('close', done);
+  });
+}
+
+async function pythonErrors(file) {
+  let py = 'python3';
+  if (process.platform === 'win32') py = (await windowsPython(workspaceRoot).catch(() => null)) || 'python';
+  const script = "import ast,sys; ast.parse(open(sys.argv[1], encoding='utf-8').read(), sys.argv[1])";
+  const r = await new Promise((resolve) => {
+    let out = '';
+    const child = spawn(`${py} -c "${script}" "${file}"`, { shell: true, windowsHide: true, env: commandEnv() });
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
+    const timer = setTimeout(() => killTree(child), 5000);
+    child.on('error', () => resolve({ code: -1, out }));
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code, out });
+    });
+  });
+  if (r.code === 0) return [];
+  const e = SyntaxCheck.parsePythonError(r.out);
+  return e && /Error/.test(e.message) && !/No module named|not recognized|not found|ModuleNotFound/i.test(r.out) ? [e] : [];
+}
+
+async function syntaxErrorsOf(kind, text, rel) {
+  if (kind === 'json') return SyntaxCheck.checkJson(text);
+  if (kind === 'js') return jsErrors(text, 1, /\.mjs$/i.test(rel) || SyntaxCheck.isModuleCode(text));
+  if (kind === 'html') {
+    const errs = [];
+    for (const sc of SyntaxCheck.inlineScripts(text).slice(0, 8)) errs.push(...(await jsErrors(sc.code, sc.line, sc.module || SyntaxCheck.isModuleCode(sc.code))));
+    return errs;
+  }
+  return [];
+}
+
+// The errors a write introduced in `rel` (compared with `before`, its content before the write).
+ipcMain.handle('syntax:check', async (_e, rel, before) => {
+  const kind = SyntaxCheck.kindOf(rel);
+  if (!kind) return { checked: false, errors: [] };
+  const abs = resolveInWorkspace(rel);
+  let after;
+  try {
+    after = await fsp.readFile(abs, 'utf8');
+  } catch {
+    return { checked: false, errors: [] };
+  }
+  if (after.length > 2_000_000) return { checked: false, errors: [] };
+  let now;
+  if (kind === 'python') now = await pythonErrors(abs);
+  else now = await syntaxErrorsOf(kind, after, rel);
+  if (!now.length) return { checked: true, errors: [] };
+  let then = [];
+  if (typeof before === 'string' && before.trim()) {
+    if (kind === 'python') {
+      const tmp = path.join(os.tmpdir(), `qws-check-${process.pid}-${Date.now()}.py`);
+      await fsp.writeFile(tmp, before).catch(() => {});
+      then = await pythonErrors(tmp);
+      fs.rm(tmp, { force: true }, () => {});
+    } else then = await syntaxErrorsOf(kind, before, rel);
+  }
+  return { checked: true, errors: SyntaxCheck.newErrors(then, now), all: now };
+});
+
+// ---------- long command output saved for the model (src/renderer/toolbudget.js) ----------
+// <project>/.qwen/output/<time>-<label>.txt, with a .gitignore so it is never committed; the
+// newest 30 are kept.
+ipcMain.handle('output:save', async (_e, label, text) => {
+  const dir = resolveInWorkspace('.qwen/output');
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.writeFile(path.join(dir, '.gitignore'), '*\n').catch(() => {});
+  const name = `${new Date().toISOString().replace(/[:.]/g, '-')}-${String(label || 'output').replace(/[^\w.-]+/g, '-').slice(0, 40)}.txt`;
+  await fsp.writeFile(path.join(dir, name), String(text ?? ''));
+  const files = (await fsp.readdir(dir)).filter((f) => f.endsWith('.txt')).sort();
+  for (const f of files.slice(0, Math.max(0, files.length - 30))) await fsp.rm(path.join(dir, f), { force: true }).catch(() => {});
+  return `.qwen/output/${name}`;
+});
+
 // ---------- test built GUI apps ----------
 // Launches the app the agent built, finds its window by diffing the desktop's window list,
 // screenshots that window only, runs the requested clicks/typing through the platform's own
@@ -1023,10 +1131,24 @@ function isCloudEndpoint(s) {
   return !/^(localhost|127\.|0\.0\.0\.0|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.|\[?::1\]?$)|\.local$/i.test(host);
 }
 
+// Secrets hidden from cloud models (src/redact.js). One vault for the app's life, so the same
+// secret keeps the same placeholder number from request to request.
+const Redact = require('./redact.js');
+const secretVault = Redact.createVault();
+
+ipcMain.handle('secrets:restore', (_e, text) => Redact.restoreText(text, secretVault));
+
 ipcMain.handle('chat:stream', async (event, id, payload) => {
   // payload.override (optional) runs this one request on a different provider/model (the heavy
   // model) without changing the saved settings.
-  const s = { ...loadSettings(), ...(payload.override || {}) };
+  const saved = loadSettings();
+  const s = { ...saved, ...(payload.override || {}) };
+  let redacted = 0;
+  if (saved.redactSecrets !== false && isCloudEndpoint(s) && Array.isArray(payload.messages)) {
+    const r = Redact.redactMessages(payload.messages, secretVault, Redact.knownSecrets(saved));
+    payload = { ...payload, messages: r.messages };
+    redacted = r.count;
+  }
   const controller = new AbortController();
   chatControllers.set(id, controller);
   let gotFirst = false;
@@ -1047,7 +1169,8 @@ ipcMain.handle('chat:stream', async (event, id, payload) => {
     ? { ok: false, error: `HTTP 503 from ${s.baseUrl}: no answer within ${Math.round(firstTokenMs(s) / 1000)}s — treated as busy` }
     : chatError(err, s));
   try {
-    return await chatStreamInner(s, payload, controller, send, fail);
+    const res = await chatStreamInner(s, payload, controller, send, fail);
+    return redacted && res && typeof res === 'object' ? { ...res, redacted } : res;
   } finally {
     clearTimeout(ttft);
     chatControllers.delete(id);

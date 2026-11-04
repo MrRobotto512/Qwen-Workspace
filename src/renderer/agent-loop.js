@@ -444,6 +444,47 @@ async function cloudChat(c, kind, payload) {
   return { ok: false, error: 'No cloud model answered.' };
 }
 
+// After a write or edit landed: the syntax check (syntaxcheck.js in main, from Hermes Agent).
+// Only errors this change introduced are reported; one counts as a failed step, so the model
+// fixes it next instead of building on a broken file.
+async function afterWrite(c, p, before, out) {
+  if (!out || out.rejected || /^Error/.test(String(out.result || '')) || state.settings.syntaxCheck === false) return out;
+  const sc = await api.syntaxCheck(p, before ?? null).catch(() => null);
+  if (!sc?.errors?.length) return out;
+  const e = sc.errors[0];
+  const more = sc.errors.length > 1 ? ` (and ${sc.errors.length - 1} more)` : '';
+  out.result += `\nSyntax check: ${p}${e.line ? ` line ${e.line}` : ''}: ${e.message}${more}. This change introduced it — fix it with your next edit, before anything else.`;
+  out.failed = true;
+  out.meta = 'syntax error';
+  DebugLog.add(c, 'notice', { text: `syntax check: ${p}${e.line ? `:${e.line}` : ''} ${e.message}` });
+  return out;
+}
+
+// A long tool output, fitted to the result budget (toolbudget.js): its start and its end, and
+// the whole of it saved to .qwen/output/ for read_file when anything was cut.
+async function fitResult(c, text, label) {
+  const s = String(text ?? '');
+  const max = ToolBudget.budgetFor(state.settings.contextLength);
+  if (s.length <= max) return s;
+  let file = null;
+  if (state.ws) file = await api.saveOutput(label, s).catch(() => null);
+  const note = file ? ToolBudget.savedNote(file, s.split('\n').length) : '';
+  return `${ToolBudget.headTail(s, max - note.length - 1).text}${note ? `\n${note}` : ''}`;
+}
+
+// A cloud model saw secrets as «redacted secret #n» (redact.js); a file it writes gets the real
+// values back. A placeholder QWS can no longer fill (the app restarted since) is refused.
+async function restorePlaceholders(name, args) {
+  if (!['write_file', 'edit_file'].includes(name)) return null;
+  for (const k of ['content', 'old_text', 'new_text']) {
+    if (typeof args[k] !== 'string' || !args[k].includes('«redacted secret #')) continue;
+    const r = await api.restoreSecrets(args[k]);
+    if (r.unknown) return `Error: ${k} contains «redacted secret #…» placeholders that QWS can no longer fill in with the real values. Leave the lines that hold secrets exactly as they are in the file: change the other lines with edit_file.`;
+    args[k] = r.text;
+  }
+  return null;
+}
+
 // A write that put another script inside code identifiers ("MeshStandard材料") gets a warning
 // in its result, so the model fixes the glitch on its next step instead of shipping it.
 function withGlitchWarning(p, before, after, out) {
@@ -459,8 +500,13 @@ async function executeTool(c, call, row) {
   try {
     args = call.function.arguments ? JSON.parse(call.function.arguments) : {};
   } catch {
-    return { result: `Error: arguments were not valid JSON: ${call.function.arguments.slice(0, 300)}` };
+    // Calls that did not pass through the reply (a subagent's, a program's) get the same repair.
+    const fixed = ArgRepair.repairCall(call.function.arguments, toolSchemaFor(name));
+    if (fixed.failed) return { result: `Error: arguments were not valid JSON (${fixed.error}): ${call.function.arguments.slice(0, 300)}\nWrite the arguments as one JSON object, with line breaks inside strings written as \\n.`, failed: true };
+    args = fixed.value;
   }
+  const unfilled = await restorePlaceholders(name, args);
+  if (unfilled) return { result: unfilled, failed: true };
   // Only the conversation on screen moves the editor around.
   const follow = state.settings.followAgent && c === state.conv;
   // MCP tools run on their server. They are not read-only, so they are barriers (run alone)
@@ -506,7 +552,7 @@ async function executeTool(c, call, row) {
       const vision = imgs.length && modelSeesImages(c);
       const note = imgs.length && !vision ? `\n(${imgs.length === 1 ? 'An image was' : `${imgs.length} images were`} returned, but the current model does not look able to see images.)` : '';
       return {
-        result: (browser || untrusted ? r.text : truncate(r.text)) + note, // wrapped text is already capped inside its wrapper
+        result: (browser || untrusted ? r.text : await fitResult(c, r.text, raw)) + note, // wrapped text is already capped inside its wrapper
         meta: r.isError ? 'error' : imgs.length ? `${imgs.length} image${imgs.length === 1 ? '' : 's'}` : 'done',
         failed: r.isError,
         images: vision ? imgs.map((img, i) => ({ ...img, note: `Image ${i + 1} returned by ${label} ${mcpToolShort(name)}.` })) : null
@@ -528,6 +574,7 @@ async function executeTool(c, call, row) {
         const p = normPath(args.path);
         const tab = findTab(p);
         let text = tab ? tab.model.getValue() : await api.read(p);
+        const whole = text;
         const all = text.split(/\r?\n/);
         const lineCount = all.length - (all[all.length - 1] === '' ? 1 : 0);
         // Long files come back a page at a time with a pointer to the next page.
@@ -537,6 +584,7 @@ async function executeTool(c, call, row) {
         if (paged) text = all.slice(start - 1, end).join('\n');
         const header = `${p} (${lineCount} lines)${paged ? `, showing lines ${start}-${end}` : ''}`;
         const more = end < lineCount ? `\n[${lineCount - end} more lines. Call read_file with start_line=${end + 1} to continue.]` : '';
+        FileState.noteRead((c.files ||= {}), p, whole, start, end);
         row.setBody(text);
         if (follow) openFile(p, { preview: true, focus: false, line: start > 1 ? start : null });
         return { result: `${header}:\n${truncate(text)}${more}`, meta: paged ? `lines ${start}–${end} of ${lineCount}` : `${lineCount} lines` };
@@ -552,9 +600,17 @@ async function executeTool(c, call, row) {
         const content = String(args.content ?? '');
         const exists = await api.exists(p);
         const original = exists ? findTab(p)?.model.getValue() ?? (await api.read(p)) : '';
-        if (exists && original === content) return { result: 'File already has exactly this content; nothing changed.', meta: 'no change' };
+        if (exists && original === content) return { result: 'File already has exactly this content; nothing changed.', meta: 'no change', progress: false };
+        // Read before overwrite (filestate.js, from Hermes Agent).
+        if (exists && state.settings.readBeforeWrite !== false) {
+          const blocker = FileState.overwriteBlocker((c.files ||= {}), p, original);
+          if (blocker) {
+            row.setBody(blocker);
+            return { result: blocker, meta: 'read it first', progress: false };
+          }
+        }
         row.setVerb(exists ? 'Rewrite' : 'Create');
-        return withGlitchWarning(p, original, content, await applyAgentEdit(c, row, p, exists ? original : null, content, exists ? `Rewrite ${p}` : `Create ${p}`));
+        return afterWrite(c, p, exists ? original : null, withGlitchWarning(p, original, content, await applyAgentEdit(c, row, p, exists ? original : null, content, exists ? `Rewrite ${p}` : `Create ${p}`)));
       }
       case 'edit_file': {
         const p = normPath(args.path);
@@ -574,7 +630,7 @@ async function executeTool(c, call, row) {
           if (loose.modified) {
             const out = withGlitchWarning(p, original, loose.modified, await applyAgentEdit(c, row, p, original, loose.modified, `Edit ${p}`));
             if (!out.rejected && !/^Error/.test(out.result)) out.result += ` (${loose.note}.)`;
-            return out;
+            return afterWrite(c, p, original, out);
           }
           if (loose.count > 1) return { result: `Error: old_text was not found exactly in ${p}, and ignoring indentation it matches ${loose.count} places. Read the file again and include more surrounding lines.` };
           // Last resort: the same text with different spacing and line breaks (a one-line file
@@ -584,14 +640,14 @@ async function executeTool(c, call, row) {
           if (blind.modified) {
             const out = withGlitchWarning(p, original, blind.modified, await applyAgentEdit(c, row, p, original, blind.modified, `Edit ${p}`));
             if (!out.rejected && !/^Error/.test(out.result)) out.result += ` (${blind.note}.)`;
-            return out;
+            return afterWrite(c, p, original, out);
           }
           return { result: editMissMessage(c, p, original, oldText), failed: true };
         }
         if (count > 1) return { result: `Error: old_text matches ${count} places in ${p}. Include more surrounding lines so it is unique.` };
         const modified = original.replace(oldText, () => newText);
         if (modified === original) return unchangedEdit(p);
-        return withGlitchWarning(p, original, modified, await applyAgentEdit(c, row, p, original, modified, `Edit ${p}`));
+        return afterWrite(c, p, original, withGlitchWarning(p, original, modified, await applyAgentEdit(c, row, p, original, modified, `Edit ${p}`)));
       }
       case 'delete_file': {
         const p = normPath(args.path);
@@ -610,6 +666,7 @@ async function executeTool(c, call, row) {
         await api.remove(p, { quiet: true });
         if (findTab(p)) closeTab(p, true);
         recordChange(c, p, original, null);
+        if (c.files) delete c.files[p];
         state.fileIndex = null;
         renderTree();
         row.linkToChange(p);
@@ -636,6 +693,10 @@ async function executeTool(c, call, row) {
         if (findTab(from)) closeTab(from, true);
         recordChange(c, to, null, content);
         recordChange(c, from, content, null);
+        if (c.files?.[from]) {
+          c.files[to] = c.files[from];
+          delete c.files[from];
+        }
         expandTo(to);
         state.fileIndex = null;
         renderTree();
@@ -801,7 +862,7 @@ async function executeTool(c, call, row) {
         renderTree();
         const streak = streakAfter(c, 'cmd', cmd, r.code === 0, r.output);
         const hint = [ToolParse.cmdShellHint(cmd, r.output, state.ws?.platform), r.code !== 0 ? ToolParse.apiErrorHint(r.output) : '', r.code !== 0 && !/consult_planner|Stop now/.test(streak) && state.settings.consultFreely && heavyOverride() ? 'If the cause is not clear, ask consult_planner (paste this error) before trying another fix.' : '', streak].filter(Boolean).join('\n');
-        return { result: `Exit code: ${r.code}\n${truncate(r.output || '(no output)')}${hint ? `\n${hint}` : ''}`, meta: `exit ${r.code}`, failed: r.code !== 0 };
+        return { result: `Exit code: ${r.code}\n${await fitResult(c, r.output || '(no output)', cmd.split(/\s+/).slice(0, 2).join('-'))}${hint ? `\n${hint}` : ''}`, meta: `exit ${r.code}`, failed: r.code !== 0 };
       }
       case 'check_api': {
         const r = await api.checkApi(args.names, args.language);
@@ -1029,6 +1090,7 @@ async function applyAgentEdit(c, row, p, before, after, title) {
   await api.write(p, after);
   syncOpenTab(p, after);
   recordChange(c, p, before, after);
+  FileState.noteWrite((c.files ||= {}), p, after);
   if (before === null) {
     expandTo(p);
     state.fileIndex = null;
@@ -2307,7 +2369,11 @@ async function runConversation(c) {
     }
     // Compaction only helps when the conversation is what overflows; it can't shrink the
     // fixed part, and re-summarizing every step against an oversized system prompt would loop.
-    if (cu.tokens >= cu.window * COMPACT_AT && cu.tokens - fixed > cu.window * 0.15) await compactConversation(c);
+    // First the cheap pass (toolbudget.js, from Hermes Agent): old tool results outside the recent
+    // part become one line each, with no model call; only if that is not enough, summarize.
+    let cuNow = cu;
+    if (cu.tokens >= cu.window * ToolBudget.PRUNE_AT && pruneOldResults(c, cu.window)) cuNow = contextUse(c);
+    if (cuNow.tokens >= cuNow.window * COMPACT_AT && cuNow.tokens - fixed > cuNow.window * 0.15) await compactConversation(c);
     if (c.stopRequested) return false;
     // An Escalate click (on a message, or from the big-plan card) runs the next step on the planner.
     if (c.escalateRequested) {
@@ -2574,6 +2640,7 @@ async function runConversation(c) {
             firstMs: prog.firstAt ? prog.firstAt - prog.startedAt : undefined, ms: Date.now() - prog.startedAt
           })
       : { ok: false, error: String(res.error || '').slice(0, 400) });
+    if (res.redacted) DebugLog.add(c, 'notice', { text: `hid ${res.redacted} secret${res.redacted === 1 ? '' : 's'} (API keys, tokens, passwords) from the cloud model` });
     if (loopCaught) {
       // Not the user's Stop: the loop watch aborted a model thinking in circles. Push it to act,
       // and let the ladder hand the step to something stronger.
@@ -2840,7 +2907,16 @@ async function runConversation(c) {
     const msg = { role: 'assistant', content: stripThink(content) };
     // Normalize arguments before the call enters history: one array-shaped `arguments`
     // (a 7B writing ask_user([{…}])) would 400 every later request on Ollama's native API.
-    if (calls.length) msg.tool_calls = calls.map((tc) => ({ ...tc, function: { ...tc.function, arguments: ToolParse.normalizeToolArgs(tc.function.arguments) } }));
+    // Almost-right JSON (a raw line break inside a file's content, C:\Users, a trailing comma,
+    // a missing closing brace, "42" where a number goes) is repaired here, so the tool runs
+    // and the history replays cleanly (argrepair.js, from Hermes Agent).
+    if (calls.length) {
+      msg.tool_calls = calls.map((tc) => {
+        const fixed = ArgRepair.repairCall(tc.function.arguments, toolSchemaFor(tc.function.name));
+        if (fixed.fixes.length) DebugLog.add(c, 'notice', { text: `repaired ${tc.function.name} arguments: ${fixed.fixes.join('; ')}` });
+        return { ...tc, function: { ...tc.function, arguments: ToolParse.normalizeToolArgs(fixed.text) } };
+      });
+    }
     c.history.push(msg);
     saveConv(c);
     if (!calls.length) {
@@ -3206,6 +3282,30 @@ function addStopNotice(c) {
 }
 
 const COMPACT_AT = 0.85;
+
+// Where the recent, kept-whole part of the history starts: the earliest user or assistant
+// message such that everything from it fits in `share` of the window.
+function recentStart(h, size, share = KEEP_TAIL) {
+  let cut = h.length;
+  for (let i = h.length - 1; i >= 1; i--) {
+    if (h[i].role === 'tool') continue;
+    if (estimateTokens(h.slice(i)) > size * share) break;
+    cut = i;
+  }
+  return cut;
+}
+
+// Shorten old tool results in place. True when anything changed.
+function pruneOldResults(c, size) {
+  const from = recentStart(c.history, size);
+  const p = ToolBudget.pruneHistory(c.history, from);
+  if (!p.pruned) return false;
+  c.history.splice(0, c.history.length, ...p.messages);
+  c.usageAt = Number.MAX_SAFE_INTEGER; // the last measured prompt size is stale now: estimate until the next request
+  DebugLog.add(c, 'notice', { text: `shortened ${p.pruned} old tool result${p.pruned === 1 ? '' : 's'} (~${Math.round(p.saved / 3.5).toLocaleString()} tokens) instead of summarizing` });
+  saveConv(c);
+  return true;
+}
 const KEEP_TAIL = 0.35; // share of the window kept as recent, unsummarized turns
 
 function estimateTokens(messages) {

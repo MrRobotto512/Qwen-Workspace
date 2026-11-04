@@ -517,6 +517,9 @@ function openSettings() {
   for (const k of ['agentMode', 'planFirst', 'includeCurrentFile', 'followAgent', 'autoCheckUpdates', 'branchPerTask', 'lessonsEnabled', 'skillWriter', 'checksGate', 'subagents', 'reviewPass', 'consultFreely']) $(`#s-${k}`).checked = !!s[k];
   $('#s-stopRule').checked = s.stopRule !== false;
   $('#s-describeScreens').checked = s.describeScreens !== false;
+  $('#s-readBeforeWrite').checked = s.readBeforeWrite !== false;
+  $('#s-syntaxCheck').checked = s.syntaxCheck !== false;
+  $('#s-redactSecrets').checked = s.redactSecrets !== false;
   $('#s-architect').checked = s.architect !== false;
   $('#s-promptCache').checked = s.promptCache !== false;
   renderBrowserSites();
@@ -586,6 +589,9 @@ async function saveSettingsFromUi() {
   for (const k of ['agentMode', 'planFirst', 'includeCurrentFile', 'followAgent', 'autoCheckUpdates', 'branchPerTask', 'lessonsEnabled', 'skillWriter', 'checksGate', 'subagents', 'reviewPass', 'consultFreely']) patch[k] = $(`#s-${k}`).checked;
   patch.stopRule = $('#s-stopRule').checked;
   patch.describeScreens = $('#s-describeScreens').checked;
+  patch.readBeforeWrite = $('#s-readBeforeWrite').checked;
+  patch.syntaxCheck = $('#s-syntaxCheck').checked;
+  patch.redactSecrets = $('#s-redactSecrets').checked;
   patch.architect = $('#s-architect').checked;
   patch.promptCache = $('#s-promptCache').checked;
   patch.planWith = $('#s-planWith').value;
