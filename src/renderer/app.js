@@ -2565,6 +2565,8 @@ function bindUi() {
   $('#gimp-setup-btn').onclick = setupGimpFromSettings;
   $('#browser-setup-btn').onclick = setupBrowserFromSettings;
   $('#craft-setup-btn').onclick = setupCraftFromSettings;
+  $('#bench-run-btn').onclick = () => runBenchmark($('#bench-set').value);
+  $('#bench-stop-btn').onclick = stopBenchmark;
   $('#node-add-btn').onclick = addNodeFromForm;
   $('#price-add-btn').onclick = addPriceFromForm;
   $('#device-add-btn').onclick = addDeviceFromForm;

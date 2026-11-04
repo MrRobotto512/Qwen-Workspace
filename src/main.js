@@ -55,6 +55,8 @@ const DEFAULT_SETTINGS = {
   checksApproved: {}, // project root -> the exact checks.json text the user allowed to run
   skillWriter: true, // after a long task that worked, propose a reusable skill (approval card)
   reviewPass: false, // planner reviews each task's diff and hands fixes back (2 rounds max) // after a task that ran commands, propose lessons for QWEN.md (always behind the diff card)
+  architect: true, // after a plan for new files, the planner writes the first version; the local model tests and fixes it
+  promptCache: true, // Anthropic prompt caching: repeated prompt prefixes billed at about a tenth
   describeScreens: true, // a text-only model's test_app screenshots are described by a vision model
   stopRule: true, // the same command failing the same way: name the cause; after two failed fixes, stop and report
   browserSites: [], // websites where browser tools may act without asking ("Allow on <site>")
@@ -637,6 +639,11 @@ ipcMain.handle('gui:testPage', async (_e, opts) => {
       // A game's own self-test (window.selfTest, see renderer/selftest.js): run after the page
       // and any actions, with a time limit, so its report — measured from the game's state —
       // reaches the agent. Whether the page draws on a <canvas> tells a game without one.
+      // A benchmark check: a JS expression from the app's own task list (never from the model),
+      // run in the page; true passes, anything else says what was wrong.
+      if (!crashed && opts?.probe) {
+        out.probe = await wc.executeJavaScript(`(async () => { try { const r = await (${String(opts.probe)}); return r === true ? true : String(r); } catch (e) { return 'error: ' + e.message; } })()`, true).catch((e) => `error: ${e.message}`);
+      }
       if (!crashed && opts?.selfTest !== false) {
         const probe = await wc.executeJavaScript('({ selfTest: typeof window.selfTest === "function", canvas: !!document.querySelector("canvas") })', true).catch(() => ({}));
         out.hasCanvas = !!probe.canvas;
@@ -1315,7 +1322,7 @@ async function streamAnthropic(s, payload, signal, send) {
   const res = await fetch(apiUrl(s, '/messages'), {
     method: 'POST',
     headers: apiHeaders(s),
-    body: JSON.stringify(toAnthropicRequest(s, payload)),
+    body: JSON.stringify(s.promptCache === false ? toAnthropicRequest(s, payload) : require('./anthropiccache.js').addCacheBreakpoints(toAnthropicRequest(s, payload))),
     signal,
     dispatcher: modelDispatcher
   });
@@ -1331,6 +1338,9 @@ async function streamAnthropic(s, payload, signal, send) {
   let finishReason = null;
   let promptTokens = 0;
   let completionTokens = 0;
+  let cacheRead = 0;
+  let cacheWrite = 0;
+  let billedPromptTokens = 0;
   const decoder = new TextDecoder();
   let buffer = '';
 
@@ -1339,6 +1349,9 @@ async function streamAnthropic(s, payload, signal, send) {
     if (j.type === 'message_start') {
       const u = j.message?.usage || {};
       promptTokens = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+      cacheRead = u.cache_read_input_tokens || 0;
+      cacheWrite = u.cache_creation_input_tokens || 0;
+      billedPromptTokens = require('./anthropiccache.js').billedInput(u);
     } else if (j.type === 'content_block_start' && j.content_block?.type === 'tool_use') {
       const slot = { id: j.content_block.id, type: 'function', function: { name: j.content_block.name, arguments: '' } };
       blocks.set(j.index, slot);
@@ -1373,7 +1386,7 @@ async function streamAnthropic(s, payload, signal, send) {
     }
   }
 
-  return { ok: true, content, reasoning, toolCalls, finishReason, usage: { promptTokens, completionTokens } };
+  return { ok: true, content, reasoning, toolCalls, finishReason, usage: { promptTokens, completionTokens, cacheRead, cacheWrite, billedPromptTokens } };
 }
 
 // ---------- remote sessions (other devices viewing/driving this app) ----------
@@ -2486,6 +2499,37 @@ ipcMain.handle('craft:setup', async () => {
   } catch (e) {
     return { ok: false, message: `Craft Anything setup failed: ${e.message}` };
   }
+});
+// The benchmark (renderer/bench.js): a fresh folder per task under the app's data, the results
+// of each run as JSON beside them, and the latest run read back for comparison.
+const benchRoot = () => path.join(app.getPath('userData'), 'bench');
+ipcMain.handle('bench:prepare', async (_e, runId, taskId) => {
+  const safe = (x) => String(x || '').replace(/[^\w.-]+/g, '_').slice(0, 60);
+  const dir = path.join(benchRoot(), 'runs', safe(runId), safe(taskId));
+  await fsp.rm(dir, { recursive: true, force: true });
+  await fsp.mkdir(dir, { recursive: true });
+  return dir;
+});
+ipcMain.handle('bench:save', async (_e, run) => {
+  const dir = path.join(benchRoot(), 'results');
+  await fsp.mkdir(dir, { recursive: true });
+  const file = path.join(dir, `${String(run?.id || Date.now()).replace(/[^\w.-]+/g, '_')}.json`);
+  await fsp.writeFile(file, JSON.stringify(run, null, 2), 'utf8');
+  return file;
+});
+ipcMain.handle('bench:last', async () => {
+  const dir = path.join(benchRoot(), 'results');
+  const files = (await fsp.readdir(dir).catch(() => [])).filter((f) => f.endsWith('.json')).sort();
+  if (!files.length) return null;
+  try {
+    return JSON.parse(await fsp.readFile(path.join(dir, files[files.length - 1]), 'utf8'));
+  } catch {
+    return null;
+  }
+});
+ipcMain.handle('bench:has', async (_e, tool) => {
+  const r = await runQuiet(tool === 'python' ? (process.platform === 'win32' ? 'python' : 'python3') : 'node', ['--version'], 10_000);
+  return r.code === 0 && !/Microsoft Store|was not found/i.test(r.out || '');
 });
 ipcMain.handle('mcp:reconnect', () => mcp.connectAll(loadSettings().mcpServers));
 ipcMain.handle('mcp:connectOne', (_e, cfg) => mcp.connectOne(cfg));

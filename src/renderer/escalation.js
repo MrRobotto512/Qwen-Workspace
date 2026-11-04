@@ -92,6 +92,28 @@ const PLAN_FIRST_REMINDER = [
   'Do not execute any step yourself — the everyday model takes over after this turn.'
 ].join('\n');
 
+// Architect mode (after a plan, when the task builds new files): the planner writes the first
+// complete version itself — the part small models get wrong — and the everyday model tests and
+// fixes it. Its turn only gets the tools to look and write.
+const ARCHITECT_TOOLS = new Set(['write_file', 'read_file', 'list_files']);
+function architectTools(tools) {
+  return (tools || []).filter((t) => ARCHITECT_TOOLS.has(t?.function?.name));
+}
+const isArchitectTool = (name) => ARCHITECT_TOOLS.has(name);
+const ARCHITECT_REFUSAL = 'Error: not now — you are the architect: write the files with write_file. The everyday model runs and tests them after your turn.';
+function architectReminder(files) {
+  return [
+    `You are the architect for this task. Write the complete, working first version of ${files.join(', ')} now, following the plan above and the user's request.`,
+    '- Every feature in the plan and the request, not a stub or a skeleton: the everyday model that takes over after you is much weaker and must only test and fix.',
+    '- One write_file call per file, with the whole file. Keep it compact and readable; one file unless the plan says otherwise.',
+    '- For a game, include the window.selfTest() the plan describes, measuring the game\'s own state.',
+    '- Do not run or test anything, and do not re-plan: the everyday model tests your files with test_app and fixes what fails.'
+  ].join('\n');
+}
+function architectHandoff(files, model) {
+  return `The architect (${model}) wrote the first version of ${files.join(', ')}. You are the everyday model now. Do not rewrite these files: test them with test_app (a game's self-test runs automatically), then fix what fails with small edit_file changes, working through the plan and marking each step done when its check passes.`;
+}
+
 // The planning turn only gets planning tools: the plan (todo_write) and, when a decision is
 // genuinely needed, the user (ask_user). Everything else would tempt it to start executing.
 const PLANNING_TOOLS = new Set(['todo_write', 'ask_user']);
@@ -156,6 +178,6 @@ function planMissingReminder() {
   return 'You did not write a plan. Do not execute any step yourself. Reply now with ONE todo_write call holding the complete todo list (3-8 steps); every step must contain an exact file path (with extension) or an exact command.';
 }
 
-const EscalationExports = { namedFiles, commandRuns, commandFailStreak, planFiles, PLAN_FIRST_REMINDER, planningTools, isPlanningTool, PLAN_ONLY_REFUSAL, MIN_DETAILS, planProblems, vaguePlanSteps, planRetryReminder, planMissingReminder };
+const EscalationExports = { architectTools, isArchitectTool, ARCHITECT_REFUSAL, architectReminder, architectHandoff, namedFiles, commandRuns, commandFailStreak, planFiles, PLAN_FIRST_REMINDER, planningTools, isPlanningTool, PLAN_ONLY_REFUSAL, MIN_DETAILS, planProblems, vaguePlanSteps, planRetryReminder, planMissingReminder };
 if (typeof module !== 'undefined' && module.exports) module.exports = EscalationExports;
 if (typeof window !== 'undefined') window.Escalation = EscalationExports;

@@ -517,6 +517,8 @@ function openSettings() {
   for (const k of ['agentMode', 'planFirst', 'includeCurrentFile', 'followAgent', 'autoCheckUpdates', 'branchPerTask', 'lessonsEnabled', 'skillWriter', 'checksGate', 'subagents', 'reviewPass', 'consultFreely']) $(`#s-${k}`).checked = !!s[k];
   $('#s-stopRule').checked = s.stopRule !== false;
   $('#s-describeScreens').checked = s.describeScreens !== false;
+  $('#s-architect').checked = s.architect !== false;
+  $('#s-promptCache').checked = s.promptCache !== false;
   renderBrowserSites();
   $('#about-version').textContent = state.appInfo?.version || '';
   $('#about-kind').textContent = KIND_TEXT[state.appInfo?.kind] || '';
@@ -584,6 +586,8 @@ async function saveSettingsFromUi() {
   for (const k of ['agentMode', 'planFirst', 'includeCurrentFile', 'followAgent', 'autoCheckUpdates', 'branchPerTask', 'lessonsEnabled', 'skillWriter', 'checksGate', 'subagents', 'reviewPass', 'consultFreely']) patch[k] = $(`#s-${k}`).checked;
   patch.stopRule = $('#s-stopRule').checked;
   patch.describeScreens = $('#s-describeScreens').checked;
+  patch.architect = $('#s-architect').checked;
+  patch.promptCache = $('#s-promptCache').checked;
   patch.planWith = $('#s-planWith').value;
   patch.heavy = {
     enabled: $('#s-heavy-enabled').checked,
