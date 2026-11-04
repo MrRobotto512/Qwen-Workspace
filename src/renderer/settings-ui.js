@@ -83,10 +83,18 @@ async function installSkillFromUrl() {
   if (!url) return;
   out.className = 'hint';
   out.textContent = 'Installing…';
-  const r = await api.skillsInstall(url).catch((e) => ({ ok: false, output: cleanError(e) }));
+  let r = await api.skillsInstall(url).catch((e) => ({ ok: false, output: cleanError(e) }));
+  // The safety scan (skillscan.js) found something: the user reads it and decides.
+  if (!r.ok && r.needsConfirm) {
+    const head = r.verdict === 'dangerous'
+      ? 'This skill contains things a harmful skill would do. Install it only if you trust where it came from and the lines below make sense for what it does.'
+      : 'This skill contains a few things worth a look before you install it.';
+    if (confirm(`${head}\n\n${r.report}\n\nInstall it anyway?`)) r = await api.skillsInstall(url, { force: true }).catch((e) => ({ ok: false, output: cleanError(e) }));
+    else r = { ok: false, output: 'Not installed: the safety scan found the lines shown, and you chose not to install it.' };
+  }
   if (r.ok) {
     out.className = 'hint ok';
-    out.textContent = `Installed "${r.name}" (${r.files} file${r.files === 1 ? '' : 's'}, ${r.scope === 'project' ? 'this project' : 'personal'}). New conversations can use it.`;
+    out.textContent = `Installed "${r.name}" (${r.files} file${r.files === 1 ? '' : 's'}, ${r.scope === 'project' ? 'this project' : 'personal'}). New conversations can use it.${r.verdict && r.verdict !== 'safe' ? ` Safety scan: ${r.findings} finding${r.findings === 1 ? '' : 's'}, installed because you chose to.` : ' Safety scan: nothing found.'}`;
     inp.value = '';
     renderSkillsSettings();
   } else {
@@ -520,6 +528,7 @@ function openSettings() {
   $('#s-readBeforeWrite').checked = s.readBeforeWrite !== false;
   $('#s-syntaxCheck').checked = s.syntaxCheck !== false;
   $('#s-redactSecrets').checked = s.redactSecrets !== false;
+  $('#s-folderHints').checked = s.folderHints !== false;
   $('#s-architect').checked = s.architect !== false;
   $('#s-promptCache').checked = s.promptCache !== false;
   renderBrowserSites();
@@ -592,6 +601,7 @@ async function saveSettingsFromUi() {
   patch.readBeforeWrite = $('#s-readBeforeWrite').checked;
   patch.syntaxCheck = $('#s-syntaxCheck').checked;
   patch.redactSecrets = $('#s-redactSecrets').checked;
+  patch.folderHints = $('#s-folderHints').checked;
   patch.architect = $('#s-architect').checked;
   patch.promptCache = $('#s-promptCache').checked;
   patch.planWith = $('#s-planWith').value;

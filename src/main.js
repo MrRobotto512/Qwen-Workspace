@@ -61,6 +61,7 @@ const DEFAULT_SETTINGS = {
   readBeforeWrite: true, // write_file may not overwrite a file the task has not read in full (or that changed since)
   syntaxCheck: true, // every write is syntax-checked (JSON, JavaScript, a page's inline scripts, Python); new errors are reported
   redactSecrets: true, // API keys, tokens and passwords are hidden from cloud models (not from this PC's own models)
+  folderHints: true, // a subfolder's AGENTS.md / CLAUDE.md / QWEN.md is shown when the agent first works in it
   stopRule: true, // the same command failing the same way: name the cause; after two failed fixes, stop and report
   browserSites: [], // websites where browser tools may act without asking ("Allow on <site>")
   consultFreely: false, // the agent may call consult_planner whenever unsure (more cloud cost; the budget cap applies)
@@ -2362,12 +2363,17 @@ ipcMain.handle('skills:restore', async (_e, name) => {
 // Installs a skill folder from a GitHub link (a repo, or a folder inside one via /tree/…) into
 // the project's .qwen/skills — or the personal skills folder when no project is open. Files are
 // fetched one by one through the GitHub contents API, so no git or tar is needed.
-ipcMain.handle('skills:install', async (_e, url) => {
+// Skills from GitHub are scanned before anything is written (src/renderer/skillscan.js, from
+// Hermes Agent's skills_guard.py); findings go back to the user, who decides (force: true).
+const SkillScan = require('./renderer/skillscan.js');
+
+ipcMain.handle('skills:install', async (_e, url, { force = false } = {}) => {
   const m = /^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+?)(?:\.git)?(?:\/(?:tree|blob)\/([^/]+)(?:\/(.*))?)?\/?$/.exec(String(url || '').trim());
   if (!m) return { ok: false, output: 'Use a GitHub link: https://github.com/owner/repo or …/tree/<branch>/<folder containing SKILL.md>.' };
   const [, owner, repo, ref, subRaw] = m;
   const sub = (subRaw || '').replace(/\/+$/, '');
-  const gh = (p) => fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${p}${ref ? `?ref=${encodeURIComponent(ref)}` : ''}`, {
+  const apiBase = process.env.QWS_GITHUB_API_BASE || 'https://api.github.com'; // tests point this at a mock
+  const gh = (p) => fetch(`${apiBase}/repos/${owner}/${repo}/contents/${p}${ref ? `?ref=${encodeURIComponent(ref)}` : ''}`, {
     headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Qwen-Workspace' },
     signal: AbortSignal.timeout(30_000)
   });
@@ -2395,15 +2401,26 @@ ipcMain.handle('skills:install', async (_e, url) => {
     const root = workspaceRoot ? path.join(workspaceRoot, '.qwen', 'skills') : path.join(app.getPath('userData'), 'skills');
     const dest = path.join(root, dirName);
     if (fs.existsSync(dest)) return { ok: false, output: `A skill folder named "${dirName}" already exists (${dest}). Remove it first to reinstall.` };
+    // Download everything first, scan it, and write only once it passed or the user said yes.
+    const got = [];
     for (const f of files) {
       const res = await fetch(f.url, { headers: { 'User-Agent': 'Qwen-Workspace' }, signal: AbortSignal.timeout(60_000) });
       if (!res.ok) throw new Error(`Downloading ${f.rel} failed (HTTP ${res.status}).`);
+      const buf = Buffer.from(await res.arrayBuffer());
+      got.push({ rel: f.rel, buf, text: buf.includes(0) ? null : buf.toString('utf8') });
+    }
+    const scan = SkillScan.scanFiles(got);
+    const trusted = SkillScan.isTrusted(owner, repo);
+    if (!force && SkillScan.needsConfirm(scan.verdict, trusted)) {
+      return { ok: false, needsConfirm: true, verdict: scan.verdict, trusted, findings: scan.findings.length, report: SkillScan.report(scan.findings), output: `The safety scan found ${scan.findings.length} thing${scan.findings.length === 1 ? '' : 's'} to check in ${owner}/${repo}.` };
+    }
+    for (const f of got) {
       const target = path.join(dest, ...f.rel.split('/'));
       await fsp.mkdir(path.dirname(target), { recursive: true });
-      await fsp.writeFile(target, Buffer.from(await res.arrayBuffer()));
+      await fsp.writeFile(target, f.buf);
     }
     const meta = parseSkill(await fsp.readFile(path.join(dest, 'SKILL.md'), 'utf8'), dirName);
-    return { ok: true, name: meta.name, description: meta.description, dest, files: files.length, scope: workspaceRoot ? 'project' : 'user' };
+    return { ok: true, name: meta.name, description: meta.description, dest, files: files.length, scope: workspaceRoot ? 'project' : 'user', verdict: scan.verdict, findings: scan.findings.length };
   } catch (err) {
     return { ok: false, output: err.message };
   }

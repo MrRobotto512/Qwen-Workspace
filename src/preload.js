@@ -102,7 +102,7 @@ contextBridge.exposeInMainWorld('api', {
 
   skillsList: () => ipcRenderer.invoke('skills:list'),
   skillsRead: (id, file) => ipcRenderer.invoke('skills:read', id, file),
-  skillsInstall: (url) => ipcRenderer.invoke('skills:install', url),
+  skillsInstall: (url, opts) => ipcRenderer.invoke('skills:install', url, opts),
   skillsCreate: (draft) => ipcRenderer.invoke('skills:create', draft),
   skillsUsed: (id) => ipcRenderer.invoke('skills:used', id),
   skillsCurate: (opts) => ipcRenderer.invoke('skills:curate', opts),

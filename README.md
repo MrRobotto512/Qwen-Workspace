@@ -129,6 +129,11 @@ On macOS the app installs software with [Homebrew](https://brew.sh) when you ask
   - *Secrets stay on your PC:* API keys, tokens and passwords are replaced by placeholders before anything goes to a cloud model. Files keep the real values, because QWS puts them back when a cloud model writes a file. Your own machines' models see everything.
 
   Each of the last three can be turned off in Settings → Agent.
+- **More from Hermes Agent:**
+  - *Edits that land:* `edit_file` now also matches old text written with curly quotes or long dashes where the file has plain ones (or the reverse), old text with literal `\n` instead of line breaks, and, as a last resort, a block remembered slightly wrong. That last match needs its first and last lines exact, or every line mostly alike, and only one place in the file can match. A re-sent edit that already landed says so instead of "not found".
+  - *Loops named:* two to four calls repeating with the same results three times in a row (test, same failing edit, test …) get a plain notice and stop counting as progress, so the stuck-task escalation can step in.
+  - *Skills scanned before install:* a skill from GitHub is checked before anything is written. The scan looks for code that sends keys or credential files away, runs a downloaded script, deletes outside the project, sets itself to run at startup, or tells the agent to ignore its rules or hide things from you. If anything is found, you see the lines and decide.
+  - *Folder instructions:* when the agent first works in a subfolder, it sees that folder's `AGENTS.md`, `CLAUDE.md` or `QWEN.md`. One that tries to make the agent ignore its instructions isn't passed on. You can turn this off in Settings → Agent.
 - **Planner handoff (two models):**
   - Let a local Qwen do the grunt work and hand the hard parts to a stronger "planner" model (e.g. Gemini 2.5 Pro, or another Qwen in the cloud). Set it up in **Settings → Planner (heavy model) handoff**.
   - When Qwen stalls — repeating steps without progress — the next step runs on the planner automatically to break the impasse, then control returns to Qwen.
