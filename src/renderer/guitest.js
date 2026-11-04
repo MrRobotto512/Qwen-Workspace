@@ -276,9 +276,13 @@ function pixelStats(rgba, width, height, step = 7) {
   return { topShare: n ? top / n : 0, colours: counts.size, top: `#${hex(topKey >> 8)}${hex((topKey >> 4) & 15)}${hex(topKey & 15)}` };
 }
 
-// A line for the model when the picture is suspiciously flat, else ''.
-function pixelNote(st) {
+// A line for the model when the picture is suspiciously flat, else ''. A web page that does not
+// draw on a <canvas> is mostly background by design (a counter in the middle of a plain page is
+// 98% one colour — a field report called that "looks empty"), so for one only a picture with
+// next to no colours at all counts.
+function pixelNote(st, { page = false, canvas = false } = {}) {
   if (!st) return '';
+  if (page && !canvas) return st.colours <= 3 ? `Pixel check: the screenshot is ${Math.round(st.topShare * 100)}% one colour (${st.top}) with almost nothing else — the page looks empty.` : '';
   if (st.topShare >= 0.97 || st.colours <= 3) return `Pixel check: the screenshot is ${Math.round(st.topShare * 100)}% one colour (${st.top}) — the page or scene looks empty or is not drawing.`;
   if (st.topShare >= 0.85) return `Pixel check: ${Math.round(st.topShare * 100)}% of the screenshot is one colour (${st.top}) — most of the view is empty background.`;
   return '';

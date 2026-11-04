@@ -23,7 +23,9 @@ const GAME = '<!doctype html><html><head><title>Runner</title></head><body style
 const D = (s) => `${s} Use the names given, keep the exact values, connect it to the earlier steps and finish with the check named in the step.`;
 const PLAN = { todos: [
   { content: 'runner.html: canvas, player box and lane switching — done when the self-test move step passes', status: 'in_progress', details: D('Draw the player as a red square on a canvas 400x300; ArrowRight moves it to lane 2.') },
-  { content: 'runner.html: jump with space and window.selfTest() — done when every self-test step passes', status: 'pending', details: D('Space sets y to 2; window.selfTest() presses ArrowRight and Space and reports move, act and hud.') }
+  { content: 'runner.html: jump with space and window.selfTest() — done when every self-test step passes', status: 'pending', details: D('Space sets y to 2; window.selfTest() presses ArrowRight and Space and reports move, act and hud.') },
+  // Notes are not architect work (v0.53): QWEN.md must not be among the files it writes.
+  { content: 'QWEN.md: record how to run and test runner.html — done when the file lists the test_app call', status: 'pending', details: D('Write a short QWEN.md: the page is runner.html, test it with test_app runner.html, the self-test steps are move, act and hud.') }
 ] };
 const OVERVIEW = 'Approach: one file, runner.html, with an inline script that draws on a 400x300 canvas. The player is a red square in one of three lanes; ArrowRight moves it right and Space jumps. window.selfTest() presses those keys and reads the game state to report move, act and hud. Pitfall: measure state, never hard-code passed: true.';
 
@@ -136,7 +138,7 @@ try {
   const testResult = String(execBodies.at(-1).messages.filter((m) => m.role === 'tool').at(-1)?.content || '');
   if (!/every step passed/.test(testResult)) fail(`the architect's game should pass its self-test: ${testResult.slice(0, 300)}`);
   const notes = await win.evaluate(() => state.conv.display.filter((d) => d.t === 'notice').map((d) => d.text));
-  if (!notes.some((n) => /Architect: claude-opus-5-5 writes the first version of runner\.html/.test(n))) fail(`no architect notice: ${notes.join(' | ')}`);
+  if (!notes.some((n) => /Architect: claude-opus-5-5 writes the first version of runner\.html;/.test(n))) fail(`no architect notice: ${notes.join(' | ')}`);
   // Billed input: (100 + 2000*1.25) for the write, (100 + 2000*0.1) for the read = 2600 + 300.
   const billed = await win.evaluate(() => state.conv.spend?.['claude-opus-5-5']?.in);
   if (billed !== 2900) fail(`billed input tokens should be 2900, got ${billed}`);
