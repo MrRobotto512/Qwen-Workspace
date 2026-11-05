@@ -315,6 +315,34 @@ function predictFit({ weights, kvPerToken, ctx, vram }) {
   return fitCtx >= FIT_MIN_CTX ? { ...out, fitCtx } : { ...out, tooSmall: true };
 }
 
+// Fit to GPU on its own (agent-loop.js): the context window to apply when a dense model would
+// spill onto the CPU, or null. A mixture-of-experts model stays usable spilled, and a window
+// under AGENT_MIN_CTX cannot hold the agent's instructions plus a task, so neither is fitted —
+// the task says to pick a smaller model instead. (A field report: a 14B model at 69% in GPU
+// took 2 to 10 minutes a step for 52 minutes and died on a timeout; the app had only warned.)
+const AGENT_MIN_CTX = 8192;
+function autoFitContext(fitCtx, { moe, enabled } = {}) {
+  if (enabled === false || moe) return null;
+  const ctx = Number(fitCtx) || 0;
+  return ctx >= AGENT_MIN_CTX ? ctx : null;
+}
+
+// When the chosen model cannot fit at all: the strongest installed catalog model that would,
+// at this window, on this GPU — named in the advice instead of "pick a smaller model".
+function fittingAlternative(installed, catalog, { ctx, vram, exclude } = {}) {
+  if (!(vram > 0) || !(ctx > 0)) return null;
+  const room = vram * 0.95 - FIT_OVERHEAD;
+  let best = null;
+  for (const m of installed || []) {
+    if (exclude && (sameModel(m, exclude) || looseSame(m, exclude))) continue;
+    const e = (catalog || []).find((c) => sameModel(c.id, m)) || (catalog || []).find((c) => looseSame(c.id, m));
+    if (!e || !(e.sizeGB > 0)) continue;
+    if (e.sizeGB * 1e9 + (e.kvKB || 0) * 1024 * ctx > room) continue;
+    if (!best || e.rank > best.rank) best = e;
+  }
+  return best ? best.id : null;
+}
+
 // Per-model tool-call check (Strata's `connect --check`): one "reply with exactly: pong" prompt
 // and one get_weather call, graded on the answer text and the call's arguments — not just on
 // the server answering. Says up front which model actually does tool calls on which node.
@@ -371,6 +399,6 @@ function crashAdvice(msg, model, runner = "Ollama's GPU runner") {
   return `${runner} crashed while running ${model} (${(/CUDA error[^.\n]*|illegal memory access[^.\n]*|GGML_ASSERT[^.\n]*|runner[^.\n]*/i.exec(t) || [t.slice(0, 80)])[0].trim()}). This is usually a model-server or GPU-driver bug that shows up when a model does not fit fully in VRAM: update the server (Ollama, LM Studio) and the GPU driver, lower "Context window" in Settings → Model, or run this model on another node.`;
 }
 
-const NodesExports = { isModelDamaged, damagedAdvice, isRunnerCrash, crashAdvice, THIS_PC_ID, REMOTE_KEEP_DEFAULT, nodeId, normalizeNodes, multiNode, sameModel, nodeHasModel, pickNode, nextNode, pickHighPerf, spillInfo, fitContext, kvBytesPerToken, predictFit, isMoE, looseModelKey, looseSame, lmModelFor, ttlSeconds, suggestDraft, nodeOverride, probeVerdict, PROBE_PROMPT, PROBE_TOOL_PROMPT, PROBE_TOOL, isConnectionError, summarize };
+const NodesExports = { isModelDamaged, damagedAdvice, isRunnerCrash, crashAdvice, THIS_PC_ID, REMOTE_KEEP_DEFAULT, nodeId, normalizeNodes, multiNode, sameModel, nodeHasModel, pickNode, nextNode, pickHighPerf, spillInfo, fitContext, kvBytesPerToken, predictFit, autoFitContext, AGENT_MIN_CTX, fittingAlternative, isMoE, looseModelKey, looseSame, lmModelFor, ttlSeconds, suggestDraft, nodeOverride, probeVerdict, PROBE_PROMPT, PROBE_TOOL_PROMPT, PROBE_TOOL, isConnectionError, summarize };
 if (typeof module !== 'undefined' && module.exports) module.exports = NodesExports;
 if (typeof window !== 'undefined') window.Nodes = NodesExports;

@@ -6,7 +6,7 @@
 // passed, minutes, model requests, hand-offs to stronger models, cloud tokens. Runs are saved
 // so each one is compared with the last: which tasks got fixed, which broke.
 
-const bench = { running: false, stop: false, conv: null, results: [], last: null };
+const bench = { running: false, stop: false, conv: null, results: [], last: null, label: '' };
 
 function benchTokens(spend) {
   return Object.entries(spend || {}).map(([m, v]) => `${m} ${Math.round((v.in || 0) / 100) / 10}K in/${Math.round((v.out || 0) / 100) / 10}K out`).join(', ');
@@ -28,7 +28,7 @@ async function benchCheck(check, platform) {
     if ((r.errors || []).length) problems.push(`console errors: ${r.errors.slice(0, 3).join(' | ')}`);
     if (check.notBlank && r.shot) {
       const px = await decodePicture(r.shot.png);
-      if (px && Likeness.isBlank(px.rgba, px.width, px.height)) problems.push('blank screen');
+      if (px && GuiTest.isBlankPage(r, Likeness.isBlank(px.rgba, px.width, px.height))) problems.push('blank screen');
     }
     if (check.probe && r.loaded && r.probe !== true) problems.push(String(r.probe ?? 'the check did not run'));
     if (check.selfTest && r.loaded) {
@@ -142,11 +142,13 @@ async function runBenchmark(set) {
     }
   } finally {
     state.settings = await api.setSettings({ approvalMode: approvalWas });
+    // Saved before the run reads as finished, so a stopped run (or one driven from the terminal,
+    // which closes the app the moment `running` drops) still keeps its results.
+    const run = { id: runId, at: new Date().toISOString(), label: bench.label || '', stopped: bench.stop, version: state.appVersion || '', settings: { model: s.model, provider: s.provider, planner: s.heavy?.enabled ? s.heavy.model : null, planFirst: !!s.planFirst, planWith: s.planWith, architect: s.architect !== false }, results: bench.results };
+    if (bench.results.length) await api.benchSave(run).catch(() => {});
     bench.running = false;
     bench.current = null;
     bench.conv = null;
-    const run = { id: runId, at: new Date().toISOString(), version: state.appVersion || '', settings: { model: s.model, provider: s.provider, planner: s.heavy?.enabled ? s.heavy.model : null, planFirst: !!s.planFirst, planWith: s.planWith, architect: s.architect !== false }, results: bench.results };
-    if (bench.results.length) await api.benchSave(run).catch(() => {});
     if (back) await openWorkspace(back, true).catch(() => {});
     renderBenchmark();
     flash(`Benchmark: ${BenchTasks.summary(bench.results)}`);

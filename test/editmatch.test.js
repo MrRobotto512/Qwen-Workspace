@@ -49,3 +49,14 @@ test('blindEdit: the same text with different spacing and line breaks, matched o
   assert.equal(E.blindEdit('const longName = 1; const longName = 1;', 'const longName=1;const longName=1;', 'z').modified, 'z');
   assert.equal(E.blindEdit('const longName = 1;\nconst longName = 1;\nconst longName = 1;', 'const longName=1;const longName=1;', 'z').count, 2);
 });
+
+test('regexWsEdit reads \\s+ in old_text as the whitespace in the file, and keeps it in the new text', () => {
+  const file = 'function mean(xs) {\n  let sum = 0;\n  for (const x of xs) sum += x;\n  return sum / xs.length;\n}\n';
+  const r = E.regexWsEdit(file, 'function mean(xs) {\\s+let sum = 0;\\s+for (const x of xs) sum += x;', 'function mean(xs) {\\s+if (xs.length === 0) return 0;\\s+let sum = 0;\\s+for (const x of xs) sum += x;');
+  assert.equal(r.modified, 'function mean(xs) {\n  if (xs.length === 0) return 0;\n  let sum = 0;\n  for (const x of xs) sum += x;\n  return sum / xs.length;\n}\n');
+  assert.match(r.note, /\\s\+ for whitespace/);
+  assert.deepEqual(E.regexWsEdit(file, 'let sum = 0;', 'x'), { count: 0 }); // no tokens: not this tier's case
+  assert.deepEqual(E.regexWsEdit(file, 'nope\\s+here', 'x'), { count: 0 });
+  assert.deepEqual(E.regexWsEdit('a\n  b\na\n  b\n', 'a\\s+b', 'c'), { count: 2 }); // ambiguous: left alone
+  assert.equal(E.regexWsEdit('x (1+2) y', 'x\\s*(1+2)\\s*y', 'z').modified, 'z'); // regex characters in the text are literal
+});

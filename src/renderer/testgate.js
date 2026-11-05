@@ -40,7 +40,7 @@ function suggestion(path, kind, platform) {
   const p = String(path);
   const isPy = /\.pyw?$/i.test(p);
   if (kind === 'page') return `${p}: call test_app with "${p}" (it loads the page, reports console errors and a screenshot, and runs a game's window.selfTest())`;
-  if (kind === 'cli') return `${p}: run it on a small example with run_command (e.g. ${isPy ? `${py} ${p}` : `node ${p}`} <example input>) — work out the right answer for that example yourself first, then compare it with the output`;
+  if (kind === 'cli') return `${p}: run it on a small example with run_command (e.g. ${isPy ? `${py} ${p}` : `node ${p}`} <example input>) — work out the right answer for that example yourself first, then compare it with the output. Make the example exercise the details the request spells out (an edge case it names, such as empty input, a zero, or a file whose last character is a line break)`;
   if (kind === 'module') {
     return isPy
       ? `${p}: import it and call what you changed on a small example with run_command (e.g. ${py} -c "import ${stem(p)}; print(${stem(p)}.<function>(<example>))"), and compare with the answer you expect`

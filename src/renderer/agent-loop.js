@@ -450,19 +450,24 @@ async function cloudChat(c, kind, payload) {
 // "repair broken JSON" task was failed three times over and handed to the planner, because each
 // error fixed revealed the next one, worded differently): what is left is reported as
 // information, and the step is not failed.
-async function afterWrite(c, p, before, out) {
+async function afterWrite(c, p, before, out, { edit = false, after = null } = {}) {
   if (!out || out.rejected || /^Error/.test(String(out.result || '')) || state.settings.syntaxCheck === false) return out;
   const sc = await api.syntaxCheck(p, before ?? null).catch(() => null);
+  // A small file that an edit left broken is rewritten whole next (a benchmark run: two edits
+  // of a 6-line JSON file each fixed one error and left the next, then the model looped);
+  // the broken line itself is quoted, since the model cannot see line numbers.
+  const small = edit && Syntax.isSmallFile(after ?? before);
+  const at = (e) => Syntax.lineText(after, e?.line);
   if (sc?.brokenBefore && sc.all?.length) {
     const e = sc.all[0];
-    out.result += `\nSyntax check: ${p} still has a syntax error${e.line ? ` at line ${e.line}` : ''}: ${e.message}${sc.all.length > 1 ? ` (and ${sc.all.length - 1} more)` : ''}. The file was already broken before this change; fix that next.`;
+    out.result += `\nSyntax check: ${p} still has a syntax error${e.line ? ` at line ${e.line}` : ''}: ${e.message}${sc.all.length > 1 ? ` (and ${sc.all.length - 1} more)` : ''}.${at(e)} The file was already broken before this change; fix that next.${small ? Syntax.rewriteLine(p, after ?? before) : ''}`;
     DebugLog.add(c, 'notice', { text: `syntax check: ${p} still broken${e.line ? ` at ${e.line}` : ''} (was broken before)` });
     return out;
   }
   if (!sc?.errors?.length) return out;
   const e = sc.errors[0];
   const more = sc.errors.length > 1 ? ` (and ${sc.errors.length - 1} more)` : '';
-  out.result += `\nSyntax check: ${p}${e.line ? ` line ${e.line}` : ''}: ${e.message}${more}. This change introduced it — fix it with your next edit, before anything else.`;
+  out.result += `\nSyntax check: ${p}${e.line ? ` line ${e.line}` : ''}: ${e.message}${more}.${at(e)} This change introduced it — fix it ${small ? 'now' : 'with your next edit'}, before anything else.${small ? Syntax.rewriteLine(p, after ?? before) : ''}`;
   out.failed = true;
   out.meta = 'syntax error';
   DebugLog.add(c, 'notice', { text: `syntax check: ${p}${e.line ? `:${e.line}` : ''} ${e.message}` });
@@ -619,7 +624,7 @@ async function executeTool(c, call, row) {
           }
         }
         row.setVerb(exists ? 'Rewrite' : 'Create');
-        return afterWrite(c, p, exists ? original : null, withGlitchWarning(p, original, content, await applyAgentEdit(c, row, p, exists ? original : null, content, exists ? `Rewrite ${p}` : `Create ${p}`)));
+        return afterWrite(c, p, exists ? original : null, withGlitchWarning(p, original, content, await applyAgentEdit(c, row, p, exists ? original : null, content, exists ? `Rewrite ${p}` : `Create ${p}`)), { after: content });
       }
       case 'edit_file': {
         const p = normPath(args.path);
@@ -643,18 +648,18 @@ async function executeTool(c, call, row) {
           if (loose.modified) {
             const out = withGlitchWarning(p, original, loose.modified, await applyAgentEdit(c, row, p, original, loose.modified, `Edit ${p}`));
             if (!out.rejected && !/^Error/.test(out.result)) out.result += ` (${loose.note}.)`;
-            return afterWrite(c, p, original, out);
+            return afterWrite(c, p, original, out, { edit: true, after: loose.modified });
           }
           if (loose.count > 1) return { result: `Error: old_text was not found exactly in ${p}, and ignoring indentation it matches ${loose.count} places. Read the file again and include more surrounding lines.` };
           // More ways a model's old_text drifts from the file (Hermes Agent's fuzzy_match.py):
-          // literal "\n" escapes, then curly quotes and long dashes.
-          for (const tier of [EditMatch.escapeEdit, EditMatch.unicodeEdit]) {
+          // literal "\n" escapes, regex whitespace tokens, then curly quotes and long dashes.
+          for (const tier of [EditMatch.escapeEdit, EditMatch.regexWsEdit, EditMatch.unicodeEdit]) {
             const t = tier(original, oldText, newText);
             if (t.modified === original) return unchangedEdit(p);
             if (t.modified) {
               const out = withGlitchWarning(p, original, t.modified, await applyAgentEdit(c, row, p, original, t.modified, `Edit ${p}`));
               if (!out.rejected && !/^Error/.test(out.result)) out.result += ` (${t.note}.)`;
-              return afterWrite(c, p, original, out);
+              return afterWrite(c, p, original, out, { edit: true, after: t.modified });
             }
           }
           // Last resort: the same text with different spacing and line breaks (a one-line file
@@ -664,7 +669,7 @@ async function executeTool(c, call, row) {
           if (blind.modified) {
             const out = withGlitchWarning(p, original, blind.modified, await applyAgentEdit(c, row, p, original, blind.modified, `Edit ${p}`));
             if (!out.rejected && !/^Error/.test(out.result)) out.result += ` (${blind.note}.)`;
-            return afterWrite(c, p, original, out);
+            return afterWrite(c, p, original, out, { edit: true, after: blind.modified });
           }
           // Last: a block remembered slightly wrong — anchored on its first and last lines, or
           // every line mostly alike — when that points at exactly one place.
@@ -673,14 +678,14 @@ async function executeTool(c, call, row) {
           if (similar.modified) {
             const out = withGlitchWarning(p, original, similar.modified, await applyAgentEdit(c, row, p, original, similar.modified, `Edit ${p}`));
             if (!out.rejected && !/^Error/.test(out.result)) out.result += ` (${similar.note}.)`;
-            return afterWrite(c, p, original, out);
+            return afterWrite(c, p, original, out, { edit: true, after: similar.modified });
           }
           return { result: editMissMessage(c, p, original, oldText), failed: true };
         }
         if (count > 1) return { result: `Error: old_text matches ${count} places in ${p}. Include more surrounding lines so it is unique.` };
         const modified = original.replace(oldText, () => newText);
         if (modified === original) return unchangedEdit(p);
-        return afterWrite(c, p, original, withGlitchWarning(p, original, modified, await applyAgentEdit(c, row, p, original, modified, `Edit ${p}`)));
+        return afterWrite(c, p, original, withGlitchWarning(p, original, modified, await applyAgentEdit(c, row, p, original, modified, `Edit ${p}`)), { edit: true, after: modified });
       }
       case 'delete_file': {
         const p = normPath(args.path);
@@ -922,8 +927,10 @@ async function executeTool(c, call, row) {
           const vision = modelSeesImages(c);
           let text = GuiTest.summarizePage(r, !!(r.shot && vision));
           const px = r.shot && r.loaded ? await decodePicture(r.shot.png) : null;
-          const blank = !!px && Likeness.isBlank(px.rgba, px.width, px.height);
+          const flat = !!px && Likeness.isBlank(px.rgba, px.width, px.height);
+          const blank = GuiTest.isBlankPage(r, flat);
           if (blank) text += `\n${BLANK_LINE}`;
+          else if (flat) text += `\n${GuiTest.flatButDrawnLine(r)}`;
           const st = r.loaded && !r.crashed ? selfTestLines(c, r, web) : null;
           if (st) text += `\n${st.text}`;
           const like = r.loaded ? await likenessLines(c, args, web, r.shot) : [];
@@ -2215,11 +2222,26 @@ async function predictGpuFit(c, baseUrl, model, isThisPc) {
   const where = isThisPc ? "this PC's GPU" : 'that node\'s GPU';
   const moe = Nodes.isMoE(facts?.modelInfo);
   if (moe) moeModels.add(model);
+  const auto = Nodes.autoFitContext(p.fitCtx, { moe, enabled: state.settings.fitToGpuAuto !== false });
+  if (auto) {
+    // Act, do not warn: the first request has not gone out yet, so it already uses the window
+    // that fits, instead of a slow first step followed by a reload.
+    await fitToGpu(auto, model);
+    const text = `${model} with a ${ctx}-token context window needs about ${p.neededGB} GB, but ${where} has about ${p.vramGB} GB — part of it would run on the CPU, several times slower. Context window set to ${auto} so all of it fits (Settings → Model changes it, or turns this off).`;
+    const item = { t: 'notice', text };
+    c.display.push(item);
+    renderNotice(c, item);
+    DebugLog.add(c, 'notice', { text });
+    return;
+  }
+  // A dense model that cannot fit (or only under AGENT_MIN_CTX): name an installed model that does.
+  const alt = !moe && !(p.fitCtx >= Nodes.AGENT_MIN_CTX) ? Nodes.fittingAlternative(installedOn(baseUrl, isThisPc), typeof MODEL_CATALOG !== 'undefined' ? MODEL_CATALOG : [], { ctx, vram, exclude: model }) : null;
+  const smaller = alt ? `pick a smaller model: ${alt} is installed ${isThisPc ? 'on this PC' : 'on that node'} and fits with this window` : 'pick a smaller model (for example the 8B size of the same family)';
   const text = moe
     ? `Heads-up: ${model} with a ${ctx}-token context window needs about ${p.neededGB} GB, but ${where} has about ${p.vramGB} GB, so part of it runs on the CPU. It is a mixture-of-experts model (only a few of its experts work per token), so that costs far less speed than usual — fine to keep using.${p.fitCtx ? ` Fit to GPU (${p.fitCtx}) would still make it a bit faster.` : ''}`
-    : `Heads-up: ${model} with a ${ctx}-token context window needs about ${p.neededGB} GB, but ${where} has about ${p.vramGB} GB — part of it will run on the CPU, several times slower. ${p.fitCtx
-      ? `Fit to GPU sets "Context window" to ${p.fitCtx} so all of it fits; or pick a smaller model.`
-      : 'Even a 4K context window would not fit it — pick a smaller model (for example the 8B size of the same family).'}`;
+    : `Heads-up: ${model} with a ${ctx}-token context window needs about ${p.neededGB} GB, but ${where} has about ${p.vramGB} GB — part of it will run on the CPU, several times slower: expect minutes per step. ${p.fitCtx
+      ? `Fit to GPU sets "Context window" to ${p.fitCtx} so all of it fits${p.fitCtx < Nodes.AGENT_MIN_CTX ? ' (tight for agent work)' : ''}; or ${smaller}.`
+      : `Even a 4K context window would not fit it — ${smaller}.`}`;
   const item = { t: 'notice', text };
   c.display.push(item);
   renderNotice(c, item);
@@ -2251,6 +2273,16 @@ async function checkGpuSpill(c, baseUrl, model) {
   }
   // "Fit to GPU": the largest context window that keeps this model entirely in GPU memory.
   const fit = Nodes.fitContext(ps.find((x) => Nodes.sameModel(x.name, model)), state.settings.contextLength);
+  const auto = Nodes.autoFitContext(fit?.ctx, { moe: moeModels.has(model), enabled: state.settings.fitToGpuAuto !== false });
+  if (auto) {
+    await fitToGpu(auto, model);
+    const text = `${model} was running partly on the CPU: only ${sp.gpuGB} of ${sp.totalGB} GB (${sp.pct}%) fit in GPU memory on ${host}, which made that step several times slower. Context window set to ${auto} so all of it fits from the next step (Settings → Model changes it, or turns this off).`;
+    const item = { t: 'notice', text };
+    c.display.push(item);
+    renderNotice(c, item);
+    DebugLog.add(c, 'notice', { text });
+    return;
+  }
   const advice = fit?.ctx
     ? `Fit to GPU sets "Context window" to ${fit.ctx} so all of it fits; or pick a smaller model.`
     : fit?.tooSmall
@@ -2267,6 +2299,13 @@ async function checkGpuSpill(c, baseUrl, model) {
     ? [{ label: `Fit to GPU (${fit.ctx})`, onClick: () => fitToGpu(fit.ctx, model) }, { label: 'Open Settings', onClick: openSettings }]
     : [{ label: 'Open Settings', onClick: openSettings }];
   toast({ key: 'gpu-spill', icon: 'alert', timeout: 30000, text, actions });
+}
+
+// The models a node has installed, from the last health check (app.js), by its URL.
+function installedOn(baseUrl, isThisPc) {
+  const root = (u) => String(u || '').trim().replace(/[/]+$/, '').replace(/[/]v1$/, '');
+  const id = isThisPc ? Nodes.THIS_PC_ID : (state.settings.ollamaNodes || []).find((n) => n.baseUrl && root(n.baseUrl) === root(baseUrl))?.id;
+  return (id && state.nodeHealth?.byId?.[id]?.models) || [];
 }
 
 // Takes effect on the next request: Ollama reloads the model with the new num_ctx.
@@ -2622,7 +2661,7 @@ async function runConversation(c) {
     const progTimer = setInterval(paintProgress, 1000);
     if ((override?.provider || state.settings.provider) === 'ollama') {
       const fitBase = override?.baseUrl || state.settings.baseUrl;
-      predictGpuFit(c, fitBase, stepModel, !override?.baseUrl || fitBase === state.settings.baseUrl).catch(() => {});
+      await predictGpuFit(c, fitBase, stepModel, !override?.baseUrl || fitBase === state.settings.baseUrl).catch(() => {});
     }
     const sawToken = (phase) => {
       if (!prog.firstAt) prog.firstAt = Date.now();

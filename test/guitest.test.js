@@ -115,3 +115,14 @@ test('pixel check: a plain web page is mostly background by design', () => {
   assert.match(G.pixelNote(counterPage, { page: true, canvas: true }), /looks empty or is not drawing/);
   assert.match(G.pixelNote(counterPage), /looks empty or is not drawing/, 'a desktop window keeps the old rule');
 });
+
+test('isBlankPage: a flat screenshot is blank only when the page holds nothing (or a canvas drew nothing)', () => {
+  // A number on white: one flat colour to the pixel test, but the page has text and buttons.
+  assert.equal(G.isBlankPage({ textChars: 1, interactive: 2, hasCanvas: false }, true), false);
+  assert.equal(G.isBlankPage({ textChars: 0, interactive: 0, hasCanvas: false }, true), true);
+  assert.equal(G.isBlankPage({}, true), true); // older results without page facts: the pixel verdict
+  assert.equal(G.isBlankPage({ textChars: 12, interactive: 0, hasCanvas: true }, true), true); // a HUD beside a canvas that drew nothing
+  assert.equal(G.isBlankPage({ textChars: 0, interactive: 0 }, false), false);
+  assert.match(G.flatButDrawnLine({ textChars: 1, interactive: 2 }), /1 characters of text and 2 controls/);
+  assert.match(G.flatButDrawnLine({ textChars: 5 }), /5 characters of text, so it did draw/);
+});

@@ -75,7 +75,7 @@ const TASKS = [
     title: 'Command-line tool',
     minutes: 8,
     needs: 'node',
-    prompt: 'Create wc.js, run as `node wc.js <file>`: it prints the number of lines, words and characters in the file, separated by single spaces (for example "2 5 31"). Lines are the lines of text, words are runs of non-whitespace, characters are all characters including line breaks.',
+    prompt: 'Create wc.js, run as `node wc.js <file>`: it prints the number of lines, words and characters in the file, separated by single spaces (for example "2 5 31"). Lines are the lines of text, words are runs of non-whitespace, characters are all characters including line breaks. A line break ends a line, so a file whose last character is a line break has no extra empty line after it (the counts the Unix `wc` command gives).',
     hidden: {
       'sample.txt': 'one two\nthree four five\nsix seven\n',
       '_bench_wc.js': "let out;\ntry {\n  out = require('child_process').execFileSync(process.execPath, ['wc.js', 'sample.txt'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();\n} catch (e) {\n  console.error('wc.js crashed:\\n' + String(e.stderr || e.message));\n  process.exit(1);\n}\nif (out !== '3 7 34') { console.error('expected \"3 7 34\", got ' + JSON.stringify(out)); process.exit(1); }\nconsole.log('ok');\n"

@@ -280,3 +280,30 @@ test('a damaged model file is told apart from a crash and from running out of me
   assert.match(N.damagedAdvice('qwen3:8b', 'This PC'), /"ollama rm qwen3:8b" and then "ollama pull qwen3:8b"/);
   assert.match(N.damagedAdvice('qwen3', 'Hero', 'lmstudio'), /In LM Studio, delete the model/);
 });
+
+test('autoFitContext fits a dense model on its own, never a MoE one or a window too small for agent work', () => {
+  assert.strictEqual(N.autoFitContext(16384, {}), 16384);
+  assert.strictEqual(N.autoFitContext(8192, {}), 8192);
+  assert.strictEqual(N.autoFitContext(7168, {}), null); // under AGENT_MIN_CTX: say "smaller model" instead
+  assert.strictEqual(N.autoFitContext(16384, { moe: true }), null);
+  assert.strictEqual(N.autoFitContext(16384, { enabled: false }), null);
+  assert.strictEqual(N.autoFitContext(undefined, {}), null);
+  assert.strictEqual(N.AGENT_MIN_CTX, 8192);
+});
+
+test('fittingAlternative names the strongest installed model that fits the GPU at this window', () => {
+  const catalog = [
+    { id: 'qwen3:14b', sizeGB: 9.3, kvKB: 160, rank: 6 },
+    { id: 'qwen3:8b', sizeGB: 5.2, kvKB: 144, rank: 4 },
+    { id: 'qwen2.5-coder:7b', sizeGB: 4.7, kvKB: 56, rank: 4.5 },
+    { id: 'qwen3-coder:30b', sizeGB: 19, kvKB: 96, rank: 10 }
+  ];
+  const installed = ['qwen3:14b', 'qwen3:8b', 'qwen2.5-coder:7b', 'qwen3-coder:latest'];
+  // 10.5 GB usable, 28K window: the 14B cannot fit; the 7B coder (rank 4.5) is the best that does.
+  assert.strictEqual(N.fittingAlternative(installed, catalog, { ctx: 28672, vram: 10.5e9, exclude: 'qwen3:14b' }), 'qwen2.5-coder:7b');
+  // A smaller window lets the 8B's bigger KV cache in too, but the 7B coder still ranks higher.
+  assert.strictEqual(N.fittingAlternative(['qwen3:14b', 'qwen3:8b'], catalog, { ctx: 16384, vram: 10.5e9, exclude: 'qwen3:14b' }), 'qwen3:8b');
+  assert.strictEqual(N.fittingAlternative(['qwen3:14b'], catalog, { ctx: 28672, vram: 10.5e9, exclude: 'qwen3:14b' }), null);
+  assert.strictEqual(N.fittingAlternative(installed, catalog, { ctx: 0, vram: 10.5e9 }), null);
+  assert.strictEqual(N.fittingAlternative([], catalog, { ctx: 28672, vram: 10.5e9 }), null);
+});

@@ -528,6 +528,7 @@ function openSettings() {
   $('#s-readBeforeWrite').checked = s.readBeforeWrite !== false;
   $('#s-testBeforeDone').checked = s.testBeforeDone !== false;
   $('#s-syntaxCheck').checked = s.syntaxCheck !== false;
+  $('#s-fitToGpuAuto').checked = s.fitToGpuAuto !== false;
   $('#s-redactSecrets').checked = s.redactSecrets !== false;
   $('#s-folderHints').checked = s.folderHints !== false;
   $('#s-architect').checked = s.architect !== false;
@@ -602,6 +603,7 @@ async function saveSettingsFromUi() {
   patch.readBeforeWrite = $('#s-readBeforeWrite').checked;
   patch.testBeforeDone = $('#s-testBeforeDone').checked;
   patch.syntaxCheck = $('#s-syntaxCheck').checked;
+  patch.fitToGpuAuto = $('#s-fitToGpuAuto').checked;
   patch.redactSecrets = $('#s-redactSecrets').checked;
   patch.folderHints = $('#s-folderHints').checked;
   patch.architect = $('#s-architect').checked;

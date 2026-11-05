@@ -61,3 +61,9 @@ test('a failed check shows the error, not the stack trace under it', () => {
   assert.match(B.failureLine('Traceback (most recent call last):\n  File "calc.py", line 4, in div\nZeroDivisionError: division by zero'), /^ZeroDivisionError: division by zero \(calc\.py:4\)$/);
   assert.strictEqual(B.failureLine('something odd\nsecond line'), 'something odd · second line');
 });
+
+test('the command-line task says how a trailing line break counts', () => {
+  const t = B.TASKS.find((x) => x.id === 'wordcount-cli');
+  assert.match(t.prompt, /last character is a line break has no extra empty line/);
+  assert.match(t.hidden['_bench_wc.js'], /3 7 34/);
+});
