@@ -32,7 +32,9 @@ const node = http.createServer((req, res) => {
   // (11.4 of 15.2 GB in VRAM); at a fitted window it is all in VRAM.
   if (req.method === 'GET' && req.url === '/api/ps') {
     const ctx = bodies.at(-1)?.options?.num_ctx || 32768;
-    return json(res, { models: ctx >= 32768 ? [{ name: 'fit:14b', size: 15.2e9, size_vram: 11.4e9, context_length: 32768 }] : [{ name: 'fit:14b', size: 10.8e9, size_vram: 10.8e9, context_length: ctx }] });
+    // Above the fitted window it spills (so with auto-fit off, the spill check after the slow
+    // step really sees a spill, and must not repeat the heads-up).
+    return json(res, { models: ctx > 9216 ? [{ name: 'fit:14b', size: 15.2e9, size_vram: 11.4e9, context_length: ctx }] : [{ name: 'fit:14b', size: 10.8e9, size_vram: 10.8e9, context_length: ctx }] });
   }
   let body = '';
   req.on('data', (d) => (body += d));
@@ -63,8 +65,10 @@ win.on('pageerror', (e) => errors.push(String(e)));
 win.on('dialog', (d) => d.accept().catch(() => {}));
 const notices = () => win.evaluate(() => state.conv.display.filter((d) => d.t === 'notice').map((d) => d.text));
 
+let userAuto = true;
 try {
   await win.waitForFunction(() => document.querySelector('#btn-settings')?.onclick && document.querySelector('#model-name')?.textContent, null, { timeout: 25_000 });
+  userAuto = await win.evaluate(() => state.settings.fitToGpuAuto !== false);
   await win.evaluate((b) => {
     openSettings();
     document.querySelector('#s-provider').value = 'ollama';
@@ -122,7 +126,7 @@ try {
   fail(String(e).split('\n')[0]);
 } finally {
   if (errors.length) fail(`renderer errors: ${errors.join(' || ').slice(0, 500)}`);
-  await win.evaluate(async () => { state.settings = await api.setSettings({ provider: 'custom', contextLength: 32768, nodeVram: {}, agentMode: true, fitToGpuAuto: true }); }).catch(() => {});
+  await win.evaluate(async (auto) => { state.settings = await api.setSettings({ provider: 'custom', contextLength: 32768, nodeVram: {}, agentMode: true, fitToGpuAuto: auto, fitAuto: null, fitAutoSkip: null }); }, userAuto).catch(() => {});
   const watchdog = setTimeout(() => {
     console.error('app.close() hung; forcing exit with the recorded result');
     process.exit(process.exitCode || 0);

@@ -23,12 +23,25 @@ function lineText(text, line) {
   return t ? ` Line ${n} is: ${t.slice(0, 160)}` : ` Line ${n} is empty.`;
 }
 
-function rewriteLine(p, text) {
-  const n = typeof text === 'string' ? text.split(/\r?\n/).length : 0;
-  return ` ${p} is small${n ? ` (${n} line${n === 1 ? '' : 's'})` : ''}: rewrite it whole with write_file, correct from top to bottom, instead of another edit.`;
+// Lines as read_file counts them: a final line break does not start another line.
+function lineCount(text) {
+  if (typeof text !== 'string' || !text) return 0;
+  const all = text.split(/\r?\n/);
+  return all.length - (all[all.length - 1] === '' ? 1 : 0);
 }
 
-return { SMALL_LINES, SMALL_CHARS, isSmallFile, lineText, rewriteLine };
+const SHOW_LINES = 40;
+const SHOW_CHARS = 3000;
+
+// `show`: put the file as it now is under the nudge, so the rewrite starts from what is there
+// rather than from memory (a whole-file rewrite of a file seen only in pieces drops lines).
+function rewriteLine(p, text, { show = false } = {}) {
+  const n = lineCount(text);
+  const shown = show && n && n <= SHOW_LINES && text.length <= SHOW_CHARS ? `\nIt is now:\n${text}` : '';
+  return ` ${p} is small${n ? ` (${n} line${n === 1 ? '' : 's'})` : ''}: rewrite it whole with write_file, correct from top to bottom, instead of another edit.${shown}`;
+}
+
+return { SMALL_LINES, SMALL_CHARS, isSmallFile, lineText, lineCount, rewriteLine };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = SyntaxExports;

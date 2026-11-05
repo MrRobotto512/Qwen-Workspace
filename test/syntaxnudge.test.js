@@ -24,4 +24,7 @@ test('the broken line is quoted back, trimmed and capped', () => {
 test('the rewrite nudge names the file and its size', () => {
   assert.equal(S.rewriteLine('config.json', 'a\nb\nc'), ' config.json is small (3 lines): rewrite it whole with write_file, correct from top to bottom, instead of another edit.');
   assert.match(S.rewriteLine('x.js', null), /x\.js is small: rewrite it whole/);
+  assert.match(S.rewriteLine('c.json', '{\n  "a": 1\n}\n'), /c\.json is small \(3 lines\)/, 'a final line break is not a line');
+  assert.match(S.rewriteLine('c.json', '{\n  "a": 1,\n}\n', { show: true }), /instead of another edit\.\nIt is now:\n\{\n  "a": 1,\n\}\n$/);
+  assert.doesNotMatch(S.rewriteLine('big.js', Array(60).fill('x;').join('\n'), { show: true }), /It is now/);
 });

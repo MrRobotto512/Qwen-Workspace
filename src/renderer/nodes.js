@@ -321,10 +321,19 @@ function predictFit({ weights, kvPerToken, ctx, vram }) {
 // the task says to pick a smaller model instead. (A field report: a 14B model at 69% in GPU
 // took 2 to 10 minutes a step for 52 minutes and died on a timeout; the app had only warned.)
 const AGENT_MIN_CTX = 8192;
-function autoFitContext(fitCtx, { moe, enabled } = {}) {
+// `min`: the smallest window worth fitting to for this conversation — the app's own fixed
+// prompt (instructions + tool definitions) must stay under 60% of it, or the overflow check
+// would tell the user to raise the window right after it was lowered.
+function autoFitContext(fitCtx, { moe, enabled, min } = {}) {
   if (enabled === false || moe) return null;
   const ctx = Number(fitCtx) || 0;
-  return ctx >= AGENT_MIN_CTX ? ctx : null;
+  return ctx >= Math.max(AGENT_MIN_CTX, Number(min) || 0) ? ctx : null;
+}
+
+// The floor for a fixed prompt of `fixedTokens`: 60% of the window, rounded up to 512.
+function minAgentCtx(fixedTokens) {
+  const need = Math.ceil((Number(fixedTokens) || 0) / 0.6 / 512) * 512;
+  return Math.max(AGENT_MIN_CTX, need);
 }
 
 // When the chosen model cannot fit at all: the strongest installed catalog model that would,
@@ -399,6 +408,6 @@ function crashAdvice(msg, model, runner = "Ollama's GPU runner") {
   return `${runner} crashed while running ${model} (${(/CUDA error[^.\n]*|illegal memory access[^.\n]*|GGML_ASSERT[^.\n]*|runner[^.\n]*/i.exec(t) || [t.slice(0, 80)])[0].trim()}). This is usually a model-server or GPU-driver bug that shows up when a model does not fit fully in VRAM: update the server (Ollama, LM Studio) and the GPU driver, lower "Context window" in Settings → Model, or run this model on another node.`;
 }
 
-const NodesExports = { isModelDamaged, damagedAdvice, isRunnerCrash, crashAdvice, THIS_PC_ID, REMOTE_KEEP_DEFAULT, nodeId, normalizeNodes, multiNode, sameModel, nodeHasModel, pickNode, nextNode, pickHighPerf, spillInfo, fitContext, kvBytesPerToken, predictFit, autoFitContext, AGENT_MIN_CTX, fittingAlternative, isMoE, looseModelKey, looseSame, lmModelFor, ttlSeconds, suggestDraft, nodeOverride, probeVerdict, PROBE_PROMPT, PROBE_TOOL_PROMPT, PROBE_TOOL, isConnectionError, summarize };
+const NodesExports = { isModelDamaged, damagedAdvice, isRunnerCrash, crashAdvice, THIS_PC_ID, REMOTE_KEEP_DEFAULT, nodeId, normalizeNodes, multiNode, sameModel, nodeHasModel, pickNode, nextNode, pickHighPerf, spillInfo, fitContext, kvBytesPerToken, predictFit, autoFitContext, minAgentCtx, AGENT_MIN_CTX, fittingAlternative, isMoE, looseModelKey, looseSame, lmModelFor, ttlSeconds, suggestDraft, nodeOverride, probeVerdict, PROBE_PROMPT, PROBE_TOOL_PROMPT, PROBE_TOOL, isConnectionError, summarize };
 if (typeof module !== 'undefined' && module.exports) module.exports = NodesExports;
 if (typeof window !== 'undefined') window.Nodes = NodesExports;
