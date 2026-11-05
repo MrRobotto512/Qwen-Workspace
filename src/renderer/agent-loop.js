@@ -458,6 +458,10 @@ async function afterWrite(c, p, before, out, { edit = false, after = null } = {}
   // the broken line itself is quoted, since the model cannot see line numbers.
   const small = edit && Syntax.isSmallFile(after ?? before);
   const at = (e) => Syntax.lineText(after, e?.line);
+  // What the finish gate needs to know (v0.58): is this file still broken after this write?
+  c.broken ||= {};
+  if (sc?.checked && sc.all?.length) c.broken[p] = { line: sc.all[0].line || null, message: sc.all[0].message, text: Syntax.lineText(after, sc.all[0].line).replace(/^ Line \d+ is: ?/, '').replace(/^ Line \d+ is empty\.$/, '') };
+  else if (sc?.checked) delete c.broken[p];
   if (sc?.brokenBefore && sc.all?.length) {
     const e = sc.all[0];
     out.result += `\nSyntax check: ${p} still has a syntax error${e.line ? ` at line ${e.line}` : ''}: ${e.message}${sc.all.length > 1 ? ` (and ${sc.all.length - 1} more)` : ''}.${at(e)} The file was already broken before this change; fix that next.${small ? Syntax.rewriteLine(p, after ?? before) : ''}`;
@@ -2326,6 +2330,11 @@ async function runConversation(c) {
   let autoNudges = 0; // times this run we pushed back on an announce-then-stop reply
   let testNudges = 0; // times this run we asked for a test of changed code before finishing (testgate.js)
   c.untested = {}; // code files changed this run and not run since: path -> true
+  c.changedCode = {}; // every code file changed this run (to tell a test of them from other commands)
+  c.failingTest = null; // the last test of changed code, when it failed: { tool, target, summary }
+  c.broken = {}; // files changed this run whose last syntax check found an error: path -> { line, message, text }
+  let failNudges = 0; // finish blocked by a failing last test (v0.58)
+  let brokenNudges = 0; // finish blocked by a file still broken (v0.58)
   let ranTools = false; // whether any tool has run in this task yet
   let failStreak = 0; // consecutive rounds containing a failed call
   let interventions = 0; // how often the app has had to push back this task
@@ -3082,6 +3091,19 @@ async function runConversation(c) {
           continue;
         }
       }
+      // First, a file this run changed still fails its syntax check (JSON included, not only
+      // code): running it would only fail, so it is fixed before any test (testgate.js, v0.58).
+      const stillBroken = Object.entries(c.broken || {}).map(([path, b]) => ({ path, ...b }));
+      if (useTools && state.settings.syntaxCheck !== false && stillBroken.length) {
+        if (brokenNudges < 2 && testNudges + failNudges + brokenNudges < 4) {
+          brokenNudges++;
+          note(`${stillBroken.map((b) => b.path).join(', ')} still ${stillBroken.length === 1 ? 'has' : 'have'} a syntax error — asking Qwen to fix it before finishing.`);
+          DebugLog.add(c, 'notice', { text: `broken before done #${brokenNudges}: ${stillBroken.map((b) => `${b.path}:${b.line || '?'} ${b.message}`).join('; ')}` });
+          c.history.push({ role: 'user', content: `<system-reminder>\n${TestGate.brokenText(stillBroken)}\n</system-reminder>` });
+          continue;
+        }
+        note(`Finished with ${stillBroken.map((b) => b.path).join(', ')} still broken (syntax error).`);
+      }
       // Test before done (testgate.js): code changed since the last run gets a test first.
       if (useTools && state.settings.testBeforeDone !== false && Object.keys(c.untested || {}).length) {
         const files = [];
@@ -3104,6 +3126,17 @@ async function runConversation(c) {
           continue;
         }
         if (files.length && testNudges >= 2) note(`Finished without running the changes to ${files.map((f) => f.path).join(', ')} — they are untested.`);
+      }
+      // The last test of the changed code failed: that is not done either (testgate.js, v0.58).
+      if (useTools && state.settings.testBeforeDone !== false && c.failingTest && !Object.keys(c.untested || {}).length) {
+        if (failNudges < 2 && testNudges + failNudges + brokenNudges < 4) {
+          failNudges++;
+          note(`The last test failed (${c.failingTest.tool === 'test_app' ? `test_app ${c.failingTest.target}` : c.failingTest.target}) — asking Qwen to fix it before finishing.`);
+          DebugLog.add(c, 'notice', { text: `failing test before done #${failNudges}: ${c.failingTest.summary}` });
+          c.history.push({ role: 'user', content: `<system-reminder>\n${TestGate.failedTestText(c.failingTest)}\n</system-reminder>` });
+          continue;
+        }
+        note(`Finished with a failing test: ${c.failingTest.summary}`);
       }
       // Which skills shaped this answer (an idea from Strata) — once, at the clean end.
       if (c.skillsUsed?.size) {
@@ -3384,12 +3417,29 @@ function trackTesting(c, name, call, out) {
     return;
   }
   c.untested ||= {};
-  if ((name === 'write_file' || name === 'edit_file') && !out.failed && out.progress !== false && TestGate.isCode(args.path)) c.untested[normPath(args.path)] = true;
-  else if (name === 'move_file' && c.untested[normPath(args.from)]) {
+  c.changedCode ||= {};
+  // A syntax error counts as a written-but-failed change too (afterWrite marks it failed), so the
+  // file still needs a run once it is fixed.
+  const wrote = (name === 'write_file' || name === 'edit_file') && (!out.failed || out.meta === 'syntax error') && out.progress !== false;
+  if (wrote && TestGate.isCode(args.path)) {
+    c.untested[normPath(args.path)] = true;
+    c.changedCode[normPath(args.path)] = true;
+  } else if (name === 'move_file' && c.untested[normPath(args.from)]) {
     delete c.untested[normPath(args.from)];
     c.untested[normPath(args.to)] = true;
-  } else if (name === 'delete_file') delete c.untested[normPath(args.path)];
-  else if (name === 'test_app' || name === 'run_program' || (name === 'run_command' && !isReadOnlyCommand(String(args.command || '')))) c.untested = {};
+  } else if (name === 'delete_file') {
+    delete c.untested[normPath(args.path)];
+    if (c.broken) delete c.broken[normPath(args.path)];
+  } else if (name === 'test_app' || name === 'run_program' || (name === 'run_command' && !isReadOnlyCommand(String(args.command || '')))) {
+    // Whether this run tested the changed code — and whether that test passed (v0.58): a test
+    // that failed keeps the finish blocked until it passes.
+    const target = name === 'test_app' ? String(args.command || '') : name === 'run_program' ? 'run_program' : String(args.command || '');
+    const isTest = name !== 'run_command' || TestGate.isTestOf(target, Object.keys(c.changedCode));
+    if (isTest && Object.keys(c.changedCode).length) {
+      c.failingTest = out.failed ? { tool: name, target, summary: TestGate.failureSummary(out.result) } : null;
+    }
+    c.untested = {};
+  }
 }
 
 // A subfolder's instruction file, the first time this conversation touches that folder. Text that

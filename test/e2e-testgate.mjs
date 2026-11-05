@@ -32,6 +32,8 @@ const call = (id, name, args) => [
 ];
 const text = (t) => [{ choices: [{ delta: { content: t }, finish_reason: null }] }, { choices: [{ delta: {}, finish_reason: 'stop' }] }];
 const WC = "const t = require('fs').readFileSync(process.argv[2], 'utf8');\nconst lines = t.split('\\n').filter((l, i, a) => i < a.length - 1 || l).length;\nconsole.log(lines, t.split(/\\s+/).filter(Boolean).length, t.length);\n";
+const BAD_PAGE = '<!DOCTYPE html><html><body><p id="x">hi</p><script>startGame();</script></body></html>';
+const GOOD_PAGE = '<!DOCTYPE html><html><body><p id="x">hi</p><script>document.getElementById("x").textContent = "ready";</script></body></html>';
 const reminders = (b) => (b.messages || []).filter((m) => m.role === 'user' && /have not run (it|them) since/.test(String(m.content))).length;
 let scene = 1;
 let step = 0;
@@ -57,8 +59,33 @@ const server = http.createServer((req, res) => {
       if (n === 0) return sse(res, call('w2', 'write_file', { path: 'page.html', content: '<!DOCTYPE html><p id="x">hi</p>' }));
       return sse(res, text('page.html is done.'));
     }
-    if (n === 0) return sse(res, call('w3', 'write_file', { path: 'tool.js', content: 'console.log(process.argv[2]);\n' }));
-    return sse(res, text('Wrote tool.js as asked, not run.'));
+    if (scene === 3) {
+      if (n === 0) return sse(res, call('w3', 'write_file', { path: 'tool.js', content: 'console.log(process.argv[2]);\n' }));
+      return sse(res, text('Wrote tool.js as asked, not run.'));
+    }
+    if (scene === 4) {
+      // a failing test does not end the task; after the fix, a passing test does
+      if (n === 0) return sse(res, call('w4', 'write_file', { path: 'game.html', content: BAD_PAGE }));
+      if (n === 1) return sse(res, call('t4', 'test_app', { command: 'game.html' }));
+      if (n === 2) return sse(res, text('game.html is done.'));
+      if (n === 3) return sse(res, call('r4', 'read_file', { path: 'game.html' }));
+      if (n === 4) return sse(res, call('w5', 'write_file', { path: 'game.html', content: GOOD_PAGE }));
+      if (n === 5) return sse(res, call('t5', 'test_app', { command: 'game.html' }));
+      return sse(res, text('game.html works now: the test passed.'));
+    }
+    if (scene === 5) {
+      // a JSON file left broken is fixed before finishing
+      if (n === 0) return sse(res, call('r6', 'read_file', { path: 'config.json' }));
+      if (n === 1) return sse(res, call('e6', 'edit_file', { path: 'config.json', old_text: "'name': \"shop\",", new_text: '"name": "shop",' }));
+      if (n === 2) return sse(res, text('Fixed config.json.'));
+      if (n === 3) return sse(res, call('w6', 'write_file', { path: 'config.json', content: '{\n  "name": "shop",\n  "port": 8080\n}\n' }));
+      return sse(res, text('config.json parses now.'));
+    }
+    // scene 6: an unrelated failing command after a passing test does not block the finish
+    if (n === 0) return sse(res, call('w7', 'write_file', { path: 'hello.js', content: 'console.log("hello " + process.argv[2]);\n' }));
+    if (n === 1) return sse(res, call('c7', 'run_command', { command: 'node hello.js you' }));
+    if (n === 2) return sse(res, call('c8', 'run_command', { command: 'node -e "process.exit(3)"' }));
+    return sse(res, text('hello.js prints hello you.'));
   });
 });
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -124,6 +151,40 @@ try {
   await run("write tool.js that prints its first argument, but don't run it", 'not run.');
   const s3 = bodies.filter((x) => x.scene === 3).map((x) => x.b);
   if (s3.length !== 2) fail(`scene 3 should not be pushed back: ${s3.length} requests`);
+  // 4. a failing test blocks the finish until it passes
+  scene = 4;
+  step = 0;
+  const n4 = await run('make game.html', 'the test passed.');
+  const s4 = bodies.filter((x) => x.scene === 4).map((x) => x.b);
+  const failAsk = (s4[3]?.messages || []).find((m) => m.role === 'user' && /Your last test failed/.test(String(m.content)))?.content || '';
+  if (!/Your last test failed — test_app game\.html: .*startGame is not defined/.test(failAsk)) fail(`no failing-test reminder: ${String(failAsk).slice(0, 300)}`);
+  if (!n4.some((t) => /The last test failed \(test_app game\.html\) — asking Qwen to fix it before finishing/.test(t))) fail(`no failing-test notice: ${n4.join(' | ')}`);
+  if (s4.length !== 7) fail(`scene 4 should take 7 requests, took ${s4.length}`);
+  if (n4.some((t) => /Finished with a failing test/.test(t))) fail('scene 4 ended with a failing test');
+
+  // 5. a JSON file still broken is fixed before finishing
+  scene = 5;
+  step = 0;
+  fs.writeFileSync(path.join(ws, 'config.json'), "{\n  'name': \"shop\",\n  \"port\": 8080,\n}\n");
+  const n5 = await run('config.json is broken, fix it', 'parses now.');
+  const s5 = bodies.filter((x) => x.scene === 5).map((x) => x.b);
+  const brokenAsk = (s5[3]?.messages || []).find((m) => m.role === 'user' && /still has a syntax error/.test(String(m.content)))?.content || '';
+  if (!/config\.json still has a syntax error[\s\S]*config\.json line \d+:/.test(brokenAsk)) fail(`no broken-file reminder: ${String(brokenAsk).slice(0, 300)}`);
+  if (!n5.some((t) => /config\.json still has a syntax error — asking Qwen to fix it before finishing/.test(t))) fail(`no broken-file notice: ${n5.join(' | ')}`);
+  try {
+    JSON.parse(fs.readFileSync(path.join(ws, 'config.json'), 'utf8'));
+  } catch (e) {
+    fail(`config.json still broken: ${e.message}`);
+  }
+  if (s5.length !== 5) fail(`scene 5 should take 5 requests, took ${s5.length}`);
+
+  // 6. an unrelated failing command does not count as a failed test
+  scene = 6;
+  step = 0;
+  const n6 = await run('make hello.js', 'prints hello you.');
+  const s6 = bodies.filter((x) => x.scene === 6).map((x) => x.b);
+  if (s6.length !== 4) fail(`scene 6 should not be pushed back: ${s6.length} requests`);
+  if (n6.some((t) => /last test failed|Finished with a failing test/.test(t))) fail(`an unrelated command blocked the finish: ${n6.join(' | ')}`);
 } catch (e) {
   fail(String(e).split('\n')[0]);
 } finally {
@@ -140,4 +201,4 @@ try {
   fs.rmSync(ws, { recursive: true, force: true });
 }
 if (process.exitCode) process.exit(process.exitCode);
-console.log('testgate smoke ok: an unrun CLI script was tested after one reminder, an untested page was asked twice then marked untested, "don\'t run it" was respected');
+console.log('testgate smoke ok: an unrun CLI script was tested after one reminder, an untested page was asked twice then marked untested, "don\'t run it" was respected, a failing test blocked the finish until it passed, a broken JSON file was fixed before finishing, an unrelated failing command did not block');
