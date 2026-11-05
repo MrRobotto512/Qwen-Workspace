@@ -84,6 +84,25 @@ function escapeEdit(original, oldText, newText) {
   return loose.modified ? { modified: loose.modified, note: 'old_text had literal \\n escapes instead of line breaks; matched once after reading them as line breaks and ignoring indentation' } : loose;
 }
 
+// old_text written with regex whitespace tokens (a benchmark run: qwen3:8b sent
+// `function mean(xs) {\s+let sum = 0;\s+...` three times over): each `\s+` or `\s*` stands for
+// the file's whitespace at that spot, and the new text's tokens take the whitespace that was
+// matched (the last one again for extra lines), so the result keeps the file's line breaks and
+// indentation.
+function regexWsEdit(original, oldText, newText) {
+  const o = String(oldText);
+  if (o.includes('\n') || !/\\s[+*]/.test(o)) return { count: 0 };
+  const quote = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(o.split(/\\s[+*]/).map(quote).join('(\\s+)'), 'g');
+  const all = [...original.matchAll(re)];
+  if (all.length !== 1) return { count: all.length };
+  const m = all[0];
+  const ws = m.slice(1);
+  let i = 0;
+  const newU = String(newText).replace(/\\s[+*]/g, () => ws[Math.min(i++, ws.length - 1)] ?? '\n');
+  return { modified: original.slice(0, m.index) + newU + original.slice(m.index + m[0].length), note: 'old_text used \\s+ for whitespace; matched once, reading each as the whitespace in the file' };
+}
+
 // How alike two strings are, 0..1: shared character pairs (Dice). 1 for equal strings.
 function similarity(a, b) {
   const x = String(a);
@@ -201,6 +220,6 @@ function glitchWarning(list) {
   return `\nWarning: this write put characters from another language inside code: ${list.map((x) => `\`${x}\``).join(', ')}. That is a generation glitch, not valid code — fix each one now with edit_file (e.g. \`MeshStandard材料\` → \`MeshStandardMaterial\`).`;
 }
 
-const EditMatchExports = { looseEdit, unicodeEdit, escapeEdit, similarEdit, alreadyApplied, similarity, asciiLine, blindEdit, glitchIdentifiers, glitchWarning };
+const EditMatchExports = { looseEdit, unicodeEdit, escapeEdit, regexWsEdit, similarEdit, alreadyApplied, similarity, asciiLine, blindEdit, glitchIdentifiers, glitchWarning };
 if (typeof module !== 'undefined' && module.exports) module.exports = EditMatchExports;
 if (typeof window !== 'undefined') window.EditMatch = EditMatchExports;

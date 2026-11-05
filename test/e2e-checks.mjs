@@ -36,6 +36,8 @@ const node = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/api/version') return json(res, { version: '0.40.13' });
   if (req.method === 'GET' && req.url === '/api/tags') return json(res, { models: [{ name: 'good:7b' }, { name: 'bad:1b' }] });
   if (req.method === 'GET' && req.url === '/api/ps') return json(res, { models: [{ name: 'good:7b', size: 20e9, size_vram: 11e9 }] });
+  // The fit prediction asks /api/show before the first request; without a route it would be read as a chat turn.
+  if (req.method === 'POST' && req.url === '/api/show') return json(res, { model_info: {} });
   if (req.method !== 'POST') return json(res, {});
   let body = '';
   req.on('data', (d) => (body += d));

@@ -891,9 +891,16 @@ ipcMain.handle('gui:testPage', async (_e, opts) => {
       if (!crashed && opts?.probe) {
         out.probe = await wc.executeJavaScript(`(async () => { try { const r = await (${String(opts.probe)}); return r === true ? true : String(r); } catch (e) { return 'error: ' + e.message; } })()`, true).catch((e) => `error: ${e.message}`);
       }
+      // What the page holds, for the blank-screen verdict (guitest.js isBlankPage): a page with
+      // a number or a line of text on white is one flat colour to the pixel test, yet not blank.
+      if (!crashed) {
+        const facts = await wc.executeJavaScript('({ textChars: (document.body && document.body.innerText || "").trim().length, interactive: document.querySelectorAll("button, input, select, textarea, a[href], [onclick], [role=button]").length, canvas: !!document.querySelector("canvas") })', true).catch(() => ({}));
+        out.textChars = Number(facts.textChars) || 0;
+        out.interactive = Number(facts.interactive) || 0;
+        out.hasCanvas = !!facts.canvas;
+      }
       if (!crashed && opts?.selfTest !== false) {
-        const probe = await wc.executeJavaScript('({ selfTest: typeof window.selfTest === "function", canvas: !!document.querySelector("canvas") })', true).catch(() => ({}));
-        out.hasCanvas = !!probe.canvas;
+        const probe = await wc.executeJavaScript('({ selfTest: typeof window.selfTest === "function" })', true).catch(() => ({}));
         out.hasSelfTest = !!probe.selfTest;
         if (probe.selfTest) {
           const limit = Math.min(60, Math.max(5, Number(opts?.selfTestSeconds) || 20)) * 1000;

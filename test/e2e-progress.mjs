@@ -5,8 +5,8 @@
 //  2. While the local model reads its prompt (2.5s of silence) the status line says
 //     "Reading the prompt (~N tokens) (slow:7b) · 0:02"; while it thinks, "Thinking · ~N tokens ·
 //     X tok/s"; the debug log records Ollama's prompt time, speed and output tokens.
-//  3. /api/ps shows a GPU spill → the warning offers "Fit to GPU (14336)"; clicking it sets the
-//     context window, and the next request asks Ollama for num_ctx 14336.
+//  3. /api/ps shows a GPU spill → the context window is set to 14336 on its own (no button),
+//     and the next request asks Ollama for num_ctx 14336.
 // Run under a display: xvfb-run -a npm run test:e2e:progress
 import { _electron as electron } from 'playwright-core';
 import http from 'node:http';
@@ -131,16 +131,11 @@ try {
   const slowResp = st.log.find((e) => e.kind === 'response' && e.promptMs === 2400);
   if (!slowResp || slowResp.completionTokens !== 26 || slowResp.genTokPerSec !== 10.4 || !(slowResp.firstMs >= 2400)) fail(`the debug log lacks the step's timings: ${JSON.stringify(slowResp || st.log.filter((e) => e.kind === 'response'))}`);
 
-  // 3. Fit to GPU
-  const spill = st.notices.find((t) => /slow:7b is running partly on the CPU/.test(t)) || '';
-  if (!/Fit to GPU sets "Context window" to 14336/.test(spill)) fail(`spill notice: ${spill}`);
-  const clicked = await win.evaluate(() => {
-    const b = [...document.querySelectorAll('#toasts button')].find((x) => /^Fit to GPU \(14336\)$/.test(x.textContent.trim()));
-    b?.click();
-    return !!b;
-  });
-  if (!clicked) fail('no "Fit to GPU (14336)" button on the spill warning');
-  await win.waitForFunction(() => state.settings.contextLength === 14336, null, { timeout: 5000 }).catch(() => fail('Fit to GPU did not set the context window'));
+  // 3. Fit to GPU, on its own: the spill seen after the step sets the window for the next request
+  const spill = st.notices.find((t) => /slow:7b was running partly on the CPU/.test(t)) || '';
+  if (!/only 12 of 15 GB \(80%\) fit in GPU memory .* Context window set to 14336 so all of it fits from the next step/.test(spill)) fail(`spill notice: ${spill || JSON.stringify(st.notices)}`);
+  if (await win.evaluate(() => [...document.querySelectorAll('#toasts button')].some((x) => /^Fit to GPU \(/.test(x.textContent.trim())))) fail('a "Fit to GPU" button was offered although the window was fitted on its own');
+  await win.waitForFunction(() => state.settings.contextLength === 14336, null, { timeout: 5000 }).catch(() => fail('the fit did not set the context window'));
   await win.evaluate(() => { document.querySelector('#prompt').value = 'again'; document.querySelector('#btn-send').onclick(); });
   await finished('Again done.').catch(() => fail('the second task never finished'));
   const ctx = localBodies.at(-1)?.options?.num_ctx;
@@ -165,4 +160,4 @@ try {
   fs.rmSync(ws, { recursive: true, force: true });
 }
 if (process.exitCode) process.exit(process.exitCode);
-console.log('progress smoke ok: planning-turn command refused and the plan asked for again (3 ⚡ chats), "Reading the prompt" → "Thinking · tok/s" shown live, timings logged, Fit to GPU set num_ctx 14336');
+console.log('progress smoke ok: planning-turn command refused and the plan asked for again (3 ⚡ chats), "Reading the prompt" → "Thinking · tok/s" shown live, timings logged, the spill fitted the window to 14336 for the next request');

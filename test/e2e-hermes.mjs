@@ -122,7 +122,8 @@ try {
   if (!/^Edited seed\.js/.test(tr('w3'))) fail(`the overwrite after reading failed: ${tr('w3').slice(0, 200)}`);
   if (!fs.readFileSync(path.join(ws, 'seed.js'), 'utf8').includes('keep = 2')) fail('seed.js was not rewritten after the read');
   // 3. syntax check
-  if (!/Syntax check: app\.js line 1: SyntaxError: Unexpected token ';'. This change introduced it/.test(tr('e1'))) fail(`no syntax error for the broken edit: ${tr('e1').slice(0, 300)}`);
+  // The broken line is quoted, and a 3-line file left broken by an edit is asked for whole.
+  if (!/Syntax check: app\.js line 1: SyntaxError: Unexpected token ';'\. Line 1 is: let a = ; This change introduced it — fix it now.*app\.js is small \(3 lines\): rewrite it whole with write_file/.test(tr('e1'))) fail(`no syntax error for the broken edit: ${tr('e1').slice(0, 300)}`);
   if (!/Syntax check: data\.json line \d+:/.test(tr('w4'))) fail(`no syntax error for broken JSON: ${tr('w4').slice(0, 300)}`);
   if (!/Syntax check: calc\.py line \d+: SyntaxError/.test(tr('w5'))) fail(`no syntax error for broken Python: ${tr('w5').slice(0, 300)}`);
   if (/Syntax check/.test(tr('w1')) || /Syntax check/.test(tr('w3'))) fail('a clean write reported a syntax error');

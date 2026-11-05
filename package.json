@@ -58,7 +58,9 @@
     "test:e2e:gpucrash": "node test/e2e-gpucrash.mjs",
     "test:e2e:planbudget": "node test/e2e-planbudget.mjs",
     "test:e2e:architect": "node test/e2e-architect.mjs",
-    "test:e2e:bench": "node test/e2e-bench.mjs"
+    "test:e2e:bench": "node test/e2e-bench.mjs",
+    "bench": "node test/bench-run.mjs",
+    "triage": "node test/triage.mjs"
   },
   "author": "",
   "dependencies": {

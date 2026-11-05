@@ -288,6 +288,25 @@ function pixelNote(st, { page = false, canvas = false } = {}) {
   return '';
 }
 
-const GuiTestExports = { pixelStats, pixelNote, MAX_ACTIONS, SHOT_BOX, KEYS, parseActions, windowIdFromSource, pickWindow, scalePoint, xdotoolSteps, sendKeysEscape, windowsScript, macScript, describeAction, summarize, webTarget, isLocalUrl, electronKey, summarizePage };
+// Blank or not: the pixel test says the screenshot is one flat colour; the page's own facts
+// (from gui:testPage) say whether anything is there. A page that draws on a <canvas> must
+// actually draw — a flat canvas is blank whatever text sits beside it. A page without one that
+// has visible text or controls drew them, however little variance a number on white has (a
+// benchmark run: three working pages were called blank, one looped and was handed off).
+function isBlankPage(r, pixelBlank) {
+  if (!pixelBlank) return false;
+  if (r?.hasCanvas) return true;
+  return !((Number(r?.textChars) || 0) > 0 || (Number(r?.interactive) || 0) > 0);
+}
+
+// The line that explains a flat-looking page that is not blank.
+function flatButDrawnLine(r) {
+  const parts = [];
+  if ((Number(r?.textChars) || 0) > 0) parts.push(`${r.textChars} characters of text`);
+  if ((Number(r?.interactive) || 0) > 0) parts.push(`${r.interactive} control${r.interactive === 1 ? '' : 's'}`);
+  return `The page is nearly one flat colour (little on screen), but it has ${parts.join(' and ')}, so it did draw.`;
+}
+
+const GuiTestExports = { isBlankPage, flatButDrawnLine, pixelStats, pixelNote, MAX_ACTIONS, SHOT_BOX, KEYS, parseActions, windowIdFromSource, pickWindow, scalePoint, xdotoolSteps, sendKeysEscape, windowsScript, macScript, describeAction, summarize, webTarget, isLocalUrl, electronKey, summarizePage };
 if (typeof module !== 'undefined' && module.exports) module.exports = GuiTestExports;
 if (typeof window !== 'undefined') window.GuiTest = GuiTestExports;
