@@ -62,10 +62,22 @@ const call = (id, name, args) => [
   { choices: [{ delta: {}, finish_reason: 'tool_calls' }] }
 ];
 const lastTool = (b, id) => b?.messages?.find((m) => m.role === 'tool' && m.tool_call_id === id)?.content || '';
+// A 3D game's most common bug: the renderer's canvas is made and drawn on but never added to
+// the page, while a text HUD is (v0.58: that is a blank game, not "it has text, so it drew").
+const DETACHED = `<!DOCTYPE html><html><body style="margin:0;background:#000">
+<div id="hud" style="position:absolute;top:8px;left:8px;color:#222;font:12px sans-serif">Score: 0</div>
+<script>
+  const canvas = document.createElement('canvas');
+  canvas.width = 800; canvas.height = 600;
+  const g = canvas.getContext('2d');
+  g.fillStyle = '#4af'; g.fillRect(100, 100, 300, 200);
+</script></body></html>`;
 const SCRIPT = [
   () => call('w1', 'write_file', { path: 'counter.html', content: PAGE }),
   () => call('e1', 'edit_file', { path: 'counter.html', old_text: '#count { font-size: 96px; }', new_text: '#count { font-size: 96px; }' }),
   () => call('t1', 'test_app', { command: 'counter.html' }),
+  () => call('w2', 'write_file', { path: 'detached.html', content: DETACHED }),
+  () => call('t2', 'test_app', { command: 'detached.html' }),
   () => [{ choices: [{ delta: { content: 'The counter page passes its self-test.' }, finish_reason: null }] }, { choices: [{ delta: {}, finish_reason: 'stop' }] }]
 ];
 let turn = 0;
@@ -79,7 +91,7 @@ const server = http.createServer((req, res) => {
   req.on('data', (d) => (body += d));
   req.on('end', () => {
     bodies.push(JSON.parse(body));
-    sse(res, (SCRIPT[turn++] || SCRIPT[3])());
+    sse(res, (SCRIPT[turn++] || SCRIPT[5])());
   });
 });
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -123,6 +135,22 @@ try {
   if (!/^Nothing changed: new_text is the same as the text already in counter\.html/.test(e1)) fail(`the identical edit should say nothing changed: ${e1.slice(0, 200)}`);
   if (fs.readFileSync(path.join(ws, 'counter.html'), 'utf8') !== PAGE) fail('the no-op edit changed the file');
 
+  const t2 = tr('t2');
+  if (!/Blank screen[\s\S]*No <canvas> is on the page although its scripts draw on one: was it added to the document/.test(t2)) fail(`a game whose canvas never reached the page should be blank: ${t2.slice(0, 500)}`);
+  if (/so it did draw/.test(t2)) fail('the HUD text made a blank game pass');
+  // Saving Settings the moment they open must not empty USER.md (v0.58: it loads a moment later).
+  const kept = await win.evaluate(async () => {
+    const before = await api.userMemoryGet();
+    await api.userMemorySet('- QWS e2e: keep this line');
+    state.userMemory = await api.userMemoryGet();
+    openSettings();
+    await saveSettingsFromUi();
+    const after = await api.userMemoryGet();
+    await api.userMemorySet(before || '');
+    state.userMemory = before || '';
+    return after;
+  });
+  if (!/keep this line/.test(kept)) fail(`saving Settings at once emptied USER.md: ${JSON.stringify(kept)}`);
   const t1 = tr('t1');
   if (!/Self-test \(measured by the page itself\): every step passed \(3\)/.test(t1)) fail(`the page's own self-test was not read: ${t1.slice(0, 600)}`);
   if (/move|not tested/.test(t1)) fail(`the counter page was judged as a game: ${t1.slice(0, 600)}`);

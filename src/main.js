@@ -613,7 +613,7 @@ async function pythonErrors(file) {
 }
 
 async function syntaxErrorsOf(kind, text, rel) {
-  if (kind === 'json') return SyntaxCheck.checkJson(text);
+  if (kind === 'json') return SyntaxCheck.checkJson(text, rel);
   if (kind === 'js') return jsErrors(text, 1, /\.mjs$/i.test(rel) || SyntaxCheck.isModuleCode(text));
   if (kind === 'html') {
     const errs = [];
@@ -891,14 +891,6 @@ ipcMain.handle('gui:testPage', async (_e, opts) => {
       if (!crashed && opts?.probe) {
         out.probe = await wc.executeJavaScript(`(async () => { try { const r = await (${String(opts.probe)}); return r === true ? true : String(r); } catch (e) { return 'error: ' + e.message; } })()`, true).catch((e) => `error: ${e.message}`);
       }
-      // What the page holds, for the blank-screen verdict (guitest.js isBlankPage): a page with
-      // a number or a line of text on white is one flat colour to the pixel test, yet not blank.
-      if (!crashed) {
-        const facts = await wc.executeJavaScript('({ textChars: (document.body && document.body.innerText || "").trim().length, interactive: document.querySelectorAll("button, input, select, textarea, a[href], [onclick], [role=button]").length, canvas: !!document.querySelector("canvas") })', true).catch(() => ({}));
-        out.textChars = Number(facts.textChars) || 0;
-        out.interactive = Number(facts.interactive) || 0;
-        out.hasCanvas = !!facts.canvas;
-      }
       if (!crashed && opts?.selfTest !== false) {
         const probe = await wc.executeJavaScript('({ selfTest: typeof window.selfTest === "function" })', true).catch(() => ({}));
         out.hasSelfTest = !!probe.selfTest;
@@ -908,6 +900,43 @@ ipcMain.handle('gui:testPage', async (_e, opts) => {
             .catch((e) => JSON.stringify({ error: String(e?.message || e).slice(0, 300) }));
           out.shot = (await capture()) || out.shot;
         }
+      }
+      // What the page holds, for the blank-screen verdict (guitest.js isBlankPage): a page with
+      // a number or a line of text on white is one flat colour to the pixel test, yet not blank.
+      // Taken after the self-test, like the screenshot that is judged. Only what can be seen
+      // counts — text and controls that are hidden, transparent, zero-size or off-screen do not —
+      // and a page whose scripts draw on a canvas that never reached the document (Three.js
+      // without appendChild(renderer.domElement)) is a canvas page, judged by its pixels.
+      if (!crashed) {
+        const facts = await wc.executeJavaScript(`(() => {
+          const vw = innerWidth, vh = innerHeight;
+          const visible = (el) => {
+            if (!el || !el.getBoundingClientRect) return false;
+            if (el.checkVisibility && !el.checkVisibility({ opacityProperty: true, visibilityProperty: true })) return false;
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 && r.top < vh && r.left < vw;
+          };
+          let textChars = 0;
+          const root = document.body || document.documentElement;
+          const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+          let node, seen = 0;
+          while ((node = walker.nextNode()) && seen++ < 5000 && textChars < 5000) {
+            const t = node.textContent.trim();
+            const parent = node.parentElement;
+            if (!t || !parent || /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(parent.tagName)) continue;
+            if (visible(parent)) textChars += t.length;
+          }
+          const interactive = [...document.querySelectorAll('button, input:not([type=hidden]), select, textarea, a[href], [onclick], [role=button]')].filter(visible).length;
+          const canvases = [...document.querySelectorAll('canvas')];
+          const canvas = canvases.some(visible);
+          const src = [...document.scripts].map((x) => x.textContent.slice(0, 50000)).join('\\n');
+          const wantsCanvas = !canvas && (canvases.length > 0 || !!(window.THREE || window.PIXI || window.Phaser || window.BABYLON || window.p5) || /WebGLRenderer|getContext\\(\\s*['"](?:2d|webgl2?|experimental-webgl)['"]|createElement\\(\\s*['"]canvas['"]/.test(src));
+          return { textChars, interactive, canvas, wantsCanvas };
+        })()`, true).catch(() => ({}));
+        out.textChars = Number(facts.textChars) || 0;
+        out.interactive = Number(facts.interactive) || 0;
+        out.hasCanvas = !!facts.canvas;
+        out.wantsCanvas = !!facts.wantsCanvas;
       }
     }
   } catch (e) {

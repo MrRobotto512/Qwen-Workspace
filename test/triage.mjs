@@ -40,8 +40,14 @@ const fmtMs = (ms) => (ms >= 60_000 ? `${(ms / 60_000).toFixed(1)}m` : `${(ms / 
 // One task's verdict: the end reason comes from the log first (it knows about loops, step limits
 // and model errors), the saved status second.
 function triage(c) {
-  const log = c.log || [];
-  const display = c.display || [];
+  // The last task in the conversation: from its first request (step 0) and the user message
+  // that started it, so a step limit in an earlier turn does not outweigh a later finish.
+  const full = c.log || [];
+  const start = full.map((e) => e.kind === 'request' && e.step === 0).lastIndexOf(true);
+  const log = start > 0 ? full.slice(start) : full;
+  const allDisplay = c.display || [];
+  const lastUser = allDisplay.map((d) => d.t === 'user').lastIndexOf(true);
+  const display = lastUser > 0 ? allDisplay.slice(lastUser) : allDisplay;
   const responses = log.filter((e) => e.kind === 'response');
   const requests = log.filter((e) => e.kind === 'request');
   // A step's length: the response's own timing, or (older logs) the gap after its request.
@@ -58,7 +64,7 @@ function triage(c) {
   const modelErrors = responses.filter((e) => e.ok === false).map((e) => String(e.error || ''));
   const errors = log.filter((e) => e.kind === 'error').map((e) => String(e.text || ''));
   const toolFails = log.filter((e) => e.kind === 'tool' && e.failed);
-  const spill = log.find((e) => e.kind === 'notice' && /partly on the CPU/.test(e.text || ''));
+  const spill = log.find((e) => e.kind === 'notice' && /partly on the CPU|part of it (?:will|would) run on the CPU|runs on the CPU/.test(e.text || ''));
   const escalations = log.filter((e) => e.kind === 'escalate');
   const loops = responses.filter((e) => e.aborted && e.by === 'loop').length;
   const stepLimit = display.some((d) => d.t === 'error' && /stopped after \d+ steps/.test(d.text || '')) || errors.some((t) => /stopped after \d+ steps/.test(t));

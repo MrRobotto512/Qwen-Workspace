@@ -46,6 +46,7 @@ const say = (s) => console.log(`[bench ${new Date().toTimeString().slice(0, 8)}]
 
 function loadRuns() {
   const dir = path.join(dataDir, 'bench', 'results');
+  if (!fs.existsSync(dir)) return []; // no benchmark has been saved on this PC yet
   return fs.readdirSync(dir).filter((f) => f.endsWith('.json')).sort().map((f) => {
     try {
       return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
@@ -76,15 +77,52 @@ const errors = [];
 win.on('pageerror', (e) => errors.push(String(e)));
 win.on('dialog', (d) => d.accept().catch(() => {}));
 
+// What the setup changes, and nothing else, is put back afterwards: cloud spend recorded and
+// GPU sizes learned during the run stay. The values are also written to a file first, so an
+// interrupted run (Ctrl-C, a closed terminal, a crash) is put right by the next one.
+const SETUP_KEYS = ['model', 'contextLength', 'agentMode', 'planFirst', 'heavy', 'ollamaNodes', 'approvalMode', 'fitAuto', 'fitAutoSkip'];
+const restoreFile = path.join(dataDir, 'bench', 'restore-settings.json');
 let snapshot = null;
 let exitCode = 0;
+let restoring = null;
+const restore = () => {
+  if (!snapshot) return Promise.resolve();
+  restoring ||= win.evaluate(async (s) => { state.settings = await api.setSettings(s); applySettingsToUi(); }, snapshot)
+    .then(() => {
+      fs.rmSync(restoreFile, { force: true });
+      say('settings restored');
+    })
+    .catch((e) => console.error(`could not restore settings (${e}); they are saved in ${restoreFile} and the next "npm run bench" puts them back`));
+  return restoring;
+};
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(sig, () => {
+    console.error(`\n${sig}: stopping and putting your settings back…`);
+    const t = setTimeout(() => process.exit(130), 15_000);
+    t.unref();
+    restore().finally(() => app.close().catch(() => {}).finally(() => process.exit(130)));
+  });
+}
 try {
   await win.waitForFunction(() => document.querySelector('#btn-settings')?.onclick && document.querySelector('#model-name')?.textContent, null, { timeout: 30_000 });
-  snapshot = await win.evaluate(() => JSON.parse(JSON.stringify(state.settings)));
+  // A run that was interrupted before it could restore: put those settings back first.
+  if (fs.existsSync(restoreFile)) {
+    const left = JSON.parse(fs.readFileSync(restoreFile, 'utf8'));
+    await win.evaluate(async (s) => { state.settings = await api.setSettings(s); applySettingsToUi(); }, left);
+    fs.rmSync(restoreFile, { force: true });
+    say('put back the settings an interrupted benchmark run had changed');
+  }
+  snapshot = await win.evaluate((keys) => Object.fromEntries(keys.map((k) => [k, state.settings[k] === undefined ? null : JSON.parse(JSON.stringify(state.settings[k]))])), SETUP_KEYS);
+  fs.mkdirSync(path.dirname(restoreFile), { recursive: true });
+  fs.writeFileSync(restoreFile, JSON.stringify(snapshot));
+  const cloudMain = await win.evaluate(() => !['ollama', 'lmstudio'].includes(state.settings.provider));
+  if (cloudMain) say('note: the everyday model is a cloud provider, so this run costs money even with the planner off');
 
-  // The setup, through the Settings form (so the same validation and node handling run).
+  // The setup, through the Settings form (so the same validation and node handling run). The
+  // form is saved only once it has finished loading (USER.md arrives a moment later).
+  await win.evaluate(() => openSettings());
+  await win.waitForFunction(() => document.querySelector('#s-userMemory')?.dataset.loaded === '1', null, { timeout: 10_000 }).catch(() => {});
   const applied = await win.evaluate(({ model, node, ctx, keepPlanner, highPerf }) => {
-    openSettings();
     if (model) document.querySelector('#s-model').value = model;
     if (ctx) document.querySelector('#s-contextLength').value = String(ctx);
     document.querySelector('#s-agentMode').checked = true;
@@ -146,7 +184,7 @@ try {
   exitCode = 3;
 } finally {
   if (errors.length) console.error(`renderer errors: ${errors.join(' || ').slice(0, 600)}`);
-  if (snapshot) await win.evaluate(async (s) => { state.settings = await api.setSettings(s); applySettingsToUi(); }, snapshot).then(() => say('settings restored')).catch((e) => console.error(`could not restore settings: ${e}`));
+  await restore();
   const watchdog = setTimeout(() => process.exit(exitCode), 20_000);
   watchdog.unref();
   await app.close().catch(() => {});

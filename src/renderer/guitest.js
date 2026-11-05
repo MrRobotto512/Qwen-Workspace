@@ -295,7 +295,9 @@ function pixelNote(st, { page = false, canvas = false } = {}) {
 // benchmark run: three working pages were called blank, one looped and was handed off).
 function isBlankPage(r, pixelBlank) {
   if (!pixelBlank) return false;
-  if (r?.hasCanvas) return true;
+  // A canvas page — or one whose scripts draw on a canvas that is not on the page — is judged by
+  // its pixels: a HUD's text over a game that drew nothing is still a blank game.
+  if (r?.hasCanvas || r?.wantsCanvas) return true;
   return !((Number(r?.textChars) || 0) > 0 || (Number(r?.interactive) || 0) > 0);
 }
 

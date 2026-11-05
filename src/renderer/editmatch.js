@@ -89,17 +89,50 @@ function escapeEdit(original, oldText, newText) {
 // the file's whitespace at that spot, and the new text's tokens take the whitespace that was
 // matched (the last one again for extra lines), so the result keeps the file's line breaks and
 // indentation.
+// A `\s+` that is part of real code — a regex literal or a regex in a string, as in
+// `split(/\s+/)` or `re.split(r'\s+', t)` — is code, not a whitespace placeholder: it sits next
+// to a regex delimiter, a quote, a bracket or another regex token.
+function isCodeToken(t, i, len) {
+  const prev = t[i - 1] || '';
+  const next = t[i + len] || '';
+  return /[\/'"`(\[|\\^]/.test(prev) || /[\/'"`)\]|*+?{$]/.test(next);
+}
+
 function regexWsEdit(original, oldText, newText) {
   const o = String(oldText);
   if (o.includes('\n') || !/\\s[+*]/.test(o)) return { count: 0 };
   const quote = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const re = new RegExp(o.split(/\\s[+*]/).map(quote).join('(\\s+)'), 'g');
+  // Runs of tokens (`\s+\s*`) are one gap; `\s*` may be empty, `\s+` may not.
+  const parts = o.split(/((?:\\s[+*])+)/);
+  const src = parts.map((x, k) => (k % 2 ? (x.includes('\\s+') ? '(\\s+)' : '(\\s*)') : quote(x))).join('');
+  const re = new RegExp(src, 'g');
   const all = [...original.matchAll(re)];
+  // Sent again after it landed: the new text, read the same way, is already there (v0.55's
+  // alreadyApplied only knows plain text).
+  if (!all.length) {
+    const n = String(newText);
+    if (/\\s[+*]/.test(n) && n.replace(/(?:\\s[+*])+/g, '').trim().length >= 8) {
+      let back = '';
+      let last = 0;
+      for (const mm of n.matchAll(/(?:\\s[+*])+/g)) {
+        back += quote(n.slice(last, mm.index)) + (isCodeToken(n, mm.index, mm[0].length) ? quote(mm[0]) : '\\s*');
+        last = mm.index + mm[0].length;
+      }
+      back += quote(n.slice(last));
+      try {
+        if ([...original.matchAll(new RegExp(back, 'g'))].length === 1) return { count: 0, already: true };
+      } catch {
+        /* not a usable pattern */
+      }
+    }
+    return { count: 0 };
+  }
   if (all.length !== 1) return { count: all.length };
   const m = all[0];
   const ws = m.slice(1);
   let i = 0;
-  const newU = String(newText).replace(/\\s[+*]/g, () => ws[Math.min(i++, ws.length - 1)] ?? '\n');
+  const n = String(newText);
+  const newU = n.replace(/(?:\\s[+*])+/g, (tok, at) => (isCodeToken(n, at, tok.length) ? tok : ws[Math.min(i++, ws.length - 1)] ?? '\n'));
   return { modified: original.slice(0, m.index) + newU + original.slice(m.index + m[0].length), note: 'old_text used \\s+ for whitespace; matched once, reading each as the whitespace in the file' };
 }
 

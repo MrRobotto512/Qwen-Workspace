@@ -515,7 +515,10 @@ function renderSpendSummary() {
 
 function openSettings() {
   const s = state.settings;
-  api.userMemoryGet().then((text) => { state.userMemory = text; $('#s-userMemory').value = text; }).catch(() => {});
+  // USER.md arrives a moment after the form opens: until it has, a save must not write the
+  // (still empty) box over it (a headless benchmark saved the form at once and emptied USER.md).
+  $('#s-userMemory').dataset.loaded = '';
+  api.userMemoryGet().then((text) => { state.userMemory = text; $('#s-userMemory').value = text; $('#s-userMemory').dataset.loaded = '1'; }).catch(() => {});
   $('#node-diag-box').classList.add('hidden'); // a stale doctor report never greets a fresh visit
   for (const k of ['provider', 'baseUrl', 'apiKey', 'model', 'temperature', 'fontSize', 'contextLength', 'maxResponseTokens', 'keepAlive', 'searchProvider', 'searchApiKey', 'searxngUrl']) $(`#s-${k}`).value = s[k] ?? '';
   $('#s-webResearch').checked = s.webResearch !== false;
@@ -586,7 +589,7 @@ async function saveSettingsFromUi() {
   patch.contextLength = Math.max(2048, parseInt($('#s-contextLength').value, 10) || 32768);
   patch.maxResponseTokens = Math.max(0, parseInt($('#s-maxResponseTokens').value, 10) || 0);
   // Personal memory lives in its own file, not in settings.json.
-  if ($('#s-userMemory').value !== (state.userMemory || '')) {
+  if ($('#s-userMemory').dataset.loaded === '1' && $('#s-userMemory').value !== (state.userMemory || '')) {
     state.userMemory = await api.userMemorySet($('#s-userMemory').value);
   }
   patch.keepAlive = ($('#s-keepAlive').value.trim() || '-1');

@@ -30,3 +30,19 @@ test('a user who asked not to run it is not overruled', () => {
   for (const w of ["just write the file, don't run it", 'Create the script without running it', 'do not test it yet', 'just write the code']) assert.ok(T.userSaidNoTest([w]), w);
   for (const w of ['make wc.js and check it works', 'run the tests', 'fix the bug']) assert.ok(!T.userSaidNoTest([w]), w);
 });
+
+test('v0.58: which commands test the changed code, and what a failed test said', () => {
+  assert.ok(T.isTestOf('node wc.js sample.txt', ['wc.js']));
+  assert.ok(T.isTestOf('python -c "import calc; print(calc.add(1, 2))"', ['calc.py']));
+  assert.ok(T.isTestOf('npm test', []) && T.isTestOf('python -m unittest', []) && T.isTestOf('pytest -x', []));
+  assert.ok(!T.isTestOf('pip install requests', ['calc.py']), 'an install is not a test of calc.py');
+  assert.ok(!T.isTestOf('where python', ['wc.js']));
+  assert.ok(!T.isTestOf('node -e "process.exit(3)"', ['tool.js']));
+  assert.ok(!T.isTestOf('npm run build', ['app.js']));
+  assert.strictEqual(T.failureSummary('Page "Runner" loaded in 0.3s.\nNo console errors.\nA 1024×768 screenshot was taken, but the current model cannot see images.\nThe self-test returned no steps. It must return {"version": 1}'), 'The self-test returned no steps. It must return {"version": 1}');
+  assert.strictEqual(T.failureSummary('Exit code: 1\nexpected "3 7 34", got "4 7 34"'), 'Exit code: 1 · expected "3 7 34", got "4 7 34"');
+  assert.match(T.failedTestText({ tool: 'test_app', target: 'runner.html', summary: 'The self-test returned no steps.' }), /^Your last test failed — test_app runner\.html: The self-test returned no steps\. The task is not done while it fails\./);
+  assert.match(T.failedTestText({ tool: 'run_command', target: 'node wc.js s.txt', summary: 'x' }), /`node wc\.js s\.txt`/);
+  const b = T.brokenText([{ path: 'config.json', line: 7, message: 'Unexpected non-whitespace character after JSON', text: '}' }]);
+  assert.match(b, /^config\.json still has a syntax error[\s\S]*config\.json line 7: Unexpected non-whitespace character after JSON \(line 7 is: \}\)[\s\S]*rewrite whole with write_file/);
+});

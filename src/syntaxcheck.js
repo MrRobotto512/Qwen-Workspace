@@ -49,12 +49,54 @@ function jsonError(text, err) {
   return { line, message: msg.replace(/ at position \d+.*$/i, '').replace(/ in JSON$/, '') };
 }
 
-function checkJson(text) {
-  if (!String(text).trim()) return [];
+// JSON with comments (tsconfig.json, jsconfig.json, .vscode/settings.json, *.jsonc): their tools
+// allow // and /* */ comments and trailing commas, so a strict parse would call every edit of
+// them broken — and, with the v0.58 finish gate, keep the task from ending.
+const JSONC_NAME = /(?:^|[\\/])(?:tsconfig[\w.-]*|jsconfig[\w.-]*|\.eslintrc|devcontainer|settings|launch|tasks|extensions|keybindings)\.json$|\.jsonc$/i;
+function stripJsonc(text) {
+  let out = '';
+  let inStr = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      out += ch;
+      if (ch === '\\') out += text[++i] ?? '';
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') {
+      inStr = true;
+      out += ch;
+    } else if (ch === '/' && text[i + 1] === '/') {
+      while (i < text.length && text[i] !== '\n') i++;
+      out += '\n';
+    } else if (ch === '/' && text[i + 1] === '*') {
+      const end = text.indexOf('*/', i + 2);
+      const chunk = text.slice(i, end < 0 ? text.length : end + 2);
+      out += chunk.replace(/[^\n]/g, ' ');
+      i = end < 0 ? text.length : end + 1;
+    } else out += ch;
+  }
+  return out.replace(/,(\s*[}\]])/g, '$1');
+}
+
+function checkJson(text, rel = '') {
+  const t = String(text).replace(/^﻿/, '');
+  if (!t.trim()) return [];
   try {
-    JSON.parse(String(text).replace(/^﻿/, ''));
+    JSON.parse(t);
     return [];
   } catch (e) {
+    // Comments only count outside strings: stripJsonc knows; a URL's "//" in a value does not.
+    const stripped = stripJsonc(t);
+    if (JSONC_NAME.test(String(rel)) || stripped.replace(/,(\s*[}\]])/g, '$1') !== t.replace(/,(\s*[}\]])/g, '$1')) {
+      try {
+        JSON.parse(stripped);
+        return [];
+      } catch {
+        /* broken even as JSON with comments */
+      }
+    }
     return [jsonError(text, e)];
   }
 }
@@ -97,4 +139,4 @@ function resultLine(p, errors) {
   return `\nSyntax check: ${p}${e.line ? ` line ${e.line}` : ''}: ${e.message}${more}. This change introduced it — fix it with your next edit, before anything else.`;
 }
 
-module.exports = { inlineScripts, isModuleCode, kindOf, jsonError, checkJson, parseNodeError, parsePythonError, newErrors, resultLine };
+module.exports = { inlineScripts, isModuleCode, kindOf, jsonError, checkJson, stripJsonc, JSONC_NAME, parseNodeError, parsePythonError, newErrors, resultLine };

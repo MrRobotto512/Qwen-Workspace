@@ -263,7 +263,7 @@ const BLANK_LINE = 'Blank screen: the screenshot is one flat colour, so nothing 
 
 // A page that is a game: it draws on a <canvas> and the user asked for a game.
 function pageIsGame(c, r) {
-  return !!r.hasCanvas && SelfTest.looksLikeGame(Honesty.userWords(c.history, { max: 6, clip: 2000 }).join('\n'));
+  return !!(r.hasCanvas || r.wantsCanvas) && SelfTest.looksLikeGame(Honesty.userWords(c.history, { max: 6, clip: 2000 }).join('\n'));
 }
 
 // The game's own self-test report, judged: { text, failed } or null when there was none.
@@ -456,18 +456,24 @@ async function afterWrite(c, p, before, out, { edit = false, after = null } = {}
   // A small file that an edit left broken is rewritten whole next (a benchmark run: two edits
   // of a 6-line JSON file each fixed one error and left the next, then the model looped);
   // the broken line itself is quoted, since the model cannot see line numbers.
+  // What is on disk now (a partially approved edit wrote less than was proposed).
+  after = await api.read(p).catch(() => after);
   const small = edit && Syntax.isSmallFile(after ?? before);
   const at = (e) => Syntax.lineText(after, e?.line);
+  // What the finish gate needs to know (v0.58): is this file still broken after this write?
+  c.broken ||= {};
+  if (sc?.checked && sc.all?.length) c.broken[p] = { line: sc.all[0].line || null, message: sc.all[0].message, text: Syntax.lineText(after, sc.all[0].line).replace(/^ Line \d+ is: ?/, '').replace(/^ Line \d+ is empty\.$/, '') };
+  else if (sc?.checked) delete c.broken[p];
   if (sc?.brokenBefore && sc.all?.length) {
     const e = sc.all[0];
-    out.result += `\nSyntax check: ${p} still has a syntax error${e.line ? ` at line ${e.line}` : ''}: ${e.message}${sc.all.length > 1 ? ` (and ${sc.all.length - 1} more)` : ''}.${at(e)} The file was already broken before this change; fix that next.${small ? Syntax.rewriteLine(p, after ?? before) : ''}`;
+    out.result += `\nSyntax check: ${p} still has a syntax error${e.line ? ` at line ${e.line}` : ''}: ${e.message}${sc.all.length > 1 ? ` (and ${sc.all.length - 1} more)` : ''}.${at(e)} The file was already broken before this change; fix that next.${small ? Syntax.rewriteLine(p, after ?? before, { show: true }) : ''}`;
     DebugLog.add(c, 'notice', { text: `syntax check: ${p} still broken${e.line ? ` at ${e.line}` : ''} (was broken before)` });
     return out;
   }
   if (!sc?.errors?.length) return out;
   const e = sc.errors[0];
   const more = sc.errors.length > 1 ? ` (and ${sc.errors.length - 1} more)` : '';
-  out.result += `\nSyntax check: ${p}${e.line ? ` line ${e.line}` : ''}: ${e.message}${more}.${at(e)} This change introduced it — fix it ${small ? 'now' : 'with your next edit'}, before anything else.${small ? Syntax.rewriteLine(p, after ?? before) : ''}`;
+  out.result += `\nSyntax check: ${p}${e.line ? ` line ${e.line}` : ''}: ${e.message}${more}.${at(e)} This change introduced it — fix it ${small ? 'now' : 'with your next edit'}, before anything else.${small ? Syntax.rewriteLine(p, after ?? before, { show: true }) : ''}`;
   out.failed = true;
   out.meta = 'syntax error';
   DebugLog.add(c, 'notice', { text: `syntax check: ${p}${e.line ? `:${e.line}` : ''} ${e.message}` });
@@ -655,6 +661,7 @@ async function executeTool(c, call, row) {
           // literal "\n" escapes, regex whitespace tokens, then curly quotes and long dashes.
           for (const tier of [EditMatch.escapeEdit, EditMatch.regexWsEdit, EditMatch.unicodeEdit]) {
             const t = tier(original, oldText, newText);
+            if (t.already) return { result: `This change is already in ${p}: new_text is in the file and old_text is not. Nothing was changed — move on to the next step.`, meta: 'already applied', progress: false };
             if (t.modified === original) return unchangedEdit(p);
             if (t.modified) {
               const out = withGlitchWarning(p, original, t.modified, await applyAgentEdit(c, row, p, original, t.modified, `Edit ${p}`));
@@ -929,7 +936,7 @@ async function executeTool(c, call, row) {
           const px = r.shot && r.loaded ? await decodePicture(r.shot.png) : null;
           const flat = !!px && Likeness.isBlank(px.rgba, px.width, px.height);
           const blank = GuiTest.isBlankPage(r, flat);
-          if (blank) text += `\n${BLANK_LINE}`;
+          if (blank) text += `\n${BLANK_LINE}${r.wantsCanvas ? ' No <canvas> is on the page although its scripts draw on one: was it added to the document (for Three.js, document.body.appendChild(renderer.domElement))?' : ''}`;
           else if (flat) text += `\n${GuiTest.flatButDrawnLine(r)}`;
           const st = r.loaded && !r.crashed ? selfTestLines(c, r, web) : null;
           if (st) text += `\n${st.text}`;
@@ -2203,7 +2210,11 @@ const fitPredicted = new Set(); // baseUrl|model|ctx already estimated this sess
 // (LM Studio's estimate-only idea, for Ollama): weights + KV cache vs this PC's detected VRAM, or
 // what a remote node held when something last spilled there. Runs alongside the request, so the
 // warning — with Fit to GPU — shows while the slow first step is still going, not after it.
-async function predictGpuFit(c, baseUrl, model, isThisPc) {
+// `auto`: may lower the context window on its own — only for the everyday model (an escalated
+// step on a ⚡ node or a bigger model must not shrink the window the everyday model then runs
+// with). Returns true when it did, so the caller re-fits the conversation before sending.
+async function predictGpuFit(c, baseUrl, model, isThisPc, { auto: mayAuto = false } = {}) {
+  if (mayAuto) await restoreAutoFit(c, model);
   const ctx = Number(state.settings.contextLength) || 0;
   const key = `${baseUrl}|${model}|${ctx}`;
   if (!ctx || fitPredicted.has(key)) return;
@@ -2216,26 +2227,30 @@ async function predictGpuFit(c, baseUrl, model, isThisPc) {
   }
   if (!vram) return;
   const facts = await api.ollamaFitInfo(baseUrl, model).catch(() => null);
-  const p = Nodes.predictFit({ weights: facts?.fileSize, kvPerToken: Nodes.kvBytesPerToken(facts?.modelInfo), ctx, vram });
-  if (!p || p.fits) return;
-  predictedSpill.add(model);
-  const where = isThisPc ? "this PC's GPU" : 'that node\'s GPU';
+  // Known before the fit verdict, so a spill seen later is judged as MoE or dense correctly.
   const moe = Nodes.isMoE(facts?.modelInfo);
   if (moe) moeModels.add(model);
-  const auto = Nodes.autoFitContext(p.fitCtx, { moe, enabled: state.settings.fitToGpuAuto !== false });
+  if (facts?.modelInfo) moeChecked.add(model);
+  const p = Nodes.predictFit({ weights: facts?.fileSize, kvPerToken: Nodes.kvBytesPerToken(facts?.modelInfo), ctx, vram });
+  if (!p || p.fits) return false;
+  predictedSpill.add(model);
+  const where = isThisPc ? "this PC's GPU" : 'that node\'s GPU';
+  const auto = mayAuto && state.settings.fitAutoSkip !== model
+    ? Nodes.autoFitContext(p.fitCtx, { moe, enabled: state.settings.fitToGpuAuto !== false, min: Nodes.minAgentCtx(fixedPromptTokens(c, true)) })
+    : null;
   if (auto) {
     // Act, do not warn: the first request has not gone out yet, so it already uses the window
     // that fits, instead of a slow first step followed by a reload.
-    await fitToGpu(auto, model);
-    const text = `${model} with a ${ctx}-token context window needs about ${p.neededGB} GB, but ${where} has about ${p.vramGB} GB — part of it would run on the CPU, several times slower. Context window set to ${auto} so all of it fits (Settings → Model changes it, or turns this off).`;
+    await fitToGpu(auto, model, { c, auto: true, from: ctx });
+    const text = `${model} with a ${ctx}-token context window needs about ${p.neededGB} GB, but ${where} has about ${p.vramGB} GB — part of it would run on the CPU, several times slower. Context window set to ${auto} so all of it fits; it goes back to ${ctx} when you switch to another model (Settings → Model changes it, or turns this off).`;
     const item = { t: 'notice', text };
     c.display.push(item);
     renderNotice(c, item);
     DebugLog.add(c, 'notice', { text });
-    return;
+    return true;
   }
   // A dense model that cannot fit (or only under AGENT_MIN_CTX): name an installed model that does.
-  const alt = !moe && !(p.fitCtx >= Nodes.AGENT_MIN_CTX) ? Nodes.fittingAlternative(installedOn(baseUrl, isThisPc), typeof MODEL_CATALOG !== 'undefined' ? MODEL_CATALOG : [], { ctx, vram, exclude: model }) : null;
+  const alt = !moe && !(p.fitCtx >= Nodes.AGENT_MIN_CTX) ? Nodes.fittingAlternative(await installedOn(baseUrl, isThisPc), typeof MODEL_CATALOG !== 'undefined' ? MODEL_CATALOG : [], { ctx, vram, exclude: model }) : null;
   const smaller = alt ? `pick a smaller model: ${alt} is installed ${isThisPc ? 'on this PC' : 'on that node'} and fits with this window` : 'pick a smaller model (for example the 8B size of the same family)';
   const text = moe
     ? `Heads-up: ${model} with a ${ctx}-token context window needs about ${p.neededGB} GB, but ${where} has about ${p.vramGB} GB, so part of it runs on the CPU. It is a mixture-of-experts model (only a few of its experts work per token), so that costs far less speed than usual — fine to keep using.${p.fitCtx ? ` Fit to GPU (${p.fitCtx}) would still make it a bit faster.` : ''}`
@@ -2273,9 +2288,17 @@ async function checkGpuSpill(c, baseUrl, model) {
   }
   // "Fit to GPU": the largest context window that keeps this model entirely in GPU memory.
   const fit = Nodes.fitContext(ps.find((x) => Nodes.sameModel(x.name, model)), state.settings.contextLength);
-  const auto = Nodes.autoFitContext(fit?.ctx, { moe: moeModels.has(model), enabled: state.settings.fitToGpuAuto !== false });
+  // A model never predicted (no VRAM figure yet) may still be MoE: look it up before judging.
+  if (!moeChecked.has(model)) {
+    const facts = await api.ollamaFitInfo(baseUrl, model).catch(() => null);
+    if (Nodes.isMoE(facts?.modelInfo)) moeModels.add(model);
+    if (facts?.modelInfo) moeChecked.add(model);
+  }
+  // Only the everyday model's window is lowered on its own (not for an escalated or ⚡ step).
+  const everyday = Nodes.sameModel(model, state.settings.model) && state.settings.fitAutoSkip !== model;
+  const auto = everyday ? Nodes.autoFitContext(fit?.ctx, { moe: moeModels.has(model), enabled: state.settings.fitToGpuAuto !== false, min: Nodes.minAgentCtx(fixedPromptTokens(c, true)) }) : null;
   if (auto) {
-    await fitToGpu(auto, model);
+    await fitToGpu(auto, model, { c, auto: true, from: Number(state.settings.contextLength) || 0 });
     const text = `${model} was running partly on the CPU: only ${sp.gpuGB} of ${sp.totalGB} GB (${sp.pct}%) fit in GPU memory on ${host}, which made that step several times slower. Context window set to ${auto} so all of it fits from the next step (Settings → Model changes it, or turns this off).`;
     const item = { t: 'notice', text };
     c.display.push(item);
@@ -2301,16 +2324,46 @@ async function checkGpuSpill(c, baseUrl, model) {
   toast({ key: 'gpu-spill', icon: 'alert', timeout: 30000, text, actions });
 }
 
-// The models a node has installed, from the last health check (app.js), by its URL.
-function installedOn(baseUrl, isThisPc) {
+// The models a node has installed, from the last health check (app.js), by its URL — or, with
+// a single PC (no health checks run), this PC's own list.
+async function installedOn(baseUrl, isThisPc) {
   const root = (u) => String(u || '').trim().replace(/[/]+$/, '').replace(/[/]v1$/, '');
   const id = isThisPc ? Nodes.THIS_PC_ID : (state.settings.ollamaNodes || []).find((n) => n.baseUrl && root(n.baseUrl) === root(baseUrl))?.id;
-  return (id && state.nodeHealth?.byId?.[id]?.models) || [];
+  const known = (id && state.nodeHealth?.byId?.[id]?.models) || [];
+  if (known.length || !isThisPc) return known;
+  const list = await api.listModels().catch(() => []);
+  return (list || []).map((m) => (typeof m === 'string' ? m : m?.id || m?.name)).filter(Boolean);
 }
 
-// Takes effect on the next request: Ollama reloads the model with the new num_ctx.
-async function fitToGpu(ctx, model) {
-  state.settings = await api.setSettings({ contextLength: ctx });
+const moeChecked = new Set(); // models whose MoE status is known (from /api/show)
+
+// An automatic fit is undone when the everyday model changes (the window was lowered for that
+// model's size, not the user's choice), and never repeated for a model whose window the user
+// raised again by hand.
+async function restoreAutoFit(c, model) {
+  const fa = state.settings.fitAuto;
+  if (!fa) return;
+  if (Number(state.settings.contextLength) !== Number(fa.to)) {
+    state.settings = await api.setSettings({ fitAuto: null, fitAutoSkip: fa.model });
+    return;
+  }
+  if (Nodes.sameModel(fa.model, model)) return;
+  state.settings = await api.setSettings({ contextLength: fa.from, fitAuto: null });
+  if (c?.usage) delete c.usage.contextLength;
+  const text = `Context window back to ${fa.from} — it had been lowered to ${fa.to} to fit ${fa.model} on the GPU.`;
+  const item = { t: 'notice', text };
+  c.display.push(item);
+  renderNotice(c, item);
+  DebugLog.add(c, 'notice', { text });
+}
+
+// Takes effect on the next request: Ollama reloads the model with the new num_ctx. `auto`
+// remembers the window it replaced, so switching models puts it back.
+async function fitToGpu(ctx, model, { c = null, auto = false, from = 0 } = {}) {
+  state.settings = await api.setSettings({ contextLength: ctx, fitAuto: auto ? { model, from: from || Number(state.settings.contextLength) || 0, to: ctx } : null, ...(auto ? {} : { fitAutoSkip: null }) });
+  // The conversation is measured against the new window from now on (the last response's
+  // measured window is the old one).
+  if (c?.usage) delete c.usage.contextLength;
   spillSeen.delete(model);
   predictedSpill.delete(model);
   for (const k of [...spillChecked]) if (k.endsWith(`|${model}`)) spillChecked.delete(k); // re-check after the reload
@@ -2326,6 +2379,11 @@ async function runConversation(c) {
   let autoNudges = 0; // times this run we pushed back on an announce-then-stop reply
   let testNudges = 0; // times this run we asked for a test of changed code before finishing (testgate.js)
   c.untested = {}; // code files changed this run and not run since: path -> true
+  c.changedCode = {}; // every code file changed this run (to tell a test of them from other commands)
+  c.failingTest = null; // the last test of changed code, when it failed: { tool, target, summary }
+  c.broken = {}; // files changed this run whose last syntax check found an error: path -> { line, message, text }
+  let failNudges = 0; // finish blocked by a failing last test (v0.58)
+  let brokenNudges = 0; // finish blocked by a file still broken (v0.58)
   let ranTools = false; // whether any tool has run in this task yet
   let failStreak = 0; // consecutive rounds containing a failed call
   let interventions = 0; // how often the app has had to push back this task
@@ -2649,7 +2707,7 @@ async function runConversation(c) {
     let loopCaught = false;
     // Live progress: phase, tokens so far, speed and a clock, refreshed every second, so a slow
     // local step reads as busy instead of stuck (a handoff label stays until the first token).
-    const reqMessages = requestMessages(c);
+    let reqMessages = requestMessages(c);
     const stepModel = override?.model || state.settings.model;
     const prog = { startedAt: Date.now(), firstAt: 0, tokens: 0, phase: 'prompt', promptTokens: Progress.estimateTokens(reqMessages), model: stepModel, spill: spillSeen.get(stepModel) };
     const handoff = esc ? `Handing off to ${esc.model}` : null;
@@ -2661,7 +2719,18 @@ async function runConversation(c) {
     const progTimer = setInterval(paintProgress, 1000);
     if ((override?.provider || state.settings.provider) === 'ollama') {
       const fitBase = override?.baseUrl || state.settings.baseUrl;
-      await predictGpuFit(c, fitBase, stepModel, !override?.baseUrl || fitBase === state.settings.baseUrl).catch(() => {});
+      const everyday = !esc && !escLocal && Nodes.sameModel(stepModel, state.settings.model);
+      const fitted = await predictGpuFit(c, fitBase, stepModel, !override?.baseUrl || fitBase === state.settings.baseUrl, { auto: everyday }).catch(() => false);
+      if (fitted) {
+        // The window just shrank: a long conversation must fit it before this request goes out
+        // (Ollama would cut the prompt silently), so prune, then summarize if still too big.
+        const cuFit = contextUse(c);
+        if (cuFit.tokens >= cuFit.window * ToolBudget.PRUNE_AT) pruneOldResults(c, cuFit.window);
+        const cuNow2 = contextUse(c);
+        if (cuNow2.tokens >= cuNow2.window * COMPACT_AT) await compactConversation(c);
+        reqMessages = requestMessages(c);
+        prog.promptTokens = Progress.estimateTokens(reqMessages);
+      }
     }
     const sawToken = (phase) => {
       if (!prog.firstAt) prog.firstAt = Date.now();
@@ -3082,6 +3151,19 @@ async function runConversation(c) {
           continue;
         }
       }
+      // First, a file this run changed still fails its syntax check (JSON included, not only
+      // code): running it would only fail, so it is fixed before any test (testgate.js, v0.58).
+      const stillBroken = Object.entries(c.broken || {}).map(([path, b]) => ({ path, ...b }));
+      if (useTools && state.settings.syntaxCheck !== false && stillBroken.length) {
+        if (brokenNudges < 2 && testNudges + failNudges + brokenNudges < 4) {
+          brokenNudges++;
+          note(`${stillBroken.map((b) => b.path).join(', ')} still ${stillBroken.length === 1 ? 'has' : 'have'} a syntax error — asking Qwen to fix it before finishing.`);
+          DebugLog.add(c, 'notice', { text: `broken before done #${brokenNudges}: ${stillBroken.map((b) => `${b.path}:${b.line || '?'} ${b.message}`).join('; ')}` });
+          c.history.push({ role: 'user', content: `<system-reminder>\n${TestGate.brokenText(stillBroken)}\n</system-reminder>` });
+          continue;
+        }
+        note(`Finished with ${stillBroken.map((b) => b.path).join(', ')} still broken (syntax error).`);
+      }
       // Test before done (testgate.js): code changed since the last run gets a test first.
       if (useTools && state.settings.testBeforeDone !== false && Object.keys(c.untested || {}).length) {
         const files = [];
@@ -3104,6 +3186,17 @@ async function runConversation(c) {
           continue;
         }
         if (files.length && testNudges >= 2) note(`Finished without running the changes to ${files.map((f) => f.path).join(', ')} — they are untested.`);
+      }
+      // The last test of the changed code failed: that is not done either (testgate.js, v0.58).
+      if (useTools && state.settings.testBeforeDone !== false && c.failingTest && !Object.keys(c.untested || {}).length) {
+        if (failNudges < 2 && testNudges + failNudges + brokenNudges < 4) {
+          failNudges++;
+          note(`The last test failed (${c.failingTest.tool === 'test_app' ? `test_app ${c.failingTest.target}` : c.failingTest.target}) — asking Qwen to fix it before finishing.`);
+          DebugLog.add(c, 'notice', { text: `failing test before done #${failNudges}: ${c.failingTest.summary}` });
+          c.history.push({ role: 'user', content: `<system-reminder>\n${TestGate.failedTestText(c.failingTest)}\n</system-reminder>` });
+          continue;
+        }
+        note(`Finished with a failing test: ${c.failingTest.summary}`);
       }
       // Which skills shaped this answer (an idea from Strata) — once, at the clean end.
       if (c.skillsUsed?.size) {
@@ -3384,12 +3477,29 @@ function trackTesting(c, name, call, out) {
     return;
   }
   c.untested ||= {};
-  if ((name === 'write_file' || name === 'edit_file') && !out.failed && out.progress !== false && TestGate.isCode(args.path)) c.untested[normPath(args.path)] = true;
-  else if (name === 'move_file' && c.untested[normPath(args.from)]) {
+  c.changedCode ||= {};
+  // A syntax error counts as a written-but-failed change too (afterWrite marks it failed), so the
+  // file still needs a run once it is fixed.
+  const wrote = (name === 'write_file' || name === 'edit_file') && (!out.failed || out.meta === 'syntax error') && out.progress !== false;
+  if (wrote && TestGate.isCode(args.path)) {
+    c.untested[normPath(args.path)] = true;
+    c.changedCode[normPath(args.path)] = true;
+  } else if (name === 'move_file' && c.untested[normPath(args.from)]) {
     delete c.untested[normPath(args.from)];
     c.untested[normPath(args.to)] = true;
-  } else if (name === 'delete_file') delete c.untested[normPath(args.path)];
-  else if (name === 'test_app' || name === 'run_program' || (name === 'run_command' && !isReadOnlyCommand(String(args.command || '')))) c.untested = {};
+  } else if (name === 'delete_file') {
+    delete c.untested[normPath(args.path)];
+    if (c.broken) delete c.broken[normPath(args.path)];
+  } else if (name === 'test_app' || name === 'run_program' || (name === 'run_command' && !isReadOnlyCommand(String(args.command || '')))) {
+    // Whether this run tested the changed code — and whether that test passed (v0.58): a test
+    // that failed keeps the finish blocked until it passes.
+    const target = name === 'test_app' ? String(args.command || '') : name === 'run_program' ? 'run_program' : String(args.command || '');
+    const isTest = name !== 'run_command' || TestGate.isTestOf(target, Object.keys(c.changedCode));
+    if (isTest && Object.keys(c.changedCode).length) {
+      c.failingTest = out.failed ? { tool: name, target, summary: TestGate.failureSummary(out.result) } : null;
+    }
+    c.untested = {};
+  }
 }
 
 // A subfolder's instruction file, the first time this conversation touches that folder. Text that
