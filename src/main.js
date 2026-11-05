@@ -1444,6 +1444,17 @@ function toOllamaMessages(messages) {
   });
 }
 
+// One line of a streamed reply as JSON, or null when it is not JSON (a proxy's keep-alive
+// comment, a truncated last flush). The OpenAI path has always skipped those; a throw here
+// used to end the whole step with a parse error instead.
+function parseStreamJson(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
 async function streamOllama(s, payload, signal, send) {
   const root = ollamaRoot(s);
   const contextLength = Number(s.contextLength) || DEFAULT_SETTINGS.contextLength;
@@ -1511,10 +1522,12 @@ async function streamOllama(s, payload, signal, send) {
     while ((nl = buffer.indexOf('\n')) >= 0) {
       const line = buffer.slice(0, nl).trim();
       buffer = buffer.slice(nl + 1);
-      if (line) handle(JSON.parse(line));
+      const j = line ? parseStreamJson(line) : null;
+      if (j) handle(j);
     }
   }
-  if (buffer.trim()) handle(JSON.parse(buffer));
+  const last = buffer.trim() ? parseStreamJson(buffer) : null;
+  if (last) handle(last);
 
   return { ok: true, content, reasoning, toolCalls, finishReason, usage: { ...stats, promptTokens, contextLength } };
 }
@@ -1651,7 +1664,8 @@ async function streamAnthropic(s, payload, signal, send) {
       buffer = buffer.slice(nl + 1);
       if (!line.startsWith('data:')) continue;
       const data = line.slice(5).trim();
-      if (data) handle(JSON.parse(data));
+      const j = data ? parseStreamJson(data) : null;
+      if (j) handle(j);
     }
   }
 
