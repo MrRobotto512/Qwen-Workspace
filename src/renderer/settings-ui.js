@@ -532,6 +532,8 @@ function openSettings() {
   $('#s-testBeforeDone').checked = s.testBeforeDone !== false;
   $('#s-syntaxCheck').checked = s.syntaxCheck !== false;
   $('#s-fitToGpuAuto').checked = s.fitToGpuAuto !== false;
+  $('#s-gpuUse').value = ['all', 'largest', 'custom'].includes(s.gpuUse) ? s.gpuUse : 'all';
+  $('#s-gpuCustomGB').value = s.gpuCustomGB ? String(s.gpuCustomGB) : '';
   $('#s-redactSecrets').checked = s.redactSecrets !== false;
   $('#s-folderHints').checked = s.folderHints !== false;
   $('#s-architect').checked = s.architect !== false;
@@ -579,6 +581,7 @@ function openSettings() {
 }
 
 async function saveSettingsFromUi() {
+  const gpuWas = `${state.settings.gpuUse || 'all'}|${state.settings.gpuCustomGB || 0}`;
   const patch = {};
   for (const k of ['provider', 'baseUrl', 'apiKey', 'model', 'approvalMode', 'searchProvider', 'searchApiKey', 'searxngUrl']) patch[k] = $(`#s-${k}`).value.trim();
   patch.modelPicked = true;
@@ -607,6 +610,8 @@ async function saveSettingsFromUi() {
   patch.testBeforeDone = $('#s-testBeforeDone').checked;
   patch.syntaxCheck = $('#s-syntaxCheck').checked;
   patch.fitToGpuAuto = $('#s-fitToGpuAuto').checked;
+  patch.gpuUse = $('#s-gpuUse').value;
+  patch.gpuCustomGB = parseFloat($('#s-gpuCustomGB').value) || 0;
   patch.redactSecrets = $('#s-redactSecrets').checked;
   patch.folderHints = $('#s-folderHints').checked;
   patch.architect = $('#s-architect').checked;
@@ -645,6 +650,11 @@ async function saveSettingsFromUi() {
     ? [{ id: Nodes.THIS_PC_ID, enabled: !thisPc || thisPc.enabled, highPerf: !!thisPc?.highPerf }, ...remotes]
     : [];
   state.settings = await api.setSettings(patch);
+  // A different GPU plan changes what fits: re-read the specs with it, and predict afresh.
+  if (`${state.settings.gpuUse || 'all'}|${state.settings.gpuCustomGB || 0}` !== gpuWas) {
+    state.specs = await api.systemSpecs().catch(() => state.specs);
+    if (typeof fitPredicted !== 'undefined') fitPredicted.clear();
+  }
   $('#settings-modal').classList.add('hidden');
   applySettingsToUi();
   checkConnection();

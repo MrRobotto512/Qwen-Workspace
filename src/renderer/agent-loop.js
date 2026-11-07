@@ -2220,10 +2220,14 @@ async function predictGpuFit(c, baseUrl, model, isThisPc, { auto: mayAuto = fals
   if (!ctx || fitPredicted.has(key)) return;
   fitPredicted.add(key);
   let vram = Number(state.settings.nodeVram?.[baseUrl]) || 0;
-  if (!vram && isThisPc) {
+  if (isThisPc) {
     const specs = state.specs || (await api.systemSpecs().catch(() => null));
     if (specs) state.specs = specs;
-    vram = (specs?.gpu?.vramGB || 0) * 1024 ** 3;
+    const planned = (specs?.gpu?.vramGB || 0) * 1024 ** 3;
+    // What Ollama was seen holding is the better figure — unless the hardware changed since (a
+    // second card added: a learned 10.5 GB from the 3060 alone against 17.5 GB planned for two),
+    // or the user set the size by hand.
+    if (planned && (!vram || specs.gpu.custom || vram < planned * 0.7)) vram = planned;
   }
   if (!vram) return;
   const facts = await api.ollamaFitInfo(baseUrl, model).catch(() => null);

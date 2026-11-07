@@ -98,4 +98,29 @@ async function detectSpecs(force) {
   return cached;
 }
 
-module.exports = { detectSpecs };
+// The GPU memory This PC's Ollama can plan with. Ollama keeps a model on one card when it fits
+// and splits its layers across the cards when it does not, so with two or more discrete cards of
+// one vendor the plan uses them together (a field report: a 3060 12 GB + a 1660 Ti 6 GB, where
+// planning with 12 GB lowered qwen3:14b's window for nothing). Each extra card holds its own CUDA
+// context (about 0.5 GB). `use`: 'all' (default), 'largest' (one Ollama per card), or 'custom'
+// with `customGB`. Returns a gpu entry like the detected ones, or null.
+const PER_CARD_OVERHEAD_GB = 0.5;
+function plannedGpu(gpus, { use = 'all', customGB = 0 } = {}) {
+  const usable = (gpus || []).filter((g) => ['nvidia', 'amd', 'apple'].includes(g.vendor) && g.vramGB >= 2).sort((a, b) => b.vramGB - a.vramGB);
+  const largest = usable[0] || null;
+  if (use === 'custom' && Number(customGB) > 0) return { ...(largest || { vendor: 'nvidia' }), name: `${largest ? largest.name : 'GPU'} (set by hand)`, vramGB: Number(customGB), custom: true };
+  if (!largest || use === 'largest' || largest.unified) return largest;
+  const same = usable.filter((g) => g.vendor === largest.vendor && !g.unified);
+  if (same.length < 2) return largest;
+  const total = same.reduce((a, g) => a + g.vramGB, 0) - PER_CARD_OVERHEAD_GB * (same.length - 1);
+  const short = (n) => String(n).replace(/^NVIDIA\s+(GeForce\s+)?|^AMD\s+(Radeon\s+)?/i, '');
+  return { name: `${same.length} GPUs (${same.map((g) => `${short(g.name)} ${Math.round(g.vramGB)} GB`).join(' + ')})`, vramGB: total, vendor: largest.vendor, pooled: true, count: same.length, cards: same.map((g) => ({ name: g.name, vramGB: g.vramGB })) };
+}
+
+// The detected specs with the plan's GPU applied (settings: gpuUse, gpuCustomGB).
+function withGpuPlan(specs, settings = {}) {
+  if (!specs) return specs;
+  return { ...specs, gpu: plannedGpu(specs.gpus, { use: settings.gpuUse || 'all', customGB: settings.gpuCustomGB }), gpuLargest: specs.gpu };
+}
+
+module.exports = { detectSpecs, plannedGpu, withGpuPlan, PER_CARD_OVERHEAD_GB };

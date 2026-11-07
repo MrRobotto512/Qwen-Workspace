@@ -210,6 +210,8 @@
         <label>Temperature <input id="s-temperature" type="number" min="0" max="2" step="0.1" /></label>
         <label>Context window, tokens (Ollama) <input id="s-contextLength" type="number" min="2048" step="1024" /></label>
       </div>
+      <label>This PC's GPU memory for planning <select id="s-gpuUse"><option value="all">All GPUs together (Ollama splits a model that does not fit one card)</option><option value="largest">The largest GPU only (one Ollama per card)</option><option value="custom">Set by hand</option></select> <input id="s-gpuCustomGB" type="number" min="1" max="512" step="0.5" style="width:6em" placeholder="GB" /></label>
+      <div class="hint">Used for the model recommendations, the "will it fit" prediction and Fit to GPU. Change it after rescanning hardware in Models if you move cards.</div>
       <label class="check"><input type="checkbox" id="s-fitToGpuAuto" /> Fit the context window to the GPU on its own: when a model would run partly on the CPU (minutes per step instead of seconds), the window is lowered to the largest size that fits and the task says so. A window under 8K is never used — then the task says to pick a smaller model</label>
       <label>Max response tokens (cloud providers)
         <input id="s-maxResponseTokens" type="number" min="0" step="256" />

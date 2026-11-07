@@ -6,7 +6,7 @@ const { spawn, execFileSync } = require('child_process');
 const { fileURLToPath } = require('node:url');
 const net = require('node:net');
 const updater = require('./updater');
-const { detectSpecs } = require('./hardware');
+const { detectSpecs, withGpuPlan } = require('./hardware');
 // Model requests never time out on their own. Node's fetch gives up after 5 minutes without a
 // byte (undici's headers/body timeouts), and a local model spilling onto the CPU can read a long
 // prompt that long before streaming anything — a field report lost two steps to
@@ -58,6 +58,8 @@ const DEFAULT_SETTINGS = {
   architect: true, // after a plan for new files, the planner writes the first version; the local model tests and fixes it
   promptCache: true, // Anthropic prompt caching: repeated prompt prefixes billed at about a tenth
   describeScreens: true, // a text-only model's test_app screenshots are described by a vision model
+  gpuUse: 'all', // This PC's GPU memory for planning: 'all' cards of one vendor together, 'largest' only, or 'custom' (gpuCustomGB)
+  gpuCustomGB: 0,
   testBeforeDone: true, // finishing with changed code not yet run asks the model to test it first (up to twice per task)
   readBeforeWrite: true, // write_file may not overwrite a file the task has not read in full (or that changed since)
   syntaxCheck: true, // every write is syntax-checked (JSON, JavaScript, a page's inline scripts, Python); new errors are reported
@@ -1785,7 +1787,7 @@ ipcMain.handle('shell:openExternal', (_e, url) => {
 });
 
 // ---------- hardware & local models ----------
-ipcMain.handle('system:specs', (_e, force) => detectSpecs(force));
+ipcMain.handle('system:specs', async (_e, force) => withGpuPlan(await detectSpecs(force), loadSettings()));
 
 // Ollama's own address: the configured server when it is Ollama, otherwise the default local one.
 async function ollamaBase() {
