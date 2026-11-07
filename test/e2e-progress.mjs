@@ -88,6 +88,8 @@ const finished = (text, timeout = 45_000) => win.waitForFunction((t) => [...docu
 
 try {
   await win.waitForFunction(() => document.querySelector('#btn-settings')?.onclick && document.querySelector('#model-name')?.textContent, null, { timeout: 25_000 });
+  // A fit remembered from an earlier run would read as a window raised by hand (no auto-fit).
+  await win.evaluate(async () => { state.settings = await api.setSettings({ fitAuto: null, fitAutoSkip: null }); });
   await win.evaluate(([a, h]) => {
     openSettings();
     document.querySelector('#s-provider').value = 'ollama';
@@ -146,7 +148,7 @@ try {
   if (errors.length) fail(`renderer errors: ${errors.join(' || ').slice(0, 500)}`);
   await win.evaluate(async () => {
     clearInterval(window.__sampler);
-    state.settings = await api.setSettings({ ollamaNodes: [], provider: 'custom', planFirst: false, contextLength: 32768, skillWriter: true });
+    state.settings = await api.setSettings({ ollamaNodes: [], provider: 'custom', planFirst: false, contextLength: 32768, skillWriter: true, fitAuto: null, fitAutoSkip: null });
   }).catch(() => {});
   const watchdog = setTimeout(() => {
     console.error('app.close() hung; forcing exit with the recorded result');
