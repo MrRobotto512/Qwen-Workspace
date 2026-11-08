@@ -2219,7 +2219,9 @@ async function predictGpuFit(c, baseUrl, model, isThisPc, { auto: mayAuto = fals
   const key = `${baseUrl}|${model}|${ctx}`;
   if (!ctx || fitPredicted.has(key)) return;
   fitPredicted.add(key);
-  let vram = Number(state.settings.nodeVram?.[baseUrl]) || 0;
+  // A node's GPU memory set by hand (Settings → Ollama nodes) wins; else what QWS learned.
+  const setGB = isThisPc ? 0 : Number(nodeByUrl(baseUrl)?.vramGB) || 0;
+  let vram = setGB ? setGB * 1024 ** 3 : learnedVram(baseUrl);
   if (isThisPc) {
     const specs = state.specs || (await api.systemSpecs().catch(() => null));
     if (specs) state.specs = specs;
@@ -2276,10 +2278,17 @@ async function checkGpuSpill(c, baseUrl, model) {
   spillChecked.add(key);
   const ps = await api.ollamaPs(baseUrl).catch(() => []);
   const sp = Nodes.spillInfo(ps, model);
-  if (!sp) return;
+  const held = ps.reduce((n, x) => n + (Number(x.size_vram) || 0), 0);
+  if (!sp) {
+    // All of it on the GPU: the GPU holds at least this much. A learned size only went down
+    // before (from spills), so a card added to a node was never noticed (v0.60).
+    if (held > learnedVram(baseUrl) * 1.02 && ps.some((x) => Nodes.sameModel(x.name, model))) {
+      state.settings = await api.setSettings({ nodeVram: { ...(state.settings.nodeVram || {}), [baseUrl]: held } });
+    }
+    return;
+  }
   spillSeen.set(model, sp);
   // A spill shows how much this machine's GPU really holds — what the fit prediction needs next time.
-  const held = ps.reduce((n, x) => n + (Number(x.size_vram) || 0), 0);
   if (held > 0 && state.settings.nodeVram?.[baseUrl] !== held) {
     state.settings = await api.setSettings({ nodeVram: { ...(state.settings.nodeVram || {}), [baseUrl]: held } });
   }
@@ -2337,6 +2346,16 @@ async function installedOn(baseUrl, isThisPc) {
   if (known.length || !isThisPc) return known;
   const list = await api.listModels().catch(() => []);
   return (list || []).map((m) => (typeof m === 'string' ? m : m?.id || m?.name)).filter(Boolean);
+}
+
+// A node by its URL (with or without /v1), and the GPU size QWS learned for it.
+const urlRoot = (u) => String(u || '').trim().replace(/[/]+$/, '').replace(/[/]v1$/, '');
+function nodeByUrl(baseUrl) {
+  return (state.settings.ollamaNodes || []).find((n) => n.baseUrl && urlRoot(n.baseUrl) === urlRoot(baseUrl)) || null;
+}
+function learnedVram(baseUrl) {
+  const hit = Object.entries(state.settings.nodeVram || {}).find(([k]) => urlRoot(k) === urlRoot(baseUrl));
+  return Number(hit?.[1]) || 0;
 }
 
 const moeChecked = new Set(); // models whose MoE status is known (from /api/show)

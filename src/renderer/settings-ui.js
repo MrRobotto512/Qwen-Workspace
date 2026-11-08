@@ -333,6 +333,25 @@ function renderNodesSettings() {
       text: (isThis ? `${n.baseUrl} — URL and keep-alive come from the Model section` : `${lm ? 'LM Studio · ' : ''}${n.baseUrl}${n.keepAlive ? ` · keep ${n.keepAlive}` : ''}`)
         + (n.highPerf ? ' · high performance' : '') + draftText
     });
+    // GPU memory (v0.60): QWS cannot see a node's cards, only what Ollama held there; a size set
+    // here wins, and a learned one can be forgotten after the node's hardware changed.
+    const root = (u) => String(u || '').trim().replace(/[/]+$/, '').replace(/[/]v1$/, '');
+    const learnedKeys = isThis ? [] : Object.keys(state.settings.nodeVram || {}).filter((k) => root(k) === root(n.baseUrl));
+    const learnedGB = learnedKeys.length ? Math.round((Number(state.settings.nodeVram[learnedKeys[0]]) / 1024 ** 3) * 10) / 10 : 0;
+    const vramBox = isThis ? null : el('span', { class: 'node-vram', title: 'GPU memory on this node, in GB, for the "will it fit" prediction and Fit to GPU (all its cards together: Ollama splits a model that does not fit one). Empty: what QWS learned from Ollama.' },
+      el('input', { type: 'number', min: '1', max: '512', step: '0.5', placeholder: learnedGB ? `${learnedGB} GB learned` : 'GPU GB', value: n.vramGB ? String(n.vramGB) : '', style: 'width:8.5em', onchange: (e) => { n.vramGB = parseFloat(e.target.value) || undefined; } }),
+      learnedKeys.length
+        ? el('button', {
+          class: 'ghost', text: 'Forget learned size', title: 'After adding or changing a GPU on this node: forget the size QWS learned, so the old figure stops shrinking the context window.',
+          onclick: async () => {
+            const keep = { ...(state.settings.nodeVram || {}) };
+            for (const k of learnedKeys) delete keep[k];
+            state.settings = await api.setSettings({ nodeVram: keep });
+            flash(`Forgot the learned GPU size for ${n.name}`);
+            renderNodesSettings();
+          }
+        })
+        : null);
     const test = el('button', {
       class: 'ghost',
       text: 'Test',
@@ -353,7 +372,7 @@ function renderNodesSettings() {
     });
     return el('div', { class: 'mcp-item' },
       el('span', { class: `dot ${status}` }),
-      el('div', { class: 'mcp-main' }, el('div', { class: 'mcp-name', text: n.name }), sub),
+      el('div', { class: 'mcp-main' }, el('div', { class: 'mcp-name', text: n.name }), sub, vramBox),
       el('button', {
         class: `icon-btn hp-btn${n.highPerf ? ' on' : ''}`,
         title: 'High-performance node: when Qwen gets stuck, the next step runs here on the strongest model this node has installed — before any money goes to the cloud planner.',
@@ -645,7 +664,7 @@ async function saveSettingsFromUi() {
   const thisPc = settingsNodes.find((n) => n.id === Nodes.THIS_PC_ID);
   const remotes = settingsNodes
     .filter((n) => n.id !== Nodes.THIS_PC_ID)
-    .map((n) => ({ id: n.id, name: n.name, baseUrl: n.baseUrl, enabled: n.enabled, highPerf: !!n.highPerf, keepAlive: n.keepAlive, kind: n.kind === 'lmstudio' ? 'lmstudio' : undefined, model: n.model || undefined, draftModel: n.draftModel || undefined }));
+    .map((n) => ({ id: n.id, name: n.name, baseUrl: n.baseUrl, enabled: n.enabled, highPerf: !!n.highPerf, keepAlive: n.keepAlive, vramGB: Number(n.vramGB) > 0 ? Number(n.vramGB) : undefined, kind: n.kind === 'lmstudio' ? 'lmstudio' : undefined, model: n.model || undefined, draftModel: n.draftModel || undefined }));
   patch.ollamaNodes = remotes.length || (thisPc && (!thisPc.enabled || thisPc.highPerf))
     ? [{ id: Nodes.THIS_PC_ID, enabled: !thisPc || thisPc.enabled, highPerf: !!thisPc?.highPerf }, ...remotes]
     : [];

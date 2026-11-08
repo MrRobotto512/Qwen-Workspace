@@ -66,9 +66,11 @@ win.on('dialog', (d) => d.accept().catch(() => {}));
 const notices = () => win.evaluate(() => state.conv.display.filter((d) => d.t === 'notice').map((d) => d.text));
 
 let userAuto = true;
+let userNodes = [];
 try {
   await win.waitForFunction(() => document.querySelector('#btn-settings')?.onclick && document.querySelector('#model-name')?.textContent, null, { timeout: 25_000 });
   userAuto = await win.evaluate(() => state.settings.fitToGpuAuto !== false);
+  userNodes = await win.evaluate(() => JSON.parse(JSON.stringify(state.settings.ollamaNodes || [])));
   await win.evaluate((b) => {
     openSettings();
     document.querySelector('#s-provider').value = 'ollama';
@@ -122,11 +124,45 @@ try {
   await win.waitForFunction(() => [...document.querySelectorAll('.msg.assistant .md')].some((e) => e.textContent.includes('Third done.')), null, { timeout: 15_000 });
   if (bodies.at(-1)?.options?.num_ctx !== fitCtx) fail(`next request num_ctx ${bodies.at(-1)?.options?.num_ctx}, expected ${fitCtx}`);
   console.log(`  (auto: 15.2 GB at 32K → 9216 before the first request; by hand: heads-up at 30K, Fit to GPU → ${fitCtx})`);
+
+  // 3. v0.60, a remote node whose GPU changed (Alien: a 3060 added next to its 4070). The same
+  //    mock serves as the node, under another URL.
+  const remote = base.replace('127.0.0.1', 'localhost');
+  const r3 = await win.evaluate(async (u) => {
+    const GB = 1024 ** 3;
+    state.settings = await api.setSettings({ contextLength: 32768, fitToGpuAuto: true, fitAuto: null, fitAutoSkip: null, nodeVram: { [u]: 10.5 * GB }, ollamaNodes: [...(state.settings.ollamaNodes || []).filter((n) => n.id !== 'alien'), { id: 'alien', name: 'Alien', baseUrl: u, enabled: false, vramGB: 23.5 }] });
+    fitPredicted.clear();
+    predictedSpill.clear();
+    const c = createConv();
+    const fittedWithSet = await predictGpuFit(c, u, 'fit:14b', false, { auto: true });
+    const ctxWithSet = state.settings.contextLength;
+    const spillWithSet = predictedSpill.has('fit:14b');
+    // The same node with only the old learned size: a spill would be predicted.
+    state.settings = await api.setSettings({ ollamaNodes: state.settings.ollamaNodes.map((n) => (n.id === 'alien' ? { ...n, vramGB: 0 } : n)) });
+    fitPredicted.clear();
+    predictedSpill.clear();
+    await predictGpuFit(c, u, 'fit:14b', false, { auto: false });
+    const spillLearned = predictedSpill.has('fit:14b');
+    // Held fully on the GPU, more than learned: the learned size goes up.
+    state.settings = await api.setSettings({ nodeVram: { [u]: 8 * GB } });
+    await checkGpuSpill(c, u, 'fit:14b');
+    const raised = Math.round((state.settings.nodeVram?.[u] || 0) / 1e8) / 10;
+    // "Forget learned size" in Settings → Ollama nodes.
+    openSettings();
+    const btn = [...document.querySelectorAll('#nodes-list button')].find((b) => b.textContent === 'Forget learned size');
+    btn?.click();
+    await new Promise((res) => setTimeout(res, 300));
+    return { fittedWithSet, ctxWithSet, spillWithSet, spillLearned, raised, hadButton: !!btn, left: Object.keys(state.settings.nodeVram || {}).length };
+  }, remote);
+  if (r3.fittedWithSet || r3.ctxWithSet !== 32768 || r3.spillWithSet) fail(`a node set to 23.5 GB should fit 15.2 GB without lowering the window: ${JSON.stringify(r3)}`);
+  if (!r3.spillLearned) fail(`with only the old learned 10.5 GB, a spill should be predicted: ${JSON.stringify(r3)}`);
+  if (r3.raised !== 10.8) fail(`a model held fully in VRAM should raise the learned size to 10.8 GB: ${JSON.stringify(r3)}`);
+  if (!r3.hadButton || r3.left !== 0) fail(`"Forget learned size" did not clear it: ${JSON.stringify(r3)}`);
 } catch (e) {
   fail(String(e).split('\n')[0]);
 } finally {
   if (errors.length) fail(`renderer errors: ${errors.join(' || ').slice(0, 500)}`);
-  await win.evaluate(async (auto) => { state.settings = await api.setSettings({ provider: 'custom', contextLength: 32768, nodeVram: {}, agentMode: true, fitToGpuAuto: auto, fitAuto: null, fitAutoSkip: null }); }, userAuto).catch(() => {});
+  await win.evaluate(async ([auto, nodes]) => { state.settings = await api.setSettings({ provider: 'custom', contextLength: 32768, nodeVram: {}, agentMode: true, fitToGpuAuto: auto, fitAuto: null, fitAutoSkip: null, ollamaNodes: nodes }); }, [userAuto, userNodes]).catch(() => {});
   const watchdog = setTimeout(() => {
     console.error('app.close() hung; forcing exit with the recorded result');
     process.exit(process.exitCode || 0);

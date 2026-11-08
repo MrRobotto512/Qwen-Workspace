@@ -60,7 +60,8 @@ function normalizeNodes(s) {
       keepAlive: typeof n.keepAlive === 'string' && n.keepAlive.trim() ? n.keepAlive.trim() : REMOTE_KEEP_DEFAULT,
       ...(n.kind === 'lmstudio' ? { kind: 'lmstudio' } : {}),
       ...(typeof n.model === 'string' && n.model.trim() ? { model: n.model.trim() } : {}),
-      ...(typeof n.draftModel === 'string' && n.draftModel.trim() ? { draftModel: n.draftModel.trim() } : {})
+      ...(typeof n.draftModel === 'string' && n.draftModel.trim() ? { draftModel: n.draftModel.trim() } : {}),
+      ...(Number(n.vramGB) > 0 ? { vramGB: Number(n.vramGB) } : {})
     }));
   return [thisPc, ...remotes];
 }
