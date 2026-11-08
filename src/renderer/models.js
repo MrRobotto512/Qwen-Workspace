@@ -11,6 +11,11 @@
 // build with the YaRN settings baked in (Unsloth's "128K" builds) that Ollama can pull directly.
 const MODEL_CATALOG = [
   { id: 'qwen3-coder:30b', name: 'Qwen3-Coder 30B', sizeGB: 19, kvKB: 96, moe: true, rank: 10, agent: 'Excellent', note: 'Best local coding agent. A mixture-of-experts model with only 3B parameters active per token, so it stays usable even when part of it runs on the CPU.', nativeCtx: 262144, yarn: { repo: 'unsloth/Qwen3-Coder-30B-A3B-Instruct-1M-GGUF', maxCtx: 1048576 } },
+  // Qwen3.6 (2026): sizes from Ollama's tag list; kvKB are estimates for their hybrid attention
+  // (most layers are linear attention with no per-token cache), so they are far below a
+  // classic transformer's. The fit prediction reads the real figures from Ollama itself.
+  { id: 'qwen3.6:35b-a3b', name: 'Qwen3.6 35B-A3B', sizeGB: 23, kvKB: 24, moe: true, rank: 9.8, agent: 'Excellent', note: 'Newest Qwen generation (ranked just under Qwen3-Coder 30B until a benchmark on your setup says otherwise): a mixture-of-experts model with about 3B parameters active per token, so it stays quick even split across two GPUs or partly on the CPU. Reads images too. Needs a recent Ollama — update it first. (The 35b-a3b-coding-nvfp4 build targets RTX 50-series cards.)', nativeCtx: 262144 },
+  { id: 'qwen3.6:27b', name: 'Qwen3.6 27B', sizeGB: 18.5, kvKB: 64, rank: 9.6, agent: 'Excellent', note: 'Newest Qwen generation, dense: every token uses all 27B parameters, so it needs about 20 GB of GPU memory to be quick. Reads images too. Needs a recent Ollama.', nativeCtx: 262144 },
   { id: 'qwen2.5-coder:32b', name: 'Qwen2.5-Coder 32B', sizeGB: 20, kvKB: 256, rank: 9, agent: 'Very good', note: 'Strong coder, but every token uses all 32B parameters, so it needs a big GPU to be quick.', nativeCtx: 32768, yarn: { repo: 'unsloth/Qwen2.5-Coder-32B-Instruct-128K-GGUF', maxCtx: 131072 } },
   // Gemma 4 kvKB values are estimates: Google doesn't publish per-token KV numbers, and
   // Gemma's sliding-window attention keeps the cache lighter than a dense Qwen of equal size.
