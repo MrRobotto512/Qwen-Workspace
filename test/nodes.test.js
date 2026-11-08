@@ -307,3 +307,10 @@ test('fittingAlternative names the strongest installed model that fits the GPU a
   assert.strictEqual(N.fittingAlternative(installed, catalog, { ctx: 0, vram: 10.5e9 }), null);
   assert.strictEqual(N.fittingAlternative([], catalog, { ctx: 28672, vram: 10.5e9 }), null);
 });
+
+test('v0.60: a node keeps its GPU memory set by hand', () => {
+  const s = { baseUrl: 'http://localhost:11434', ollamaNodes: [{ id: 'alien', name: 'Alien', baseUrl: 'http://100.108.209.67:11434', vramGB: 23.5 }, { id: 'hero', name: 'Hero', baseUrl: 'http://10.0.0.9:11434', vramGB: 'x' }] };
+  const ns = N.normalizeNodes(s);
+  assert.strictEqual(ns.find((n) => n.id === 'alien').vramGB, 23.5);
+  assert.ok(!('vramGB' in ns.find((n) => n.id === 'hero')));
+});
