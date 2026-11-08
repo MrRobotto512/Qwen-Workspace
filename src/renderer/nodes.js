@@ -285,7 +285,12 @@ function kvBytesPerToken(info) {
   const arch = info['general.architecture'];
   const get = (k) => info[`${arch}.${k}`];
   if (!arch || get('attention.sliding_window')) return null;
-  const layers = Number(get('block_count'));
+  // Hybrid attention (Qwen3-Next, Qwen3.5/3.6): only every Nth layer is full attention and keeps
+  // a KV cache; the others are linear-attention layers with a small fixed state. Counting every
+  // layer would put a 256K-context model's cache at about four times its real size.
+  const every = Number(get('full_attention_interval'));
+  const blocks = Number(get('block_count'));
+  const layers = every > 1 ? Math.ceil(blocks / every) : blocks;
   const heads = Number(get('attention.head_count'));
   const kvRaw = get('attention.head_count_kv') ?? heads;
   const kvHeads = Array.isArray(kvRaw) ? kvRaw.reduce((a, b) => a + Number(b), 0) / kvRaw.length : Number(kvRaw);

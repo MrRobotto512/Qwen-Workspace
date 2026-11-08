@@ -74,7 +74,7 @@ const pastedImages = [];
 const MAX_IMAGES = 4;
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 // Model names that see images — a hint only; the model itself has the final word.
-const VISION_MODEL = /(?:^|[-_.:/])(?:vl|vision)\b|llava|gemma3|gemma4|minicpm-v|moondream|bakllava|qwen2\.5vl|qwen3-vl|mistral-small3|claude|gpt-4o|gpt-4\.1|gpt-5|gemini|pixtral|llama4/i;
+const VISION_MODEL = /(?:^|[-_.:/])(?:vl|vision)\b|llava|gemma3|gemma4|minicpm-v|moondream|bakllava|qwen2\.5vl|qwen3-vl|qwen3\.[5-9]|mistral-small3|claude|gpt-4o|gpt-4\.1|gpt-5|gemini|pixtral|llama4/i;
 
 // ===================================================================
 // Boot

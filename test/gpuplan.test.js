@@ -44,3 +44,25 @@ test('the recommendation sees the pooled memory: qwen3:14b at 28K fits two cards
   assert.strictEqual(M.fitAt(m, two, 28672), 'gpu');
   assert.notStrictEqual(M.fitAt(m, one, 28672), 'gpu');
 });
+
+test('v0.61: Qwen3.6 in the catalog, and hybrid attention counted right', () => {
+  const M = require('../src/renderer/models.js');
+  const N = require('../src/renderer/nodes.js');
+  const moe = M.MODEL_CATALOG.find((m) => m.id === 'qwen3.6:35b-a3b');
+  const dense = M.MODEL_CATALOG.find((m) => m.id === 'qwen3.6:27b');
+  assert.ok(moe && moe.moe && moe.nativeCtx === 262144);
+  assert.ok(dense && !dense.moe);
+  assert.strictEqual(M.catalogEntryFor('qwen3.6:35b-a3b').name, 'Qwen3.6 35B-A3B');
+  // 40 layers, a full-attention layer every 4th: 10 layers keep a cache.
+  const info = { 'general.architecture': 'qwen35moe', 'qwen35moe.block_count': 40, 'qwen35moe.full_attention_interval': 4, 'qwen35moe.attention.head_count': 16, 'qwen35moe.attention.head_count_kv': 2, 'qwen35moe.attention.key_length': 256, 'qwen35moe.attention.value_length': 256, 'qwen35moe.expert_count': 256 };
+  assert.strictEqual(N.kvBytesPerToken(info), 10 * 2 * 512 * 2);
+  assert.ok(N.isMoE(info));
+  // Per-layer head counts with zeros for the linear layers add up the same way.
+  const arr = { 'general.architecture': 'x', 'x.block_count': 4, 'x.attention.head_count': 8, 'x.attention.head_count_kv': [0, 0, 0, 2], 'x.attention.key_length': 128, 'x.attention.value_length': 128 };
+  assert.strictEqual(N.kvBytesPerToken(arr), 2 * 256 * 2);
+  // On Alien (23.5 GB): the 27B dense build fits at 32K; the 23 GB MoE build spills a little,
+  // which a mixture-of-experts model tolerates.
+  const alien = { gpu: { vramGB: 23.5 }, ramGB: 48, gpus: [] };
+  assert.strictEqual(M.fitAt(moe, alien, 32768), 'mixed');
+  assert.strictEqual(M.fitAt(dense, alien, 32768), 'gpu');
+});
