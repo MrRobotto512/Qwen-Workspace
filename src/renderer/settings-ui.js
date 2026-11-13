@@ -343,20 +343,56 @@ let settingsNodes = null;
 // The everyday model as typed in the (maybe unsaved) form, for the per-node draft pick.
 const formModel = () => $('#s-model')?.value.trim() || state.settings.model;
 
+// Strata guide (v0.63): which documented Strata model fits a PC, with the command that starts it.
+// Filled from This PC's hardware; the model usually runs on another PC, so both are editable.
+async function renderStrataGuide() {
+  const ram = $('#strata-ram');
+  const vram = $('#strata-vram');
+  const box = $('#strata-fits');
+  if (!ram || !vram || !box) return;
+  if (!ram.dataset.filled) {
+    ram.dataset.filled = '1';
+    const specs = state.specs || (await api.systemSpecs().catch(() => null));
+    if (specs?.ramGB) ram.value = String(Math.round(specs.ramGB));
+    const gpuGB = (specs?.gpus || []).filter((g) => !g.unified).reduce((a, g) => a + (Number(g.vramGB) || 0), 0);
+    if (gpuGB) vram.value = String(Math.round(gpuGB * 2) / 2);
+    ram.oninput = renderStrataGuide;
+    vram.oninput = renderStrataGuide;
+  }
+  const list = Strata.fits({ ramGB: Number(ram.value), vramGB: Number(vram.value) });
+  if (!list.length) {
+    box.replaceChildren(el('div', { class: 'hint', text: Number(ram.value) ? 'None of the documented Strata models fits that much RAM; the smallest needs about 32 GB.' : 'Enter the RAM of the PC that will run Strata.' }));
+    return;
+  }
+  box.replaceChildren(...list.slice(0, 4).map((m, i) => {
+    const cmd = Strata.launchCommand(m, { lan: true });
+    return el('div', { class: 'mcp-item' },
+      el('div', { class: 'mcp-main' },
+        el('div', { class: 'mcp-name', text: `${m.name}${i === 0 ? ' — best fit' : ''}` }),
+        el('div', { class: 'mcp-sub', text: `needs about ${m.ramGB} GB of RAM${m.downloadGB ? ` · ${m.downloadGB} GB download` : ''} · ${m.note}` }),
+        el('code', { class: 'strata-cmd', text: cmd })),
+      el('button', { class: 'ghost', text: 'Copy command', onclick: () => { navigator.clipboard.writeText(cmd); flash('Copied — run it on the PC that will serve the model'); } }));
+  }));
+}
+
 function renderNodesSettings() {
   const list = $('#nodes-list');
   list.replaceChildren(...settingsNodes.map((n) => {
     const isThis = n.id === Nodes.THIS_PC_ID;
     const h = state.nodeHealth.byId[n.id];
-    if (!isThis && h?.up && (h.kind === 'lmstudio') !== (n.kind === 'lmstudio')) n.kind = h.kind === 'lmstudio' ? 'lmstudio' : undefined; // detected on the last health check
+    const kindOf = (k) => (['lmstudio', 'openai'].includes(k) ? k : undefined);
+    if (!isThis && (h?.up || h?.kind === 'openai') && kindOf(h.kind) !== kindOf(n.kind)) n.kind = kindOf(h.kind); // detected on the last health check
     const lm = n.kind === 'lmstudio';
+    const oa = n.kind === 'openai';
     const status = !n.enabled ? 'off' : h ? (h.up ? 'ready' : 'error') : 'connecting';
     const draftText = !lm ? '' : !n.draftModel ? '' : n.draftModel === 'auto'
       ? ` · draft: auto${h?.lmModels ? ` (${Nodes.suggestDraft(Nodes.lmModelFor(formModel(), h.models, n.model) || '', h.lmModels) || 'none fits'})` : ''}`
       : ` · draft: ${n.draftModel}`;
     const sub = el('div', {
       class: `mcp-sub${status === 'error' ? ' bad' : ''}`,
-      text: (isThis ? `${n.baseUrl} — URL and keep-alive come from the Model section` : `${lm ? 'LM Studio · ' : ''}${n.baseUrl}${n.keepAlive ? ` · keep ${n.keepAlive}` : ''}`)
+      text: (isThis ? `${n.baseUrl} — URL and keep-alive come from the Model section` : `${lm ? 'LM Studio · ' : oa ? `${h?.server || 'OpenAI-compatible'} · ` : ''}${n.baseUrl}${n.keepAlive && !oa ? ` · keep ${n.keepAlive}` : ''}`)
+        + (oa && h?.up ? ` · ${(h.models || []).join(', ')}${h.maxContext ? ` · context ${Math.round(h.maxContext / 1024)}K` : ''}` : '')
+        + (oa && Strata.parallelNote(h) ? ` · ${Strata.parallelNote(h)}` : '')
         + (n.highPerf ? ' · high performance' : '') + draftText
     });
     // GPU memory (v0.60): QWS cannot see a node's cards, only what Ollama held there; a size set
@@ -378,27 +414,39 @@ function renderNodesSettings() {
           }
         })
         : null);
+    // An OpenAI-compatible server (Strata) manages its own memory, so it has no GPU box; it may
+    // want a key, which QWS reads from an environment variable on this PC — never from settings.
+    const keyBox = oa
+      ? el('span', { class: 'node-vram', title: 'If this server asks for an API key: the name of an environment variable on this PC that holds it (set it, then restart QWS). QWS never stores the key itself.' },
+        el('input', { type: 'text', placeholder: `Key variable: ${Strata.DEFAULT_KEY_ENV}`, value: n.keyEnv || '', style: 'width:15em', spellcheck: 'false',
+          onchange: (e) => { const v = e.target.value.trim().toUpperCase(); n.keyEnv = Strata.keyEnvName(v) || undefined; e.target.value = n.keyEnv || ''; } }))
+      : null;
     const test = el('button', {
       class: 'ghost',
       text: 'Test',
       onclick: async () => {
         sub.textContent = 'Checking…';
         const url = isThis ? $('#s-baseUrl').value.trim() : n.baseUrl;
-        const [r] = await api.nodesCheck([{ id: n.id, baseUrl: url }]);
+        const [r] = await api.nodesCheck([{ id: n.id, baseUrl: url, keyEnv: n.keyEnv }]);
         if (r?.up && !isThis) {
           state.nodeHealth.byId[n.id] = r;
-          if ((r.kind === 'lmstudio') !== (n.kind === 'lmstudio')) {
-            n.kind = r.kind === 'lmstudio' ? 'lmstudio' : undefined;
+          if (kindOf(r.kind) !== kindOf(n.kind)) {
+            n.kind = kindOf(r.kind);
             return renderNodesSettings();
           }
         }
+        if (!isThis && r?.kind === 'openai' && !n.kind) { // a server that wants a key: show the key box
+          n.kind = 'openai';
+          state.nodeHealth.byId[n.id] = r;
+          return renderNodesSettings();
+        }
         sub.classList.toggle('bad', !r?.up);
-        sub.textContent = r?.up ? `Online${r.kind === 'lmstudio' ? ' (LM Studio)' : ''} — ${r.models.length} model${r.models.length === 1 ? '' : 's'}: ${r.models.slice(0, 6).join(', ')}${r.models.length > 6 ? '…' : ''}${r.error ? ` — ${r.error}` : ''}` : `Not reachable: ${r?.error || 'no answer'}`;
+        sub.textContent = r?.up ? `Online${r.kind === 'lmstudio' ? ' (LM Studio)' : r.kind === 'openai' ? ` (${Strata.describe(r)})` : ''} — ${r.models.length} model${r.models.length === 1 ? '' : 's'}: ${r.models.slice(0, 6).join(', ')}${r.models.length > 6 ? '…' : ''}${r.error ? ` — ${r.error}` : ''}` : `Not reachable: ${r?.error || 'no answer'}`;
       }
     });
     return el('div', { class: 'mcp-item' },
       el('span', { class: `dot ${status}` }),
-      el('div', { class: 'mcp-main' }, el('div', { class: 'mcp-name', text: n.name }), sub, vramBox),
+      el('div', { class: 'mcp-main' }, el('div', { class: 'mcp-name', text: n.name }), sub, oa ? keyBox : vramBox),
       el('button', {
         class: `icon-btn hp-btn${n.highPerf ? ' on' : ''}`,
         title: 'High-performance node: when Qwen gets stuck, the next step runs here on the strongest model this node has installed — before any money goes to the cloud planner.',
@@ -432,7 +480,7 @@ function renderNodesSettings() {
 // LM Studio nodes: which small model drafts tokens for speculative decoding. "Auto" picks the
 // largest same-family model at most ¼ of the main model's size at request time.
 async function pickDraftModel(n, anchor) {
-  const [h] = await api.nodesCheck([{ id: n.id, baseUrl: n.baseUrl }]).catch(() => []);
+  const [h] = await api.nodesCheck([{ id: n.id, baseUrl: n.baseUrl, keyEnv: n.keyEnv }]).catch(() => []);
   const main = Nodes.lmModelFor(formModel(), h?.models, n.model);
   const auto = h?.lmModels && main ? Nodes.suggestDraft(main, h.lmModels) : null;
   const set = (v) => { n.draftModel = v || undefined; renderNodesSettings(); };
@@ -451,7 +499,7 @@ async function pickDraftModel(n, anchor) {
 async function checkNodeModels(n, sub, anchor) {
   const url = n.id === Nodes.THIS_PC_ID ? ($('#s-baseUrl').value.trim() || n.baseUrl) : n.baseUrl;
   sub.textContent = 'Listing models…';
-  const [h] = await api.nodesCheck([{ id: n.id, baseUrl: url }]).catch(() => []);
+  const [h] = await api.nodesCheck([{ id: n.id, baseUrl: url, keyEnv: n.keyEnv }]).catch(() => []);
   if (!h?.up || !h.models?.length) {
     sub.textContent = h?.up ? 'No models on this node' : `Not reachable: ${h?.error || 'no answer'}`;
     return;
@@ -605,6 +653,7 @@ function openSettings() {
   $('#s-heavy-fields').classList.toggle('hidden', !h.enabled);
   $('#s-test-result').textContent = '';
   settingsNodes = Nodes.normalizeNodes(s).map((n) => ({ ...n }));
+  renderStrataGuide().catch(() => {});
   $('#node-add-result').textContent = '';
   renderNodesSettings();
   settingsDevices = (s.devices || []).map((d) => ({ ...d }));
@@ -690,7 +739,7 @@ async function saveSettingsFromUi() {
   const thisPc = settingsNodes.find((n) => n.id === Nodes.THIS_PC_ID);
   const remotes = settingsNodes
     .filter((n) => n.id !== Nodes.THIS_PC_ID)
-    .map((n) => ({ id: n.id, name: n.name, baseUrl: n.baseUrl, enabled: n.enabled, highPerf: !!n.highPerf, keepAlive: n.keepAlive, vramGB: Number(n.vramGB) > 0 ? Number(n.vramGB) : undefined, kind: n.kind === 'lmstudio' ? 'lmstudio' : undefined, model: n.model || undefined, draftModel: n.draftModel || undefined }));
+    .map((n) => ({ id: n.id, name: n.name, baseUrl: n.baseUrl, enabled: n.enabled, highPerf: !!n.highPerf, keepAlive: n.keepAlive, vramGB: Number(n.vramGB) > 0 ? Number(n.vramGB) : undefined, kind: ['lmstudio', 'openai'].includes(n.kind) ? n.kind : undefined, keyEnv: n.kind === 'openai' && Strata.keyEnvName(n.keyEnv) ? n.keyEnv : undefined, model: n.model || undefined, draftModel: n.draftModel || undefined }));
   patch.ollamaNodes = remotes.length || (thisPc && (!thisPc.enabled || thisPc.highPerf))
     ? [{ id: Nodes.THIS_PC_ID, enabled: !thisPc || thisPc.enabled, highPerf: !!thisPc?.highPerf }, ...remotes]
     : [];

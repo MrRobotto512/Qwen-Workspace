@@ -233,6 +233,15 @@
         <button id="node-add-btn" class="ghost"><span data-icon="plus"></span>Add node</button>
       </div>
       <div id="node-add-result" class="hint"></div>
+      <details id="strata-guide">
+        <summary>Run a much bigger model with Strata</summary>
+        <div class="hint"><a href="https://github.com/Niko1221/Strata" target="_blank">Strata</a> runs large mixture-of-experts models on a gaming PC: the busiest parts on the graphics cards, the rest in RAM. Install it on the PC that should run the model, start a model with the command below, then add that PC here with its address (<code>http://its-ip:8080</code>). QWS finds Strata on its own and uses the context it reports. A node marked ⚡ runs stuck steps there.</div>
+        <div class="strata-specs">
+          <label>RAM of that PC (GB) <input id="strata-ram" type="number" min="4" max="2048" step="1" style="width:6em" /></label>
+          <label>Graphics memory, all cards (GB) <input id="strata-vram" type="number" min="0" max="512" step="0.5" style="width:6em" /></label>
+        </div>
+        <div id="strata-fits"></div>
+      </details>
       <div id="node-diag-box" class="hidden">
         <pre id="node-diag"></pre>
         <button id="node-diag-copy" class="ghost">Copy report</button>
@@ -521,6 +530,7 @@
   <script src="diffblocks.js"></script>
   <script src="argrepair.js"></script>
   <script src="toolparse.js"></script>
+  <script src="strata.js"></script>
   <script src="nodes.js"></script>
   <script src="github.js"></script>
   <script src="lessons.js"></script>

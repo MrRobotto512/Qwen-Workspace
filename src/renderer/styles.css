@@ -678,3 +678,9 @@ input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; m
 .bench-table tr.pass td:nth-child(2) { color: var(--ok, #3fb950); }
 .bench-table tr.fail td:nth-child(2) { color: var(--bad, #f85149); }
 .bench-table tr.skipped td { color: var(--text-3); }
+
+/* Strata guide (v0.63) */
+#strata-guide { margin: 8px 0; }
+#strata-guide summary { cursor: pointer; font-weight: 600; }
+.strata-specs { display: flex; flex-wrap: wrap; gap: 12px; margin: 6px 0; }
+.strata-cmd { display: block; margin-top: 4px; font-size: 12px; word-break: break-all; user-select: all; }

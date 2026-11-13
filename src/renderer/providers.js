@@ -19,7 +19,7 @@ function heavyOverride() {
   if (!h || !h.enabled || !h.model) return null;
   const override = { provider: h.provider, baseUrl: h.baseUrl, apiKey: h.apiKey, model: h.model };
   // A cloud heavy model needs a key; a local one (Ollama/LM Studio) does not.
-  if (!['ollama', 'lmstudio'].includes(h.provider) && !h.apiKey) return null;
+  if (!['ollama', 'lmstudio', 'openai-local'].includes(h.provider) && !h.apiKey) return null;
   return override;
 }
 

@@ -58,7 +58,8 @@ function normalizeNodes(s) {
       enabled: n.enabled !== false,
       highPerf: n.highPerf === true,
       keepAlive: typeof n.keepAlive === 'string' && n.keepAlive.trim() ? n.keepAlive.trim() : REMOTE_KEEP_DEFAULT,
-      ...(n.kind === 'lmstudio' ? { kind: 'lmstudio' } : {}),
+      ...(['lmstudio', 'openai'].includes(n.kind) ? { kind: n.kind } : {}),
+      ...(n.kind === 'openai' && /^[A-Z][A-Z0-9_]{0,63}$/.test(String(n.keyEnv || '')) ? { keyEnv: n.keyEnv } : {}),
       ...(typeof n.model === 'string' && n.model.trim() ? { model: n.model.trim() } : {}),
       ...(typeof n.draftModel === 'string' && n.draftModel.trim() ? { draftModel: n.draftModel.trim() } : {}),
       ...(Number(n.vramGB) > 0 ? { vramGB: Number(n.vramGB) } : {})
@@ -87,7 +88,7 @@ function sameModel(a, b) {
 
 function nodeHasModel(h, model) {
   if (!h || h.up !== true || !Array.isArray(h.models)) return false;
-  return h.models.some((m) => sameModel(m, model) || (h.kind === 'lmstudio' && looseSame(m, model)));
+  return h.models.some((m) => sameModel(m, model) || (['lmstudio', 'openai'].includes(h.kind) && looseSame(m, model)));
 }
 
 // Pick the node a request should run on. `health` maps node id -> {up, models}, `exclude`
@@ -127,7 +128,9 @@ const HIGH_PERF_FLOOR = 5.9;
 // is MODEL_CATALOG (passed in so this stays pure for tests).
 function pickHighPerf(nodes, health, currentModel, catalog) {
   const cat = catalog || [];
-  const entryFor = (id) => cat.find((m) => sameModel(m.id, id)) || cat.find((m) => looseSame(m.id, id));
+  // A Strata entry matches by prefix: "qwen3.8-flash-next-iq2_xs" is "qwen3.8-flash-next".
+  const entryFor = (id) => cat.find((m) => sameModel(m.id, id)) || cat.find((m) => looseSame(m.id, id))
+    || cat.find((m) => m.prefix && looseModelKey(id).startsWith(looseModelKey(m.id)));
   const curRank = entryFor(currentModel)?.rank;
   const floor = typeof curRank === 'number' ? curRank : HIGH_PERF_FLOOR;
   let best = null;
@@ -138,7 +141,7 @@ function pickHighPerf(nodes, health, currentModel, catalog) {
     for (const m of h.models || []) {
       const e = entryFor(m);
       if (!e || e.rank <= floor) continue;
-      if (!best || e.rank > best.rank) best = { node: n, model: h.kind === 'lmstudio' ? m : e.id, rank: e.rank, kind: h.kind || 'ollama' };
+      if (!best || e.rank > best.rank) best = { node: n, model: ['lmstudio', 'openai'].includes(h.kind) ? m : e.id, rank: e.rank, kind: h.kind || 'ollama' };
     }
   }
   return best;
@@ -214,6 +217,14 @@ function nodeOverride(node, health, model) {
     const key = lmModelFor(model, health?.models, node.model) || node.model || model;
     const draft = node.draftModel === 'auto' ? suggestDraft(key, health?.lmModels) : node.draftModel && (health?.models || []).includes(node.draftModel) ? node.draftModel : null;
     return { provider: 'lmstudio', baseUrl: `${cleanUrl(node.baseUrl).replace(/\/v1$/, '')}/v1`, apiKey: '', model: key, ttl: ttlSeconds(node.keepAlive), draftModel: draft || undefined };
+  }
+  // An OpenAI-compatible server (Strata, llama.cpp, vLLM): it usually serves one model, so a step
+  // that wants another runs on the one it has; its reported context sizes the window, and its
+  // key (if any) is read from the node's environment variable by the main process.
+  if ((health?.kind || node.kind) === 'openai') {
+    const list = health?.models || [];
+    const key = lmModelFor(model, list, node.model) || list[0] || node.model || model;
+    return { provider: 'openai-local', baseUrl: `${cleanUrl(node.baseUrl).replace(/\/v1$/, '')}/v1`, apiKey: '', model: key, keyEnv: node.keyEnv || 'STRATA_API_KEY', nodeCtx: Number(health?.maxContext) || undefined };
   }
   if (node.id === THIS_PC_ID) return null;
   return { baseUrl: node.baseUrl, keepAlive: node.keepAlive };
@@ -398,6 +409,7 @@ function isModelDamaged(msg) {
 
 // What helps: download the model again (Ollama), or re-download it in LM Studio.
 function damagedAdvice(model, where = 'This PC', provider = 'ollama') {
+  if (provider === 'openai-local') return `${model} could not be loaded on ${where}: its model files look damaged or incomplete. Download the model again in that server (Strata: \`strata models list\`, then run \`strata launch\` and pick the model again).`;
   if (provider === 'lmstudio') return `${model} could not be loaded on ${where}: its model file looks damaged or incomplete. In LM Studio, delete the model under My Models and download it again.`;
   return `${model} could not be loaded on ${where}: its model file looks damaged or incomplete, so every request fails at once. Download it again on ${where}: in a terminal run "ollama rm ${model}" and then "ollama pull ${model}".`;
 }

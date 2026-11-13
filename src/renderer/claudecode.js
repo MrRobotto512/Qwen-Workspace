@@ -92,7 +92,7 @@ async function claudeCodeFlow(anchor) {
   if (!(await ccCliReady())) return;
   const nodes = Nodes.normalizeNodes(state.settings).filter((n) => n.enabled);
   flash('Checking your Ollama nodes…');
-  const results = await api.nodesCheck(nodes.map((n) => ({ id: n.id, baseUrl: n.baseUrl }))).catch(() => []);
+  const results = await api.nodesCheck(nodes.map((n) => ({ id: n.id, baseUrl: n.baseUrl, keyEnv: n.keyEnv }))).catch(() => []);
   const health = Object.fromEntries(results.map((r) => [r.id, r]));
   const usable = nodes.filter((n) => health[n.id]?.up && (health[n.id].models || []).length);
   if (!usable.length) {

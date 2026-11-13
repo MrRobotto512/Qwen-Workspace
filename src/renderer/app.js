@@ -2043,7 +2043,7 @@ async function refreshNodeHealth(force) {
   if (!s || s.provider !== 'ollama' || !Nodes.multiNode(s)) return state.nodeHealth;
   if (!force && Date.now() - state.nodeHealth.at < 25_000) return state.nodeHealth;
   const nodes = Nodes.normalizeNodes(s);
-  const results = await api.nodesCheck(nodes.map((n) => ({ id: n.id, baseUrl: n.baseUrl }))).catch(() => []);
+  const results = await api.nodesCheck(nodes.map((n) => ({ id: n.id, baseUrl: n.baseUrl, keyEnv: n.keyEnv }))).catch(() => []);
   state.nodeHealth = { at: Date.now(), byId: Object.fromEntries(results.map((r) => [r.id, r])) };
   renderNodeStatus();
   return state.nodeHealth;
