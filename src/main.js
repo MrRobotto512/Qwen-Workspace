@@ -2268,7 +2268,7 @@ ipcMain.handle('skills:list', async () => {
         const text = await fsp.readFile(path.join(root, d.name, 'SKILL.md'), 'utf8');
         const { name, description } = parseSkill(text, d.name);
         const e = idx[d.name];
-        byName.set(name.toLowerCase(), { id: `${scope}:${d.name}`, name, description, scope, ...(e ? { createdBy: e.createdBy, uses: e.uses || 0, lastUsed: e.lastUsed || null, state: e.state || 'active' } : {}) });
+        byName.set(name.toLowerCase(), { id: `${scope}:${d.name}`, name, description, scope, chars: text.length, ...(e ? { createdBy: e.createdBy, uses: e.uses || 0, lastUsed: e.lastUsed || null, state: e.state || 'active' } : {}) });
       } catch {
         /* no SKILL.md */
       }

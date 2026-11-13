@@ -42,10 +42,33 @@ async function buildSemIndex() {
   }
 }
 
+// Recommended skills with one-click install (skillpicks.js).
+function renderSkillPicks(skills) {
+  const box = $('#skill-picks');
+  if (!box) return;
+  const have = SkillPicks.installedPicks(skills);
+  box.replaceChildren(...SkillPicks.PICKS.map((p) => el('div', { class: 'skill-row', title: p.url },
+    iconEl('book'),
+    el('span', { class: 'sk-name', text: p.title }),
+    el('span', { class: 'sk-desc', text: p.why }),
+    have.has(p.dir)
+      ? el('span', { class: 'sk-badge', text: 'installed' })
+      : el('button', {
+        class: 'ghost small',
+        onclick: async (e) => {
+          e.currentTarget.disabled = true;
+          $('#skill-url').value = p.url;
+          await installSkillFromUrl();
+        }
+      }, 'Install'))));
+}
+
 async function renderSkillsSettings() {
   const list = $('#skills-list');
   if (!list) return;
   const [skills, archived] = await Promise.all([api.skillsList().catch(() => []), api.skillsArchived().catch(() => [])]);
+  renderSkillPicks(skills);
+  const win = Number($('#s-contextLength')?.value) || Number(state.settings.contextLength) || 32768;
   if (!skills.length && !archived.length) {
     list.replaceChildren(el('div', { class: 'empty-note', text: 'No skills yet. Install one above, or create .qwen/skills/<name>/SKILL.md in your project.' }));
     return;
@@ -55,6 +78,9 @@ async function renderSkillsSettings() {
     iconEl('book'),
     el('span', { class: 'sk-name', text: sk.name }),
     el('span', { class: 'sk-scope', text: SKILL_SCOPE_TEXT[sk.scope] || sk.scope }),
+    sk.chars
+      ? el('span', { class: `sk-badge${SkillPicks.weight(sk.chars, win) !== 'ok' ? ' stale' : ''}`, title: 'When the agent loads this skill, all of its SKILL.md enters the context. Large ones crowd a small local model\'s window.', text: SkillPicks.sizeLabel(sk.chars, win) })
+      : null,
     sk.createdBy === 'qws'
       ? el('span', { class: `sk-badge${sk.state === 'stale' ? ' stale' : ''}`, title: sk.lastUsed ? `Last used ${new Date(sk.lastUsed).toLocaleDateString()}` : 'Not used yet', text: `written by QWS · used ${sk.uses || 0}×${sk.state === 'stale' ? ' · stale' : ''}` })
       : null,

@@ -69,8 +69,19 @@ const SKILLS = {
   good: { 'SKILL.md': '---\nname: tidy\ndescription: Formats code\n---\nRun `npx prettier --write .` and then `npm test`.\n' }
 };
 let ghBase = '';
+const FD = `---\nname: frontend-design\ndescription: Distinctive visual design\n---\n${'Choose a bold direction and commit to it. '.repeat(250)}\n`;
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
+  // v0.62: the recommended skills install from anthropics/skills.
+  const fd = /^\/repos\/anthropics\/skills\/contents\/skills\/frontend-design\/?$/.exec(u.pathname);
+  if (fd) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify([{ name: 'SKILL.md', path: 'skills/frontend-design/SKILL.md', type: 'file', size: FD.length, download_url: `${ghBase}/raw-fd` }]));
+  }
+  if (u.pathname === '/raw-fd') {
+    res.writeHead(200);
+    return res.end(FD);
+  }
   const gh = /^\/repos\/someone\/(bad|good)\/contents\/?(.*)$/.exec(u.pathname);
   if (gh) {
     const files = SKILLS[gh[1]];
@@ -167,6 +178,23 @@ try {
   if (!forced.ok || !fs.existsSync(at('.qwen/skills/bad/scripts/setup.sh'))) fail(`install after yes: ${JSON.stringify(forced).slice(0, 300)}`);
   const good = await win.evaluate(() => api.skillsInstall('https://github.com/someone/good'));
   if (!good.ok || good.verdict !== 'safe' || good.needsConfirm) fail(`the clean skill: ${JSON.stringify(good).slice(0, 300)}`);
+  // 5. a recommended skill installs with one click (v0.62), and shows its size for the window
+  const pick = await win.evaluate(async () => {
+    state.settings = await api.setSettings({ contextLength: 8192 });
+    openSettings();
+    await renderSkillsSettings();
+    const row = [...document.querySelectorAll('#skill-picks .skill-row')].find((r) => r.textContent.includes('Frontend design'));
+    row?.querySelector('button')?.click();
+    for (let i = 0; i < 50 && !/Installed/.test(document.querySelector('#skill-install-result').textContent); i++) await new Promise((r) => setTimeout(r, 100));
+    await renderSkillsSettings();
+    const after = [...document.querySelectorAll('#skill-picks .skill-row')].find((r) => r.textContent.includes('Frontend design'))?.textContent || '';
+    const listed = [...document.querySelectorAll('#skills-list .skill-row')].find((r) => r.textContent.includes('frontend-design'))?.textContent || '';
+    return { result: document.querySelector('#skill-install-result').textContent, after, listed };
+  });
+  if (!/Installed "frontend-design"/.test(pick.result)) fail(`one-click install: ${pick.result}`);
+  if (!/installed/.test(pick.after)) fail(`the pick should show installed: ${pick.after}`);
+  if (!/~\d(?:\.\d)?K tokens \(\d+% of a 8\.2K window\)/.test(pick.listed)) fail(`no size label on the installed skill: ${pick.listed}`);
+  if (!fs.existsSync(at('.qwen/skills/frontend-design/SKILL.md'))) fail('the skill was not written into the project');
 } catch (e) {
   fail(String(e).split('\n')[0]);
 } finally {
