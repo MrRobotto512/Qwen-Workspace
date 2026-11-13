@@ -783,7 +783,7 @@ async function executeTool(c, call, row) {
         const question = String(args.question || '').trim();
         if (!question) return { result: 'Error: empty question.' };
         // The monthly budget applies to consultations too, like escalations and the review pass.
-        if (!['ollama', 'lmstudio'].includes(override.provider) && !c.capApproved && Costs.capReached(state.settings.spend, state.settings.prices, state.settings.monthlyCapUSD)) {
+        if (!['ollama', 'lmstudio', 'openai-local'].includes(override.provider) && !c.capApproved && Costs.capReached(state.settings.spend, state.settings.prices, state.settings.monthlyCapUSD)) {
           if (!(await askBudgetCard(c))) return { result: 'The monthly cloud budget is reached and the user chose not to spend more. Do not call consult_planner again in this task; continue on your own.', meta: 'budget', failed: true };
           c.capApproved = true;
         }
@@ -796,7 +796,7 @@ async function executeTool(c, call, row) {
           ]
         });
         const answer = res.ok ? stripThink(res.content || '').trim() : '';
-        if (res.usage && !['ollama', 'lmstudio'].includes(override.provider)) recordSpend(c, res.model || override.model, (res.usage.billedPromptTokens ?? res.usage.promptTokens) || 0, res.usage.completionTokens || 0);
+        if (res.usage && !['ollama', 'lmstudio', 'openai-local'].includes(override.provider)) recordSpend(c, res.model || override.model, (res.usage.billedPromptTokens ?? res.usage.promptTokens) || 0, res.usage.completionTokens || 0);
         if (!answer) return { result: `The planner model did not answer${res.error ? `: ${res.error}` : '.'}`, failed: true };
         row.setBody(answer);
         return { result: `<planner_advice model="${res.model || override.model}">\n${truncate(answer)}\n</planner_advice>\nUse this advice to continue the work yourself.`, meta: res.model || override.model };
@@ -1208,7 +1208,7 @@ async function maybeCheckGoal(c, failed) {
   setActivity(c, 'Checking the goal');
   const res = await cloudChat(c, 'goal', { override, messages: Goal.judgeMessages(g.text, lastReply, evidence) });
   setActivity(c, '');
-  if (override && !['ollama', 'lmstudio'].includes(override.provider) && res.usage?.promptTokens) {
+  if (override && !['ollama', 'lmstudio', 'openai-local'].includes(override.provider) && res.usage?.promptTokens) {
     recordSpend(c, res.model || override.model, (res.usage.billedPromptTokens ?? res.usage.promptTokens) || 0, res.usage.completionTokens || 0);
   }
   const say = (text) => {
@@ -1416,7 +1416,7 @@ async function subagentTargets(parent, tasks) {
         strong = hp
           ? { key: `node:${hp.nodeId}`, pinNodeId: hp.nodeId, override: hp.override, label: hp.label, paid: false }
           : heavy
-            ? { key: ['ollama', 'lmstudio'].includes(heavy.provider) ? `local:${heavy.baseUrl}` : null, override: heavy, label: heavyLabel(), paid: !['ollama', 'lmstudio'].includes(heavy.provider) }
+            ? { key: ['ollama', 'lmstudio', 'openai-local'].includes(heavy.provider) ? `local:${heavy.baseUrl}` : null, override: heavy, label: heavyLabel(), paid: !['ollama', 'lmstudio', 'openai-local'].includes(heavy.provider) }
             : null;
       }
       if (strong) {
@@ -1858,7 +1858,7 @@ async function proposeLessons(c) {
     setActivity(c, '');
     if (!res.ok) return;
     // A cloud teacher costs money like any other cloud call; the ⚡ node costs nothing.
-    if (override && !['ollama', 'lmstudio'].includes(override.provider) && res.usage?.promptTokens) {
+    if (override && !['ollama', 'lmstudio', 'openai-local'].includes(override.provider) && res.usage?.promptTokens) {
       recordSpend(c, res.model || override.model, (res.usage.billedPromptTokens ?? res.usage.promptTokens) || 0, res.usage.completionTokens || 0);
     }
     const bullets = Lessons.dedupeLessons(Lessons.parseLessons(stripThink(res.content || '')), md);
@@ -1958,7 +1958,7 @@ async function proposeSkill(c, failed) {
     });
     setActivity(c, '');
     if (!res.ok) return;
-    if (override && !['ollama', 'lmstudio'].includes(override.provider) && res.usage?.promptTokens) {
+    if (override && !['ollama', 'lmstudio', 'openai-local'].includes(override.provider) && res.usage?.promptTokens) {
       recordSpend(c, res.model || override.model, (res.usage.billedPromptTokens ?? res.usage.promptTokens) || 0, res.usage.completionTokens || 0);
     }
     const draft = SkillWriter.parseSkillDraft(stripThink(res.content || ''));
@@ -2057,7 +2057,7 @@ async function reviewChanges(c, { auto } = {}) {
         { role: 'user', content: ReviewPass.reviewRequest(files) }
       ]
     });
-    if (res.usage && !['ollama', 'lmstudio'].includes(planner.provider)) recordSpend(c, res.model || planner.model, (res.usage.billedPromptTokens ?? res.usage.promptTokens) || 0, res.usage.completionTokens || 0);
+    if (res.usage && !['ollama', 'lmstudio', 'openai-local'].includes(planner.provider)) recordSpend(c, res.model || planner.model, (res.usage.billedPromptTokens ?? res.usage.promptTokens) || 0, res.usage.completionTokens || 0);
     if (!res.ok) {
       addError(c, `The review pass failed: ${res.error}`);
       return;
@@ -2186,13 +2186,13 @@ function suggestPlannerForPlan(c, fileCount) {
 async function pickHighPerfTarget(currentModel) {
   const nodes = Nodes.normalizeNodes(state.settings).filter((n) => n.enabled && n.highPerf);
   if (!nodes.length) return null;
-  const results = await api.nodesCheck(nodes.map((n) => ({ id: n.id, baseUrl: n.baseUrl }))).catch(() => []);
+  const results = await api.nodesCheck(nodes.map((n) => ({ id: n.id, baseUrl: n.baseUrl, keyEnv: n.keyEnv }))).catch(() => []);
   const health = Object.fromEntries(results.map((r) => [r.id, r]));
-  const pick = Nodes.pickHighPerf(nodes, health, currentModel, MODEL_CATALOG);
+  const pick = Nodes.pickHighPerf(nodes, health, currentModel, [...MODEL_CATALOG, ...Strata.CATALOG]);
   if (!pick) return null;
   return {
     nodeId: pick.node.id,
-    override: pick.kind === 'lmstudio'
+    override: ['lmstudio', 'openai'].includes(pick.kind)
       ? Nodes.nodeOverride(pick.node, health[pick.node.id], pick.model)
       : { provider: 'ollama', baseUrl: pick.node.baseUrl, apiKey: '', model: pick.model, keepAlive: pick.node.keepAlive },
     label: `${pick.model} on ${pick.node.name}`
@@ -2705,7 +2705,7 @@ async function runConversation(c) {
     }
     // A planning turn, or a retry after a reply cut off at the limit, gets room to answer.
     const stepProv = override?.provider || state.settings.provider;
-    if ((planTurn || architectTurn || bigBudgetNext) && !['ollama', 'lmstudio'].includes(stepProv)) {
+    if ((planTurn || architectTurn || bigBudgetNext) && !['ollama', 'lmstudio', 'openai-local'].includes(stepProv)) {
       override = { ...(override || {}), maxResponseTokens: Math.max(architectTurn ? ARCHITECT_REPLY_TOKENS : PLAN_REPLY_TOKENS, Number(state.settings.maxResponseTokens) || 0) };
     }
     bigBudgetNext = false;
@@ -2827,7 +2827,7 @@ async function runConversation(c) {
     // (Ollama / LM Studio) are free and skipped.
     if (res.ok && res.usage) {
       const prov = override?.provider || state.settings.provider;
-      if (!['ollama', 'lmstudio'].includes(prov)) recordSpend(c, override?.model || state.settings.model, (res.usage.billedPromptTokens ?? res.usage.promptTokens) || 0, res.usage.completionTokens || 0);
+      if (!['ollama', 'lmstudio', 'openai-local'].includes(prov)) recordSpend(c, override?.model || state.settings.model, (res.usage.billedPromptTokens ?? res.usage.promptTokens) || 0, res.usage.completionTokens || 0);
     }
     if (res.usage?.promptTokens && res.usage.contextLength) {
       c.usage = res.usage;
@@ -2869,7 +2869,7 @@ async function runConversation(c) {
       // server reloads the model on the next request, so retry once; then move to another node
       // that has the model, then to a stronger model; only then stop, with what helps.
       const stepProvider = override?.provider || state.settings.provider;
-      const runner = stepProvider === 'ollama' ? "Ollama's model runner" : stepProvider === 'lmstudio' ? "LM Studio's model runner" : 'The model server';
+      const runner = stepProvider === 'ollama' ? "Ollama's model runner" : stepProvider === 'lmstudio' ? "LM Studio's model runner" : stepProvider === 'openai-local' ? "The node's model server (Strata or similar)" : 'The model server';
       // The model file itself is broken (a field report: every benchmark request failed within a
       // second until the model was downloaded again): retrying cannot help. Another node with
       // the model can; otherwise stop and say how to fix it.

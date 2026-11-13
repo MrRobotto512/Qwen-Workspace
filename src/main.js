@@ -1120,6 +1120,12 @@ function apiHeaders(s) {
     return h;
   }
   if (s.apiKey) h.Authorization = `Bearer ${s.apiKey}`;
+  // An OpenAI-compatible node (Strata, llama.cpp, vLLM): its key comes from an environment
+  // variable on this PC, named in the node's settings — the key itself is never stored.
+  else if (s.keyEnv) {
+    const name = require('./renderer/strata.js').keyEnvName(s.keyEnv);
+    if (name && process.env[name]) h.Authorization = `Bearer ${process.env[name]}`;
+  }
   // OpenRouter credits the app by these headers (and lists free-model use under it).
   if (s.provider === 'openrouter' || /openrouter\.ai/i.test(String(s.baseUrl || ''))) Object.assign(h, require('./renderer/freecloud.js').ATTRIBUTION);
   return h;
@@ -1162,7 +1168,7 @@ ipcMain.handle('chat:abort', (_e, id) => {
 const CLOUD_FIRST_TOKEN_MS = 120_000;
 const firstTokenMs = (s) => (Number(s.cloudFirstTokenSec) > 0 ? Number(s.cloudFirstTokenSec) * 1000 : CLOUD_FIRST_TOKEN_MS);
 function isCloudEndpoint(s) {
-  if (['ollama', 'lmstudio'].includes(s.provider)) return false;
+  if (['ollama', 'lmstudio', 'openai-local'].includes(s.provider)) return false;
   if (['gemini', 'anthropic', 'openrouter', 'dashscope', 'groq'].includes(s.provider)) return true;
   let host = '';
   try {
@@ -1269,6 +1275,8 @@ async function chatStreamInner(s, payload, controller, send, fail) {
     if (s.draftModel) body.draft_model = s.draftModel;
     body.stream_options = { include_usage: true };
   }
+  // An OpenAI-compatible node: usage in the stream (Strata, llama.cpp and vLLM send it).
+  if (s.provider === 'openai-local') body.stream_options = { include_usage: true };
 
   try {
     const res = await fetch(apiUrl(s, '/chat/completions'), {
@@ -1368,6 +1376,8 @@ async function chatStreamInner(s, payload, controller, send, fail) {
       throw new Error(`HTTP ${code} from ${s.baseUrl}: ${errorBody(JSON.stringify({ error: streamError }))}`);
     }
     const calls = toolCalls.filter(Boolean).map((t, i) => ({ ...t, id: t.id || `call_${Date.now()}_${i}` }));
+    // The window the node's server reported, so compaction and the context meter use it.
+    if (usage && s.provider === 'openai-local' && Number(s.nodeCtx) > 0) usage.contextLength = Number(s.nodeCtx);
     return { ok: true, content, reasoning, toolCalls: calls, finishReason, usage: usage || undefined };
   } catch (err) {
     return fail(err);
@@ -1828,6 +1838,27 @@ async function lmStudioModels(root) {
   }
 }
 
+// An OpenAI-compatible server's model list and context (Strata's /health names it; llama.cpp
+// has /props). The key, when the server wants one, comes from the node's environment variable.
+async function openAiServer(root, keyEnv) {
+  const Strata = require('./renderer/strata.js');
+  const headers = apiHeaders({ keyEnv: keyEnv || Strata.DEFAULT_KEY_ENV });
+  const get = (p) => fetch(`${root}${p}`, { headers, signal: AbortSignal.timeout(8000) })
+    .then(async (r) => ({ status: r.status, json: r.ok ? await r.json().catch(() => null) : null }))
+    .catch(() => ({ status: 0, json: null }));
+  try {
+    const [models, health, props] = await Promise.all([get('/v1/models'), get('/health'), get('/props')]);
+    if (models.status === 401 || models.status === 403) {
+      // Only a server that looks OpenAI-compatible gets the key advice.
+      if (health.json?.service === 'strata' || health.status === 401 || props.status === 401) return { error: Strata.keyNeeded(keyEnv) };
+      return null;
+    }
+    return Strata.parseServer({ models: models.json, health: health.json, props: props.json });
+  } catch {
+    return null;
+  }
+}
+
 ipcMain.handle('nodes:check', async (_e, nodes) => {
   const list = (Array.isArray(nodes) ? nodes : []).slice(0, 16);
   return Promise.all(
@@ -1847,7 +1878,11 @@ ipcMain.handle('nodes:check', async (_e, nodes) => {
         // Not Ollama: maybe LM Studio's server (the app or headless `lms daemon up`).
         const lm = await lmStudioModels(root);
         if (lm) return { id: n.id, up: true, kind: 'lmstudio', ...lm };
-        return { id: n.id, up: false, error: res.ok ? 'Answers, but is neither Ollama nor LM Studio' : `HTTP ${res.status}` };
+        // Not LM Studio either: an OpenAI-compatible server (Strata, llama.cpp, vLLM).
+        const oa = await openAiServer(root, n.keyEnv);
+        if (oa?.error) return { id: n.id, up: false, kind: 'openai', error: oa.error };
+        if (oa) return { id: n.id, up: true, ...oa };
+        return { id: n.id, up: false, error: res.ok ? 'Answers, but is not Ollama, LM Studio or an OpenAI-compatible server' : `HTTP ${res.status}` };
       } catch (err) {
         return { id: n.id, up: false, error: permissionHint(err.cause?.code || err.message) };
       }
