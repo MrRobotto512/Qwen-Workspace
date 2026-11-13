@@ -758,7 +758,9 @@ async function executeTool(c, call, row) {
         api.skillsUsed?.(skill.id).catch(() => {});
         const more = !args.file && r.files.length ? `\n\nSupporting files (load one with load_skill and file): ${r.files.join(', ')}` : '';
         const where = !args.file && r.folder ? `\n\n${SkillRun.folderNote(r.folder)}` : '';
-        return { result: `${SkillRun.skillBlock(skill.name, truncate(r.content), r.folder, args.file)}${more}${where}`, meta: args.file || `${skill.scope} skill` };
+        const heavy = SkillPicks.loadNote(String(r.content || '').length, contextUse(c).window);
+        if (heavy) DebugLog.add(c, 'notice', { text: `skill ${skill.name}: ${SkillPicks.sizeLabel(String(r.content || '').length, contextUse(c).window)}` });
+        return { result: `${SkillRun.skillBlock(skill.name, truncate(r.content), r.folder, args.file)}${more}${where}${heavy}`, meta: args.file || `${skill.scope} skill` };
       }
       case 'semantic_search': {
         const r = await api.semSearch(String(args.query || ''));
