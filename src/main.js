@@ -1967,6 +1967,11 @@ ipcMain.handle('ollama:keepAlive', async (_e, baseUrl, model, keepAlive, numCtx)
   const root = String(baseUrl || '').trim().replace(/\/+$/, '').replace(/\/v1$/, '');
   if (!/^https?:\/\//.test(root) || !model) return false;
   try {
+    // Only a model that is still loaded: an empty generate would load an evicted one again (and
+    // could push out the model in use). If the check fails, skip rather than risk a load.
+    const ps = await fetch(`${root}/api/ps`, { signal: AbortSignal.timeout(5000) }).then((x) => (x.ok ? x.json() : null)).catch(() => null);
+    const norm = (x) => (String(x).includes(':') ? String(x) : `${x}:latest`);
+    if (!(ps?.models || []).some((m) => norm(m.name) === norm(model) || norm(m.model) === norm(model))) return false;
     const r = await fetch(`${root}/api/generate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, keep_alive: parseKeepAlive(keepAlive), ...(Number(numCtx) > 0 ? { options: { num_ctx: Number(numCtx) } } : {}) }), signal: AbortSignal.timeout(15_000) });
     return r.ok;
   } catch {

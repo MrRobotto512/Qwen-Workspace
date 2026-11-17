@@ -22,6 +22,12 @@ test('shouldPrune: first prune at 60%, then only after 15% more growth', () => {
   assert.equal(TB.shouldPrune(0.7 * W, W, 0.65 * W), false);
   assert.equal(TB.shouldPrune(0.8 * W, W, 0.65 * W), true);
   assert.equal(TB.shouldPrune(1000, 0, 0), false);
+  // a mark from another window, or above the current size (history rewound), no longer applies
+  assert.equal(TB.shouldPrune(0.62 * W, W, { tokens: 0.6 * W, window: W }), false);
+  assert.equal(TB.shouldPrune(0.62 * W, W, { tokens: 0.6 * W, window: 2 * W }), true);
+  assert.equal(TB.shouldPrune(0.62 * W, W, { tokens: 0.7 * W, window: W }), true);
+  // before compaction a prune is always tried
+  assert.equal(TB.shouldPrune(0.86 * W, W, { tokens: 0.75 * W, window: W }, 0.85), true);
 });
 
 test('pruneHistory with a deep cut shortens everything before it at once', () => {
@@ -38,15 +44,20 @@ test('pruneHistory with a deep cut shortens everything before it at once', () =>
   assert.equal(again.pruned, 0);
 });
 
-test('pickTools: a named tool loads alone; loose words load at most 4', () => {
+test('pickTools: a named tool loads alone; ties over 4 load nothing and list names; loaded tools are skipped', () => {
   const cat = [tool('git_status', 'Show git status'), tool('git_log', 'Show git history'), tool('git_diff', 'Show changes'), tool('git_commit', 'Commit'), tool('git_branch', 'Branches'), tool('mcp__gimp__open', 'Open an image in GIMP'), tool('screenshot', 'Take a screenshot of an image window')];
-  assert.deepEqual(K.pickTools(cat, 'git_status').map((t) => t.function.name), ['git_status']);
-  assert.ok(K.pickTools(cat, 'git').length <= 4);
-  assert.deepEqual(K.pickTools(cat, 'gimp').map((t) => t.function.name), ['mcp__gimp__open']);
+  const names = (r) => r.tools.map((t) => t.function.name);
+  assert.deepEqual(names(K.pickTools(cat, 'git_status')), ['git_status']);
+  const git = K.pickTools(cat, 'git');
+  assert.deepEqual(git.tools, []);
+  assert.deepEqual(git.tied.sort(), ['git_branch', 'git_commit', 'git_diff', 'git_log', 'git_status']);
+  assert.deepEqual(names(K.pickTools(cat, 'git', { exclude: new Set(['git_branch']) })).sort(), ['git_commit', 'git_diff', 'git_log', 'git_status']);
+  assert.deepEqual(names(K.pickTools(cat, 'gimp')), ['mcp__gimp__open']);
   // description-only matches when no name matches
-  assert.deepEqual(K.pickTools(cat, 'history').map((t) => t.function.name), ['git_log']);
-  assert.deepEqual(K.pickTools(cat, ''), []);
-  assert.deepEqual(K.pickTools(cat, 'zz'), []);
+  assert.deepEqual(names(K.pickTools(cat, 'history')), ['git_log']);
+  assert.deepEqual(K.pickTools(cat, ''), { tools: [], tied: [] });
+  assert.deepEqual(K.pickTools(cat, 'zz'), { tools: [], tied: [] });
+  assert.deepEqual(names(K.pickTools(cat, 'git_status', { exclude: ['git_status'] })), []);
 });
 
 test('sortedServers: fixed order by server id and tool name', () => {
@@ -63,6 +74,11 @@ test('taskKeepAlive: at least 30m while a task runs; -1 and longer values stay',
   assert.equal(K.taskKeepAlive('45m'), '45m');
   assert.equal(K.taskKeepAlive(''), '30m');
   assert.equal(K.taskKeepAlive('0'), '30m');
+  assert.equal(K.taskKeepAlive('1h30m'), '1h30m');
+  assert.equal(K.taskKeepAlive('10m30s'), '30m');
+  assert.equal(K.taskKeepAlive('forever?'), 'forever?'); // unreadable: left as written
+  assert.equal(K.durationSec('1h30m'), 5400);
+  assert.equal(K.durationSec('90'), 90);
 });
 
 test('versionAtLeast and versionAdvice', () => {
@@ -90,7 +106,16 @@ test('kvFactor and kvType: f16 vs q8_0 vs q4_0 from a loaded model', () => {
   assert.equal(K.kvFactor({ size: file, fileSize: file, ctx, kvPerToken: per }), null);
   assert.equal(K.kvFactor({}), null);
   assert.match(K.kvAdvice('f16', 'Alien'), /setx OLLAMA_KV_CACHE_TYPE q8_0/);
+  assert.match(K.kvAdvice('f16', 'Alien'), /\(Windows\)/);
+  assert.match(K.kvAdvice('f16', 'This PC', 'darwin'), /launchctl setenv OLLAMA_KV_CACHE_TYPE q8_0/);
+  assert.match(K.kvCommand('win32'), /OLLAMA_FLASH_ATTENTION 1\nsetx OLLAMA_KV_CACHE_TYPE q8_0/);
   assert.equal(K.kvAdvice('q8_0'), '');
+  // parallel slots multiply the reading: above 1.3 is unknown, not f16; between bands unknown
+  assert.equal(K.kvType(2.0), null);
+  assert.equal(K.kvType(0.78), null);
+  assert.equal(K.kvType(0.4), null);
+  assert.equal(K.serverKey('http://a:11434/v1/'), 'http://a:11434');
+  assert.equal(K.serverKey('http://a:11434/'), 'http://a:11434');
 });
 
 test('cacheLine and reread', () => {

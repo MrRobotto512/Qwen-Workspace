@@ -808,7 +808,16 @@ async function executeTool(c, call, row) {
         // Loads only the best few matches (v0.64): each load changes the tool list at the top
         // of the prompt, which the model server then reads again from the start.
         const catalog = deferredCatalog();
-        const matches = CacheKeep.pickTools(catalog, args.query);
+        const loaded = new Set(c.activeTools || []);
+        const pick = CacheKeep.pickTools(catalog, args.query, { exclude: loaded });
+        if (pick.tied.length) {
+          const names = pick.tied.slice(0, 40);
+          return { result: `${pick.tied.length} tools match "${args.query}" equally: ${names.join(', ')}${pick.tied.length > names.length ? ', …' : ''}. Nothing was loaded: call tool_search again with the exact names you need (up to ${CacheKeep.MAX_LOAD}).`, meta: `${pick.tied.length} match` };
+        }
+        const matches = pick.tools;
+        if (!matches.length && catalog.some((t) => loaded.has(t.function.name) && CacheKeep.pickTools([t], args.query).tools.length)) {
+          return { result: `The tools matching "${args.query}" are already loaded: call them directly.`, meta: 'already loaded' };
+        }
         if (!matches.length) return { result: `No matching tools. tool_search only searches this app's own tool catalog (deferred tools: ${catalog.map((t) => t.function.name).join(', ')}). If you were looking for software, a program to install, documentation or facts, use web_search for research or install_app to install a Windows app — then continue the task.`, meta: 'none found' };
         c.activeTools = [...new Set([...(c.activeTools || []), ...matches.map((t) => t.function.name)])];
         const out = matches.map((t) => `${t.function.name}: ${t.function.description}\nParameters: ${JSON.stringify(t.function.parameters.properties)}`).join('\n\n');
@@ -2158,7 +2167,10 @@ function escalateFrom(c, item) {
   }
   const idx = c.display.indexOf(item);
   if (idx < 0) return;
-  if (typeof item.hAt === 'number' && item.hAt >= 1) c.history = c.history.slice(0, item.hAt);
+  if (typeof item.hAt === 'number' && item.hAt >= 1) {
+    c.history = c.history.slice(0, item.hAt);
+    c.pruneMark = 0; // a shorter history: the last prune's size no longer applies
+  }
   // A conversation saved before this feature has no position info; re-run from the end then.
   if (c.history[c.history.length - 1]?.role === 'assistant') {
     c.history.push({ role: 'user', content: '<system-reminder>\nRe-run the last step with a stronger approach; the previous attempt was escalated by the user.\n</system-reminder>' });
@@ -2288,25 +2300,30 @@ async function predictGpuFit(c, baseUrl, model, isThisPc, { auto: mayAuto = fals
 const kvChecked = new Set();
 const fitInfoSeen = new Map(); // `${baseUrl}|${model}` -> the fit facts the GPU checks fetched
 async function checkKvType(c, baseUrl, model, ps) {
-  if (kvChecked.has(baseUrl)) return;
+  const key = CacheKeep.serverKey(baseUrl); // one key per server, however its URL was written
+  if (kvChecked.has(key)) return;
   const entry = (ps || []).find((x) => Nodes.sameModel(x.name, model));
   if (!entry?.size || !entry?.file_size || !entry?.context_length) return;
   const facts = fitInfoSeen.get(`${baseUrl}|${model}`) || (await api.ollamaFitInfo(baseUrl, model).catch(() => null));
   const perToken = Nodes.kvBytesPerToken(facts?.modelInfo);
   if (!perToken) return; // sliding-window models cache too little to tell
-  kvChecked.add(baseUrl);
+  // Only when the cache is a big part of the size: otherwise buffers QWS can only guess decide it.
+  if (entry.context_length * perToken < CacheKeep.KV_MIN_BYTES) return;
+  kvChecked.add(key);
   const type = CacheKeep.kvType(CacheKeep.kvFactor({ size: entry.size, fileSize: entry.file_size, ctx: entry.context_length, kvPerToken: perToken }));
   if (!type) return;
-  if (state.settings.nodeKvType?.[baseUrl] !== type) state.settings = await api.setSettings({ nodeKvType: { ...(state.settings.nodeKvType || {}), [baseUrl]: type } });
-  const node = Nodes.normalizeNodes(state.settings).find((n) => n.baseUrl.replace(/\/+$/, '') === String(baseUrl).replace(/\/+$/, '').replace(/\/v1$/, ''));
-  const text = CacheKeep.kvAdvice(type, node?.name || 'that PC');
-  if (!text || state.settings.kvAdviceDismissed?.[baseUrl]) return;
+  if (state.settings.nodeKvType?.[key] !== type) state.settings = await api.setSettings({ nodeKvType: { ...(state.settings.nodeKvType || {}), [key]: type } });
+  const node = Nodes.normalizeNodes(state.settings).find((n) => CacheKeep.serverKey(n.baseUrl) === key);
+  // This PC's system is known; a remote node's is not (the advice then says Windows).
+  const platform = node?.id === Nodes.THIS_PC_ID ? state.appInfo?.platform : undefined;
+  const text = CacheKeep.kvAdvice(type, node?.name || 'that PC', platform);
+  if (!text || state.settings.kvAdviceDismissed?.[key]) return;
   DebugLog.add(c, 'notice', { text });
   toast({
-    key: `kv-${baseUrl}`, icon: 'info', timeout: 30000, text,
+    key: `kv-${key}`, icon: 'info', timeout: 30000, text,
     actions: [
-      { label: 'Copy command', primary: true, onClick: () => { navigator.clipboard.writeText(CacheKeep.KV_COMMAND); flash('Copied — run it on that PC, then restart Ollama'); } },
-      { label: 'Don\'t show again', onClick: async () => { state.settings = await api.setSettings({ kvAdviceDismissed: { ...(state.settings.kvAdviceDismissed || {}), [baseUrl]: true } }); } }
+      { label: 'Copy command', primary: true, onClick: () => { navigator.clipboard.writeText(CacheKeep.kvCommand(platform)); flash('Copied — run it on that PC, then restart Ollama'); } },
+      { label: 'Don\'t show again', onClick: async () => { state.settings = await api.setSettings({ kvAdviceDismissed: { ...(state.settings.kvAdviceDismissed || {}), [key]: true } }); } }
     ]
   });
 }
@@ -2443,14 +2460,25 @@ async function fitToGpu(ctx, model, { c = null, auto = false, from = 0 } = {}) {
 // A task keeps a remote node's model loaded at least CacheKeep.TASK_KEEP (a long build or an
 // approval wait would otherwise unload it and cost a reload plus a full re-read), then gives
 // each node its own keep-alive back.
+// Tasks running now per node and model: the last one to finish restores the keep-alive, so a
+// finishing task does not cut short another task's longer one on the same node.
+const keptAliveUsers = new Map();
 async function runConversation(c) {
   c.keptAlive = new Map();
   try {
     return await runConversationInner(c);
   } finally {
-    const kept = [...c.keptAlive.values()];
+    const kept = [...c.keptAlive.entries()];
     c.keptAlive = null;
-    for (const k of kept) api.ollamaKeepAlive(k.baseUrl, k.model, k.keepAlive, Number(state.settings.contextLength) || 0).catch(() => {});
+    for (const [key, k] of kept) {
+      const left = (keptAliveUsers.get(key) || 1) - 1;
+      if (left > 0) {
+        keptAliveUsers.set(key, left);
+        continue;
+      }
+      keptAliveUsers.delete(key);
+      api.ollamaKeepAlive(k.baseUrl, k.model, k.keepAlive, Number(state.settings.contextLength) || 0).catch(() => {});
+    }
   }
 }
 
@@ -2592,7 +2620,7 @@ async function runConversationInner(c) {
     // First the cheap pass (toolbudget.js, from Hermes Agent): old tool results outside the recent
     // part become one line each, with no model call; only if that is not enough, summarize.
     let cuNow = cu;
-    if (ToolBudget.shouldPrune(cu.tokens, cu.window, c.pruneMark) && pruneOldResults(c, cu.window)) cuNow = contextUse(c);
+    if (ToolBudget.shouldPrune(cu.tokens, cu.window, c.pruneMark, COMPACT_AT) && pruneOldResults(c, cu.window)) cuNow = contextUse(c);
     if (cuNow.tokens >= cuNow.window * COMPACT_AT && cuNow.tokens - fixed > cuNow.window * 0.15) await compactConversation(c);
     if (c.stopRequested) return false;
     // An Escalate click (on a message, or from the big-plan card) runs the next step on the planner.
@@ -2851,7 +2879,9 @@ async function runConversationInner(c) {
       if (override?.keepAlive && (override.provider || 'ollama') === 'ollama' && c.keptAlive) {
         const longer = CacheKeep.taskKeepAlive(override.keepAlive);
         if (longer !== override.keepAlive) {
-          c.keptAlive.set(`${override.baseUrl}|${stepModel}`, { baseUrl: override.baseUrl, model: stepModel, keepAlive: override.keepAlive });
+          const kaKey = `${CacheKeep.serverKey(override.baseUrl)}|${stepModel}`;
+          if (!c.keptAlive.has(kaKey)) keptAliveUsers.set(kaKey, (keptAliveUsers.get(kaKey) || 0) + 1);
+          c.keptAlive.set(kaKey, { baseUrl: override.baseUrl, model: stepModel, keepAlive: override.keepAlive });
           override = { ...override, keepAlive: longer };
         }
       }
@@ -3711,12 +3741,12 @@ function pruneOldResults(c, size) {
   if (!p.pruned) {
     // Nothing left to shorten: wait for growth before looking again (a search that finds
     // nothing changes nothing, but it should not run every step either).
-    c.pruneMark = contextUse(c).tokens;
+    c.pruneMark = { tokens: contextUse(c).tokens, window: size };
     return false;
   }
   c.history.splice(0, c.history.length, ...p.messages);
   c.usageAt = Number.MAX_SAFE_INTEGER; // the last measured prompt size is stale now: estimate until the next request
-  c.pruneMark = contextUse(c).tokens;
+  c.pruneMark = { tokens: contextUse(c).tokens, window: size };
   DebugLog.add(c, 'notice', { text: `shortened ${p.pruned} old tool result${p.pruned === 1 ? '' : 's'} (~${Math.round(p.saved / 3.5).toLocaleString()} tokens) instead of summarizing` });
   saveConv(c);
   return true;

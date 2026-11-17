@@ -394,7 +394,7 @@ function renderNodesSettings() {
         + (oa && h?.up ? ` · ${(h.models || []).join(', ')}${h.maxContext ? ` · context ${Math.round(h.maxContext / 1024)}K` : ''}` : '')
         + (oa && Strata.parallelNote(h) ? ` · ${Strata.parallelNote(h)}` : '')
         + (n.highPerf ? ' · high performance' : '') + draftText
-        + (!lm && !oa && state.settings.nodeKvType?.[n.baseUrl] ? ` · KV cache ${state.settings.nodeKvType[n.baseUrl]}` : '')
+        + (!lm && !oa && state.settings.nodeKvType?.[CacheKeep.serverKey(isThis ? state.settings.baseUrl : n.baseUrl)] ? ` · KV cache ${state.settings.nodeKvType[CacheKeep.serverKey(isThis ? state.settings.baseUrl : n.baseUrl)]}` : '')
     });
     // Ollama older than 0.30 lacks llama.cpp's expert placement and the prompt-reuse figure (v0.64).
     const verAdvice = !lm && !oa && h?.up ? CacheKeep.versionAdvice(h.version, n.name) : '';
@@ -525,7 +525,10 @@ async function runModelCheck(n, url, model, sub) {
   sub.classList.remove('bad');
   sub.textContent = `Checking ${model} (loads the model; can take a minute)…`;
   const isThis = n.id === Nodes.THIS_PC_ID;
-  const v = await api.modelProbe(url, model, { numCtx: Number(state.settings.contextLength) || 32768, keepAlive: isThis ? state.settings.keepAlive : n.keepAlive });
+  // The agent's own model keeps the node's keep-alive (no reload, no change); any other model
+  // checked is held only 5 minutes, as before.
+  const keep = isThis ? (Nodes.sameModel(model, state.settings.model) ? state.settings.keepAlive : '5m') : n.keepAlive;
+  const v = await api.modelProbe(url, model, { numCtx: Number(state.settings.contextLength) || 32768, keepAlive: keep });
   const line = v.error ? `${model}: check failed — ${v.error}` : `${model}: ${v.ok ? 'tool calls OK' : 'NOT reliable for agent work'} · ${v.prompt.detail} ${v.tool.detail} (${v.seconds}s)`;
   sub.textContent = line;
   sub.classList.toggle('bad', !v.ok);

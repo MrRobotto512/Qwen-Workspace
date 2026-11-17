@@ -51,11 +51,17 @@ const KEEP_RESULT = 600; // results this short are kept as they are
 const PRUNE_TAIL = 0.15;
 const PRUNE_STEP = 0.15;
 // Whether to prune now: past PRUNE_AT, and (after a first prune) grown PRUNE_STEP of the window
-// since the size the last prune left. `mark` is that size in tokens, or 0 before any prune.
-function shouldPrune(tokens, window, mark = 0) {
+// since the size the last prune left. `mark` is { tokens, window } from that prune (or a number
+// of tokens, or 0 before any prune). A mark from another window, or above the current size
+// (history rewound), no longer applies. At `compactAt` a prune is always tried first: compaction
+// rewrites the whole history anyway, and a prune is free.
+function shouldPrune(tokens, window, mark = 0, compactAt = 0.85) {
   const w = Number(window) || 0;
   if (!w || tokens < w * PRUNE_AT) return false;
-  return !(mark > 0) || tokens >= mark + w * PRUNE_STEP;
+  if (tokens >= w * compactAt) return true;
+  const m = typeof mark === 'object' && mark ? (Number(mark.window) === w ? Number(mark.tokens) : 0) : Number(mark) || 0;
+  if (!(m > 0) || tokens < m) return true;
+  return tokens >= m + w * PRUNE_STEP;
 }
 
 function argsOf(call) {
