@@ -394,7 +394,11 @@ function renderNodesSettings() {
         + (oa && h?.up ? ` · ${(h.models || []).join(', ')}${h.maxContext ? ` · context ${Math.round(h.maxContext / 1024)}K` : ''}` : '')
         + (oa && Strata.parallelNote(h) ? ` · ${Strata.parallelNote(h)}` : '')
         + (n.highPerf ? ' · high performance' : '') + draftText
+        + (!lm && !oa && state.settings.nodeKvType?.[CacheKeep.serverKey(isThis ? state.settings.baseUrl : n.baseUrl)] ? ` · KV cache ${state.settings.nodeKvType[CacheKeep.serverKey(isThis ? state.settings.baseUrl : n.baseUrl)]}` : '')
     });
+    // Ollama older than 0.30 lacks llama.cpp's expert placement and the prompt-reuse figure (v0.64).
+    const verAdvice = !lm && !oa && h?.up ? CacheKeep.versionAdvice(h.version, n.name) : '';
+    const verLine = verAdvice ? el('div', { class: 'mcp-sub bad', text: verAdvice }) : null;
     // GPU memory (v0.60): QWS cannot see a node's cards, only what Ollama held there; a size set
     // here wins, and a learned one can be forgotten after the node's hardware changed.
     const root = (u) => String(u || '').trim().replace(/[/]+$/, '').replace(/[/]v1$/, '');
@@ -446,7 +450,7 @@ function renderNodesSettings() {
     });
     return el('div', { class: 'mcp-item' },
       el('span', { class: `dot ${status}` }),
-      el('div', { class: 'mcp-main' }, el('div', { class: 'mcp-name', text: n.name }), sub, oa ? keyBox : vramBox),
+      el('div', { class: 'mcp-main' }, el('div', { class: 'mcp-name', text: n.name }), sub, verLine, oa ? keyBox : vramBox),
       el('button', {
         class: `icon-btn hp-btn${n.highPerf ? ' on' : ''}`,
         title: 'High-performance node: when Qwen gets stuck, the next step runs here on the strongest model this node has installed — before any money goes to the cloud planner.',
@@ -520,7 +524,11 @@ async function checkNodeModels(n, sub, anchor) {
 async function runModelCheck(n, url, model, sub) {
   sub.classList.remove('bad');
   sub.textContent = `Checking ${model} (loads the model; can take a minute)…`;
-  const v = await api.modelProbe(url, model);
+  const isThis = n.id === Nodes.THIS_PC_ID;
+  // The agent's own model keeps the node's keep-alive (no reload, no change); any other model
+  // checked is held only 5 minutes, as before.
+  const keep = isThis ? (Nodes.sameModel(model, state.settings.model) ? state.settings.keepAlive : '5m') : n.keepAlive;
+  const v = await api.modelProbe(url, model, { numCtx: Number(state.settings.contextLength) || 32768, keepAlive: keep });
   const line = v.error ? `${model}: check failed — ${v.error}` : `${model}: ${v.ok ? 'tool calls OK' : 'NOT reliable for agent work'} · ${v.prompt.detail} ${v.tool.detail} (${v.seconds}s)`;
   sub.textContent = line;
   sub.classList.toggle('bad', !v.ok);

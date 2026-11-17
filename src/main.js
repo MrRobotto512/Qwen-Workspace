@@ -83,6 +83,8 @@ const DEFAULT_SETTINGS = {
   mcpServers: [], // [{ name, command, args, env, url, type, cwd, enabled }]
   mcpProjectOff: {}, // project folder -> MCP server ids switched off there (tools hidden in that project)
   modelChecks: {},
+  nodeKvType: {}, // Ollama base URL -> 'f16' | 'q8_0' | 'q4_0', read from a loaded model's size (v0.64)
+  kvAdviceDismissed: {}, // Ollama base URL -> true: the half-size KV cache advice is not shown again
   nodeVram: {}, // Ollama base URL -> GPU bytes it held when a model spilled (remote nodes' VRAM) // `${nodeId}|${model}` -> { ok, textOnly, at } from the per-model tool-call check
   lastConversations: {}, // workspace root -> id of the conversation open when the app closed
   lastWorkspace: null,
@@ -1310,6 +1312,10 @@ async function chatStreamInner(s, payload, controller, send, fail) {
       if (json.x_groq?.usage && !json.usage) json.usage = json.x_groq.usage;
       if (json.usage && (json.usage.prompt_tokens || json.usage.completion_tokens)) {
         usage = { ...(usage || {}), promptTokens: json.usage.prompt_tokens || 0, completionTokens: json.usage.completion_tokens || 0 };
+        // The cached part of the prompt (OpenAI's prompt_tokens_details; llama.cpp, vLLM and
+        // Strata report it too), for the debug report's "reused" figure.
+        const cached = json.usage.prompt_tokens_details?.cached_tokens;
+        if (Number.isFinite(cached)) usage.cachedTokens = cached;
       }
       // LM Studio's stats: generation speed, and how many draft tokens speculative decoding kept.
       if (json.stats && typeof json.stats === 'object') {
@@ -1543,6 +1549,8 @@ async function streamOllama(s, payload, signal, send) {
       finishReason = j.done_reason || 'stop';
       promptTokens = j.prompt_eval_count || 0;
       stats = Progress.ollamaStats(j);
+      // How much of the prompt came from Ollama's cache (0.34+); the rest was read again.
+      if (Number.isFinite(j.prompt_eval_cached_count)) stats = { ...stats, cachedTokens: j.prompt_eval_cached_count };
     }
   };
 
@@ -1951,14 +1959,36 @@ ipcMain.handle('nodes:diagnose', async (_e, baseUrl) => {
 
 // Per-model tool-call check against an Ollama node (see probeVerdict in renderer/nodes.js).
 const NodeRules = require('./renderer/nodes.js');
-ipcMain.handle('model:probe', async (_e, baseUrl, model) => {
+// Set how long an Ollama node keeps a model loaded, without generating anything (an empty
+// generate request only loads or keeps the model). Used at the end of a task to give a node its
+// own keep-alive back after the task kept the model loaded longer.
+// It carries the window the task used: a request with another num_ctx would reload the model.
+ipcMain.handle('ollama:keepAlive', async (_e, baseUrl, model, keepAlive, numCtx) => {
+  const root = String(baseUrl || '').trim().replace(/\/+$/, '').replace(/\/v1$/, '');
+  if (!/^https?:\/\//.test(root) || !model) return false;
+  try {
+    // Only a model that is still loaded: an empty generate would load an evicted one again (and
+    // could push out the model in use). If the check fails, skip rather than risk a load.
+    const ps = await fetch(`${root}/api/ps`, { signal: AbortSignal.timeout(5000) }).then((x) => (x.ok ? x.json() : null)).catch(() => null);
+    const norm = (x) => (String(x).includes(':') ? String(x) : `${x}:latest`);
+    if (!(ps?.models || []).some((m) => norm(m.name) === norm(model) || norm(m.model) === norm(model))) return false;
+    const r = await fetch(`${root}/api/generate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, keep_alive: parseKeepAlive(keepAlive), ...(Number(numCtx) > 0 ? { options: { num_ctx: Number(numCtx) } } : {}) }), signal: AbortSignal.timeout(15_000) });
+    return r.ok;
+  } catch {
+    return false;
+  }
+});
+
+ipcMain.handle('model:probe', async (_e, baseUrl, model, opts = {}) => {
   const root = String(baseUrl || '').trim().replace(/\/+$/, '').replace(/\/v1$/, '');
   if (!/^https?:\/\//.test(root) || !model) return { ok: false, error: 'Not an http(s) node URL or no model.' };
   const chat = async (messages, tools) => {
     const r = await fetch(`${root}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, messages, tools, stream: false, keep_alive: '5m', options: { num_ctx: 4096, temperature: 0 } }),
+      // The node's own window and keep-alive (v0.64): a different num_ctx makes Ollama reload the
+      // model and drop its prompt cache, and the next agent step reloads it again at the real size.
+      body: JSON.stringify({ model, messages, tools, stream: false, keep_alive: parseKeepAlive(opts.keepAlive ?? '5m'), options: { num_ctx: Number(opts.numCtx) > 0 ? Number(opts.numCtx) : 4096, temperature: 0 } }),
       signal: AbortSignal.timeout(240_000)
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 160)}`);

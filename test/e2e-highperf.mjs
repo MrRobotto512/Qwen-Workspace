@@ -177,7 +177,7 @@ try {
   if (plannerRequests !== 0) fail(`the planner was called ${plannerRequests} time(s) — the whole point is that it should not be`);
   const hpReq = JSON.parse(hpBodies[0] || '{}');
   if (hpReq.model !== 'qwen3-coder:30b') fail(`the escalated step asked the node for "${hpReq.model}", not its strongest model`);
-  if (hpReq.keep_alive !== '5m') fail(`the escalated step should carry the node's 5m default keep_alive, saw ${JSON.stringify(hpReq.keep_alive)}`);
+  if (hpReq.keep_alive !== '30m') fail(`the escalated step should keep the node's model 30m during the task (its 5m comes back after), saw ${JSON.stringify(hpReq.keep_alive)}`);
   // The free tier must not touch the cost meter.
   const spend = await win.evaluate(() => state.conv?.spend || {});
   if (Object.keys(spend).length) fail(`the high-perf step recorded cloud spend: ${JSON.stringify(spend)}`);

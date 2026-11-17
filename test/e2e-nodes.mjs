@@ -189,7 +189,9 @@ try {
   // The Shop PC was added with the keep-alive field left empty, so every request it got must
   // carry the remote default — the node unloads the model after 5 idle minutes. This PC keeps
   // following the global setting (-1 = pinned).
-  if (!keeps.b.length || !keeps.b.every((k) => k === '5m')) fail(`remote node B should get keep_alive "5m" on every chat, saw ${JSON.stringify(keeps.b)}`);
+  // v0.64: during a task a remote node keeps its model at least 30m (a long build must not unload
+  // it); its own 5m comes back afterwards through an empty /api/generate (not a chat).
+  if (!keeps.b.length || !keeps.b.every((k) => k === '30m')) fail(`remote node B should get keep_alive "30m" on every chat of a task, saw ${JSON.stringify(keeps.b)}`);
   if (!keeps.a.every((k) => k === -1)) fail(`This PC should keep the global keep_alive -1, saw ${JSON.stringify(keeps.a)}`);
 } catch (e) {
   fail(String(e).split('\n')[0]);

@@ -21,7 +21,10 @@ async function loadProjectMemory() {
 function systemPrompt(c) {
   const agent = state.settings.agentMode && !!state.ws;
   const web = agent && state.settings.webResearch !== false;
-  const key = `${agent}|${web}|${mcpToolSpecs().map((t) => t.function.name).join(',')}|${c.workspace}|${c.memory?.text || ''}|${state.userMemory || ''}|${(c.skills || []).map((sk) => `${sk.name}:${sk.description}`).join(',')}|${!!c.isSubagent}|${subagentsAvailable(c)}|${!!(state.settings.consultFreely && heavyOverride())}|${state.settings.stopRule !== false}`;
+  // Personal memory as it was when the task started (c.userMemorySnap), so a remember call
+  // mid-task does not change the prompt start.
+  const userMemory = c.userMemorySnap ?? state.userMemory;
+  const key = `${agent}|${web}|${mcpToolSpecs().map((t) => t.function.name).join(',')}|${c.workspace}|${c.memory?.text || ''}|${userMemory || ''}|${(c.skills || []).map((sk) => `${sk.name}:${sk.description}`).join(',')}|${!!c.isSubagent}|${subagentsAvailable(c)}|${!!(state.settings.consultFreely && heavyOverride())}|${state.settings.stopRule !== false}`;
   if (c.sysPrompt?.key === key) return c.sysPrompt.text;
   const win = state.ws?.platform === 'win32';
   const parts = [
@@ -31,7 +34,7 @@ function systemPrompt(c) {
     state.ws ? `Project folder: ${state.ws.root}` : 'No project folder is open yet.',
     `Operating system: ${win ? 'Windows (commands run in cmd.exe; use Windows syntax such as "dir", "type", "&&")' : state.ws?.platform === 'darwin' ? 'macOS (commands run in /bin/sh; use POSIX syntax; install software with Homebrew via install_app)' : state.ws?.platform || 'unknown'}`,
     `Conversation started: ${new Date(c.createdAt).toDateString()}`,
-    state.userMemory?.trim() ? `<user_memory>\nWhat the user told you about themselves and their setup (personal memory, shared by every project):\n${state.userMemory.trim()}\n</user_memory>` : null,
+    userMemory?.trim() ? `<user_memory>\nWhat the user told you about themselves and their setup (personal memory, shared by every project):\n${userMemory.trim()}\n</user_memory>` : null,
     c.memory ? `<project_memory file="${c.memory.name}">\n${c.memory.text}\n</project_memory>` : null,
     agent && c.skills?.length
       ? `<skills>\nTask-specific instructions. When a task matches one, call load_skill with its name before starting.\n${c.skills.map((sk) => `- ${sk.name}: ${sk.description}`).join('\n')}\n</skills>`
@@ -802,9 +805,19 @@ async function executeTool(c, call, row) {
         return { result: `<planner_advice model="${res.model || override.model}">\n${truncate(answer)}\n</planner_advice>\nUse this advice to continue the work yourself.`, meta: res.model || override.model };
       }
       case 'tool_search': {
-        const words = String(args.query || '').toLowerCase().split(/[^a-z0-9_]+/).filter((w) => w.length > 2);
+        // Loads only the best few matches (v0.64): each load changes the tool list at the top
+        // of the prompt, which the model server then reads again from the start.
         const catalog = deferredCatalog();
-        const matches = catalog.filter((t) => !words.length || words.some((w) => `${t.function.name} ${t.function.description}`.toLowerCase().includes(w))).slice(0, 12);
+        const loaded = new Set(c.activeTools || []);
+        const pick = CacheKeep.pickTools(catalog, args.query, { exclude: loaded });
+        if (pick.tied.length) {
+          const names = pick.tied.slice(0, 40);
+          return { result: `${pick.tied.length} tools match "${args.query}" equally: ${names.join(', ')}${pick.tied.length > names.length ? ', …' : ''}. Nothing was loaded: call tool_search again with the exact names you need (up to ${CacheKeep.MAX_LOAD}).`, meta: `${pick.tied.length} match` };
+        }
+        const matches = pick.tools;
+        if (!matches.length && catalog.some((t) => loaded.has(t.function.name) && CacheKeep.pickTools([t], args.query).tools.length)) {
+          return { result: `The tools matching "${args.query}" are already loaded: call them directly.`, meta: 'already loaded' };
+        }
         if (!matches.length) return { result: `No matching tools. tool_search only searches this app's own tool catalog (deferred tools: ${catalog.map((t) => t.function.name).join(', ')}). If you were looking for software, a program to install, documentation or facts, use web_search for research or install_app to install a Windows app — then continue the task.`, meta: 'none found' };
         c.activeTools = [...new Set([...(c.activeTools || []), ...matches.map((t) => t.function.name)])];
         const out = matches.map((t) => `${t.function.name}: ${t.function.description}\nParameters: ${JSON.stringify(t.function.parameters.properties)}`).join('\n\n');
@@ -833,7 +846,9 @@ async function executeTool(c, call, row) {
         const ok = await row.requestApproval({ kind: 'command', question: 'Save this to your personal memory (seen in every project)?', command: fact, dangerous: false });
         if (!ok) return { result: 'The user declined to save that. Do not ask again for the same fact.', rejected: true };
         state.userMemory = await api.userMemoryAppend(fact);
-        return { result: 'Saved to the user\'s personal memory.', meta: 'saved' };
+        // The system prompt keeps the memory it started the task with (a changed system prompt
+        // is a full re-read for the model server); the fact is in it from the next message on.
+        return { result: 'Saved to the user\'s personal memory. It is part of your instructions from the user\'s next message on; you already know it now.', meta: 'saved' };
       }
       case 'ask_user': {
         const qs = (Array.isArray(args.questions) ? args.questions : [args])
@@ -2152,7 +2167,10 @@ function escalateFrom(c, item) {
   }
   const idx = c.display.indexOf(item);
   if (idx < 0) return;
-  if (typeof item.hAt === 'number' && item.hAt >= 1) c.history = c.history.slice(0, item.hAt);
+  if (typeof item.hAt === 'number' && item.hAt >= 1) {
+    c.history = c.history.slice(0, item.hAt);
+    c.pruneMark = 0; // a shorter history: the last prune's size no longer applies
+  }
   // A conversation saved before this feature has no position info; re-run from the end then.
   if (c.history[c.history.length - 1]?.role === 'assistant') {
     c.history.push({ role: 'user', content: '<system-reminder>\nRe-run the last step with a stronger approach; the previous attempt was escalated by the user.\n</system-reminder>' });
@@ -2235,6 +2253,7 @@ async function predictGpuFit(c, baseUrl, model, isThisPc, { auto: mayAuto = fals
   }
   if (!vram) return;
   const facts = await api.ollamaFitInfo(baseUrl, model).catch(() => null);
+  if (facts?.modelInfo) fitInfoSeen.set(`${baseUrl}|${model}`, facts);
   // Known before the fit verdict, so a spill seen later is judged as MoE or dense correctly.
   const moe = Nodes.isMoE(facts?.modelInfo);
   if (moe) moeModels.add(model);
@@ -2274,11 +2293,51 @@ async function predictGpuFit(c, baseUrl, model, isThisPc, { auto: mayAuto = fals
     : [{ label: 'Open Settings', onClick: openSettings }];
   toast({ key: 'gpu-fit', icon: 'alert', timeout: 30000, text, actions });
 }
+// Which KV cache type a node's Ollama runs with (v0.64): Ollama does not say, but a loaded
+// model's size shows it (CacheKeep.kvFactor). A full-size (f16) cache gets one notice per node
+// per session with the command that halves it — Strata keeps its cache at 8 bits too. The
+// reading is kept per node for the fit prediction.
+const kvChecked = new Set();
+const fitInfoSeen = new Map(); // `${baseUrl}|${model}` -> the fit facts the GPU checks fetched
+async function checkKvType(c, baseUrl, model, ps) {
+  const key = CacheKeep.serverKey(baseUrl); // one key per server, however its URL was written
+  if (kvChecked.has(key)) return;
+  const entry = (ps || []).find((x) => Nodes.sameModel(x.name, model));
+  if (!entry?.size || !entry?.file_size || !entry?.context_length) return;
+  const facts = fitInfoSeen.get(`${baseUrl}|${model}`) || (await api.ollamaFitInfo(baseUrl, model).catch(() => null));
+  const perToken = Nodes.kvBytesPerToken(facts?.modelInfo);
+  if (!perToken) return; // sliding-window models cache too little to tell
+  // Only when the cache is a big part of the size: otherwise buffers QWS can only guess decide it.
+  if (entry.context_length * perToken < CacheKeep.KV_MIN_BYTES) return;
+  kvChecked.add(key);
+  const type = CacheKeep.kvType(CacheKeep.kvFactor({ size: entry.size, fileSize: entry.file_size, ctx: entry.context_length, kvPerToken: perToken }));
+  if (!type) return;
+  if (state.settings.nodeKvType?.[key] !== type) state.settings = await api.setSettings({ nodeKvType: { ...(state.settings.nodeKvType || {}), [key]: type } });
+  const node = Nodes.normalizeNodes(state.settings).find((n) => CacheKeep.serverKey(n.baseUrl) === key);
+  // This PC's system is known; a remote node's is not (the advice then says Windows).
+  const platform = node?.id === Nodes.THIS_PC_ID ? state.appInfo?.platform : undefined;
+  const text = CacheKeep.kvAdvice(type, node?.name || 'that PC', platform);
+  if (!text || state.settings.kvAdviceDismissed?.[key]) return;
+  DebugLog.add(c, 'notice', { text });
+  toast({
+    key: `kv-${key}`, icon: 'info', timeout: 30000, text,
+    actions: [
+      { label: 'Copy command', primary: true, onClick: () => { navigator.clipboard.writeText(CacheKeep.kvCommand(platform)); flash('Copied — run it on that PC, then restart Ollama'); } },
+      { label: 'Don\'t show again', onClick: async () => { state.settings = await api.setSettings({ kvAdviceDismissed: { ...(state.settings.kvAdviceDismissed || {}), [key]: true } }); } }
+    ]
+  });
+}
+
 async function checkGpuSpill(c, baseUrl, model) {
   const key = `${baseUrl}|${model}`;
   if (spillChecked.has(key)) return;
   spillChecked.add(key);
   const ps = await api.ollamaPs(baseUrl).catch(() => []);
+  await spillFromPs(c, baseUrl, model, ps);
+  // After the spill check, so it can reuse the model facts that check fetched.
+  await checkKvType(c, baseUrl, model, ps).catch(() => {});
+}
+async function spillFromPs(c, baseUrl, model, ps) {
   const sp = Nodes.spillInfo(ps, model);
   const held = ps.reduce((n, x) => n + (Number(x.size_vram) || 0), 0);
   if (!sp) {
@@ -2307,7 +2366,10 @@ async function checkGpuSpill(c, baseUrl, model) {
   if (!moeChecked.has(model)) {
     const facts = await api.ollamaFitInfo(baseUrl, model).catch(() => null);
     if (Nodes.isMoE(facts?.modelInfo)) moeModels.add(model);
-    if (facts?.modelInfo) moeChecked.add(model);
+    if (facts?.modelInfo) {
+      moeChecked.add(model);
+      fitInfoSeen.set(`${baseUrl}|${model}`, facts);
+    }
   }
   // Only the everyday model's window is lowered on its own (not for an escalated or ⚡ step).
   const everyday = Nodes.sameModel(model, state.settings.model) && state.settings.fitAutoSkip !== model;
@@ -2395,7 +2457,36 @@ async function fitToGpu(ctx, model, { c = null, auto = false, from = 0 } = {}) {
   flash(`Context window set to ${ctx} — ${model} reloads to fit the GPU on its next step`);
 }
 
+// A task keeps a remote node's model loaded at least CacheKeep.TASK_KEEP (a long build or an
+// approval wait would otherwise unload it and cost a reload plus a full re-read), then gives
+// each node its own keep-alive back.
+// Tasks running now per node and model: the last one to finish restores the keep-alive, so a
+// finishing task does not cut short another task's longer one on the same node.
+const keptAliveUsers = new Map();
 async function runConversation(c) {
+  c.keptAlive = new Map();
+  try {
+    return await runConversationInner(c);
+  } finally {
+    const kept = [...c.keptAlive.entries()];
+    c.keptAlive = null;
+    for (const [key, k] of kept) {
+      const left = (keptAliveUsers.get(key) || 1) - 1;
+      if (left > 0) {
+        keptAliveUsers.set(key, left);
+        continue;
+      }
+      keptAliveUsers.delete(key);
+      api.ollamaKeepAlive(k.baseUrl, k.model, k.keepAlive, Number(state.settings.contextLength) || 0).catch(() => {});
+    }
+  }
+}
+
+async function runConversationInner(c) {
+  // What the prompt start is built from, fixed for this task (v0.64): the model server re-reads
+  // the whole prompt when its start changes. Refreshed when the user sends the next message.
+  c.toolFreeze = { sem: !!state.semReady };
+  c.userMemorySnap = state.userMemory || '';
   const useTools = state.settings.agentMode && !!state.ws;
   const maxSteps = Math.max(10, parseInt(state.settings.maxSteps, 10) || DEFAULT_MAX_STEPS);
   const seen = new Map(); // call signature -> first step it ran
@@ -2529,7 +2620,7 @@ async function runConversation(c) {
     // First the cheap pass (toolbudget.js, from Hermes Agent): old tool results outside the recent
     // part become one line each, with no model call; only if that is not enough, summarize.
     let cuNow = cu;
-    if (cu.tokens >= cu.window * ToolBudget.PRUNE_AT && pruneOldResults(c, cu.window)) cuNow = contextUse(c);
+    if (ToolBudget.shouldPrune(cu.tokens, cu.window, c.pruneMark, COMPACT_AT) && pruneOldResults(c, cu.window)) cuNow = contextUse(c);
     if (cuNow.tokens >= cuNow.window * COMPACT_AT && cuNow.tokens - fixed > cuNow.window * 0.15) await compactConversation(c);
     if (c.stopRequested) return false;
     // An Escalate click (on a message, or from the big-plan card) runs the next step on the planner.
@@ -2750,7 +2841,7 @@ async function runConversation(c) {
         // The window just shrank: a long conversation must fit it before this request goes out
         // (Ollama would cut the prompt silently), so prune, then summarize if still too big.
         const cuFit = contextUse(c);
-        if (cuFit.tokens >= cuFit.window * ToolBudget.PRUNE_AT) pruneOldResults(c, cuFit.window);
+        if (cuFit.tokens >= cuFit.window * ToolBudget.PRUNE_AT) pruneOldResults(c, cuFit.window); // the window just shrank: prune now
         const cuNow2 = contextUse(c);
         if (cuNow2.tokens >= cuNow2.window * COMPACT_AT) await compactConversation(c);
         reqMessages = requestMessages(c);
@@ -2784,6 +2875,21 @@ async function runConversation(c) {
     });
     let res;
     try {
+      // A remote Ollama node keeps its model loaded through the task (see runConversation).
+      if (override?.keepAlive && (override.provider || 'ollama') === 'ollama' && c.keptAlive) {
+        const longer = CacheKeep.taskKeepAlive(override.keepAlive);
+        if (longer !== override.keepAlive) {
+          const kaKey = `${CacheKeep.serverKey(override.baseUrl)}|${stepModel}`;
+          if (!c.keptAlive.has(kaKey)) keptAliveUsers.set(kaKey, (keptAliveUsers.get(kaKey) || 0) + 1);
+          c.keptAlive.set(kaKey, { baseUrl: override.baseUrl, model: stepModel, keepAlive: override.keepAlive });
+          override = { ...override, keepAlive: longer };
+        }
+      }
+      // The fixed start of the request (system prompt and tools): when it changes between
+      // steps, the model server reads the whole prompt again — the debug report says so.
+      const startPrint = CacheKeep.fingerprint(`${reqMessages[0]?.content || ''}|${useTools ? JSON.stringify(toolsFor(c).map((t) => t.function.name)) : ''}`);
+      if (c.lastStartPrint && c.lastStartPrint !== startPrint) DebugLog.add(c, 'notice', { text: 'the prompt start (instructions or tool list) changed since the last step: the model server reads the whole prompt again' });
+      c.lastStartPrint = startPrint;
       res = await api.chatStream(id, {
         messages: reqMessages,
         tools: useTools ? (planTurn ? Escalation.planningTools(toolsFor(c)) : architectTurn ? Escalation.architectTools(toolsFor(c)) : toolsFor(c)) : undefined,
@@ -2802,7 +2908,7 @@ async function runConversation(c) {
         : {
             ok: true, finishReason: res.finishReason, chars: (res.content || '').length, toolCalls: (res.toolCalls || []).length,
             promptTokens: res.usage?.promptTokens, completionTokens: res.usage?.completionTokens || (prog.tokens || undefined),
-            promptMs: res.usage?.promptMs, loadMs: res.usage?.loadMs, genTokPerSec: res.usage?.genTokPerSec,
+            promptMs: res.usage?.promptMs, loadMs: res.usage?.loadMs, genTokPerSec: res.usage?.genTokPerSec, cachedTokens: res.usage?.cachedTokens,
             cacheRead: res.usage?.cacheRead || undefined, cacheWrite: res.usage?.cacheWrite || undefined,
             draftModel: res.usage?.draftModel, draftAccepted: res.usage?.draftAccepted,
             firstMs: prog.firstAt ? prog.firstAt - prog.startedAt : undefined, ms: Date.now() - prog.startedAt
@@ -3617,13 +3723,30 @@ function recentStart(h, size, share = KEEP_TAIL) {
   return cut;
 }
 
-// Shorten old tool results in place. True when anything changed.
+// Shorten old tool results in place, everything before the newest PRUNE_TAIL of the window at
+// once (see ToolBudget.shouldPrune). True when anything changed. Remembers the size it left, so
+// the next prune waits for real growth instead of rewriting a little more every step.
 function pruneOldResults(c, size) {
-  const from = recentStart(c.history, size);
+  // The newest turn always stays whole: a result the model has not read yet is never shortened,
+  // however large it is (the deep cut alone could reach past it).
+  let lastTurn = c.history.length;
+  for (let i = c.history.length - 1; i >= 1; i--) {
+    if (c.history[i].role !== 'tool') {
+      lastTurn = i;
+      break;
+    }
+  }
+  const from = Math.min(recentStart(c.history, size, ToolBudget.PRUNE_TAIL), lastTurn);
   const p = ToolBudget.pruneHistory(c.history, from);
-  if (!p.pruned) return false;
+  if (!p.pruned) {
+    // Nothing left to shorten: wait for growth before looking again (a search that finds
+    // nothing changes nothing, but it should not run every step either).
+    c.pruneMark = { tokens: contextUse(c).tokens, window: size };
+    return false;
+  }
   c.history.splice(0, c.history.length, ...p.messages);
   c.usageAt = Number.MAX_SAFE_INTEGER; // the last measured prompt size is stale now: estimate until the next request
+  c.pruneMark = { tokens: contextUse(c).tokens, window: size };
   DebugLog.add(c, 'notice', { text: `shortened ${p.pruned} old tool result${p.pruned === 1 ? '' : 's'} (~${Math.round(p.saved / 3.5).toLocaleString()} tokens) instead of summarizing` });
   saveConv(c);
   return true;
@@ -3737,6 +3860,7 @@ async function compactConversation(c, { manual } = {}) {
     );
   }
   c.history = tail[0].role === 'user' ? [{ ...tail[0], content: `${block}\n\n${tail[0].content}` }, ...tail.slice(1)] : [{ role: 'user', content: block }, ...tail];
+  c.pruneMark = 0; // a new, short history: prune by the normal rule again
   c.usage = null;
   c.usageAt = 0;
   c.compactions = (c.compactions || 0) + 1;

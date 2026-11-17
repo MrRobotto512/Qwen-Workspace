@@ -89,6 +89,7 @@ jobs:
       - run: xvfb-run -a npm run test:e2e:remote
       - run: xvfb-run -a npm run test:e2e:review
       - run: xvfb-run -a npm run test:e2e:strata
+      - run: xvfb-run -a npm run test:e2e:cachekeep
 
   build:
     needs: smoke
