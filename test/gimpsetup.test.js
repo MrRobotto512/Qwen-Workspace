@@ -30,7 +30,8 @@ test('setupGimp downloads the pinned files, installs the plugin, and returns the
   assert.ok(urls.every((u) => u.includes(G.GIMP_MCP_REF)), 'downloads are pinned to the reviewed revision');
   const plugin = path.join(home, '.config', 'GIMP', '3.2', 'plug-ins', 'gimp-mcp-plugin', 'gimp-mcp-plugin.py');
   assert.ok(fs.existsSync(plugin));
-  assert.ok(fs.statSync(plugin).mode & 0o100, 'the plugin is executable');
+  // The simulated platform is Linux, but a Windows host has no execute bit to set or read.
+  if (process.platform !== 'win32') assert.ok(fs.statSync(plugin).mode & 0o100, 'the plugin is executable');
   assert.deepEqual(r.server, { name: 'GIMP', command: 'uv', args: ['run', '--directory', path.join(dataDir, 'mcp', 'gimp-mcp'), 'gimp_mcp_server.py'], enabled: true });
   const noUv = await G.setupGimp({ platform: 'win32', env: { APPDATA: path.join(home, 'none') }, home, dataDir, fetch: fakeFetch, hasUv: async () => false });
   assert.equal(noUv.ok, false);
