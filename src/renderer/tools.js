@@ -324,7 +324,9 @@ function mcpOffHere() {
 function mcpToolSpecs() {
   const out = [];
   const off = mcpOffHere();
-  for (const srv of state.mcp || []) {
+  // In a fixed order (v0.64): servers finish starting in any order, and a different order is a
+  // different prompt start, which the model server must read again from the top.
+  for (const srv of CacheKeep.sortedServers(state.mcp)) {
     if (srv.status !== 'ready' || off.has(srv.id)) continue;
     for (const t of srv.tools || []) {
       out.push({ type: 'function', function: { name: t.name, description: `[${srv.id}] ${t.description || t.rawName}`, parameters: t.parameters || { type: 'object', properties: {} } } });
@@ -413,10 +415,13 @@ function toolsFor(c) {
   const deferred = deferredCatalog();
   const tools = [...core, ...deferred.filter((t) => active.has(t.function.name))];
   if (c.skills?.length) tools.push(LOAD_SKILL_TOOL);
-  if (state.semReady) tools.push(SEM_TOOL);
+  // The index finishing mid-task would add a tool to the top of the prompt (a full re-read):
+  // a task keeps the tool set it started with (c.toolFreeze, set when the task starts).
+  if (c.toolFreeze ? c.toolFreeze.sem : state.semReady) tools.push(SEM_TOOL);
   if (heavyOverride()) tools.push(state.settings.consultFreely ? CONSULT_TOOL_FREE : CONSULT_TOOL);
   if ((heavyOverride() || conversationOverride(c)) && !tools.some((t) => t.function.name === 'run_program')) tools.push(PROGRAM_TOOL);
-  if (deferred.some((t) => !active.has(t.function.name))) tools.push(TOOL_SEARCH_TOOL);
+  // Kept even after every deferred tool is loaded, so the list does not change (v0.64).
+  if (deferred.length) tools.push(TOOL_SEARCH_TOOL);
   if (subagentsAvailable(c)) tools.push(DELEGATE_TOOL);
   // A subagent runs unattended next to others: nobody is there to answer its questions.
   return c.isSubagent ? tools.filter((t) => t.function.name !== 'ask_user') : tools;

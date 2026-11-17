@@ -41,6 +41,23 @@ const savedNote = (file, lines) => `[The full output (${lines} lines) is saved i
 const PRUNE_AT = 0.6; // share of the window at which old results are pruned
 const KEEP_RESULT = 600; // results this short are kept as they are
 
+// Prune in big, rare chunks (v0.64, from Strata's message-boundary cache): the model server
+// keeps the prompt it last read and re-reads only from the first changed byte. Shortening a
+// few old results every step once past PRUNE_AT moved that point back into the middle of the
+// conversation on every step — a re-read of ~a third of the window each time. Now a prune
+// keeps only the newest PRUNE_TAIL of the window whole and shortens everything before it at
+// once, and the next prune waits until the conversation has grown PRUNE_STEP of the window
+// since then, so most steps change nothing behind the newest message.
+const PRUNE_TAIL = 0.15;
+const PRUNE_STEP = 0.15;
+// Whether to prune now: past PRUNE_AT, and (after a first prune) grown PRUNE_STEP of the window
+// since the size the last prune left. `mark` is that size in tokens, or 0 before any prune.
+function shouldPrune(tokens, window, mark = 0) {
+  const w = Number(window) || 0;
+  if (!w || tokens < w * PRUNE_AT) return false;
+  return !(mark > 0) || tokens >= mark + w * PRUNE_STEP;
+}
+
 function argsOf(call) {
   try {
     return JSON.parse(call?.function?.arguments || '{}');
@@ -130,7 +147,7 @@ function pruneHistory(messages, keepFrom) {
   return { messages: out, pruned, saved };
 }
 
-const ToolBudgetExports = { budgetFor, headTail, savedNote, PRUNE_AT, KEEP_RESULT, callLabel, summarizeResult, shrinkCallArgs, pruneHistory };
+const ToolBudgetExports = { budgetFor, headTail, savedNote, PRUNE_AT, PRUNE_TAIL, PRUNE_STEP, shouldPrune, KEEP_RESULT, callLabel, summarizeResult, shrinkCallArgs, pruneHistory };
 if (typeof module !== 'undefined' && module.exports) module.exports = ToolBudgetExports;
 if (typeof window !== 'undefined') window.ToolBudget = ToolBudgetExports;
 })();
