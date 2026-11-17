@@ -2241,6 +2241,7 @@ async function predictGpuFit(c, baseUrl, model, isThisPc, { auto: mayAuto = fals
   }
   if (!vram) return;
   const facts = await api.ollamaFitInfo(baseUrl, model).catch(() => null);
+  if (facts?.modelInfo) fitInfoSeen.set(`${baseUrl}|${model}`, facts);
   // Known before the fit verdict, so a spill seen later is judged as MoE or dense correctly.
   const moe = Nodes.isMoE(facts?.modelInfo);
   if (moe) moeModels.add(model);
@@ -2285,11 +2286,12 @@ async function predictGpuFit(c, baseUrl, model, isThisPc, { auto: mayAuto = fals
 // per session with the command that halves it — Strata keeps its cache at 8 bits too. The
 // reading is kept per node for the fit prediction.
 const kvChecked = new Set();
+const fitInfoSeen = new Map(); // `${baseUrl}|${model}` -> the fit facts the GPU checks fetched
 async function checkKvType(c, baseUrl, model, ps) {
   if (kvChecked.has(baseUrl)) return;
   const entry = (ps || []).find((x) => Nodes.sameModel(x.name, model));
   if (!entry?.size || !entry?.file_size || !entry?.context_length) return;
-  const facts = await api.ollamaFitInfo(baseUrl, model).catch(() => null);
+  const facts = fitInfoSeen.get(`${baseUrl}|${model}`) || (await api.ollamaFitInfo(baseUrl, model).catch(() => null));
   const perToken = Nodes.kvBytesPerToken(facts?.modelInfo);
   if (!perToken) return; // sliding-window models cache too little to tell
   kvChecked.add(baseUrl);
@@ -2314,7 +2316,11 @@ async function checkGpuSpill(c, baseUrl, model) {
   if (spillChecked.has(key)) return;
   spillChecked.add(key);
   const ps = await api.ollamaPs(baseUrl).catch(() => []);
-  checkKvType(c, baseUrl, model, ps).catch(() => {});
+  await spillFromPs(c, baseUrl, model, ps);
+  // After the spill check, so it can reuse the model facts that check fetched.
+  await checkKvType(c, baseUrl, model, ps).catch(() => {});
+}
+async function spillFromPs(c, baseUrl, model, ps) {
   const sp = Nodes.spillInfo(ps, model);
   const held = ps.reduce((n, x) => n + (Number(x.size_vram) || 0), 0);
   if (!sp) {
@@ -2343,7 +2349,10 @@ async function checkGpuSpill(c, baseUrl, model) {
   if (!moeChecked.has(model)) {
     const facts = await api.ollamaFitInfo(baseUrl, model).catch(() => null);
     if (Nodes.isMoE(facts?.modelInfo)) moeModels.add(model);
-    if (facts?.modelInfo) moeChecked.add(model);
+    if (facts?.modelInfo) {
+      moeChecked.add(model);
+      fitInfoSeen.set(`${baseUrl}|${model}`, facts);
+    }
   }
   // Only the everyday model's window is lowered on its own (not for an escalated or ⚡ step).
   const everyday = Nodes.sameModel(model, state.settings.model) && state.settings.fitAutoSkip !== model;
@@ -3688,7 +3697,16 @@ function recentStart(h, size, share = KEEP_TAIL) {
 // once (see ToolBudget.shouldPrune). True when anything changed. Remembers the size it left, so
 // the next prune waits for real growth instead of rewriting a little more every step.
 function pruneOldResults(c, size) {
-  const from = recentStart(c.history, size, ToolBudget.PRUNE_TAIL);
+  // The newest turn always stays whole: a result the model has not read yet is never shortened,
+  // however large it is (the deep cut alone could reach past it).
+  let lastTurn = c.history.length;
+  for (let i = c.history.length - 1; i >= 1; i--) {
+    if (c.history[i].role !== 'tool') {
+      lastTurn = i;
+      break;
+    }
+  }
+  const from = Math.min(recentStart(c.history, size, ToolBudget.PRUNE_TAIL), lastTurn);
   const p = ToolBudget.pruneHistory(c.history, from);
   if (!p.pruned) {
     // Nothing left to shorten: wait for growth before looking again (a search that finds
